@@ -1,0 +1,37 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# --- Ambiente virtual / env ---
+.venv/
+venv/
+env/
+.env
+
+# --- Testes / cache ---
+.pytest_cache/
+.cache/
+.mypy_cache/
+.ruff_cache/
+
+# --- Saídas do treino (geradas, não versionar) ---
+checkpoints/
+*.zip
+tb/
+runs/
+.cache/pending_runs/
+
+# --- Vault local de teste (use VAULT_PATH p/ o seu vault real) ---
+vault/
+# -- todo --
+TODO.md
+
+# --- SO / editores ---
+.DS_Store
+.idea/
+.vscode/
+*.swp
