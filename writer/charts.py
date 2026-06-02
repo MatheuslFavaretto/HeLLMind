@@ -1,9 +1,9 @@
-"""Curva de aprendizado: renderiza a evolução das métricas-chave ao longo da run.
+"""Learning curve: renders the key metrics' evolution over the run.
 
-Lê os snapshots coletados (mesmo JSONL das notas) e desenha um gráfico de linhas
-com cv2 + numpy (sem dependência nova). Cada série é normalizada [0,1] pelo seu
-próprio min/max para caberem no mesmo painel — serve para VER se o reward shaping
-e o treino estão indo na direção certa. Roda no pós-treino, junto com as notas.
+Reads the collected snapshots (same JSONL as the notes) and draws a line chart with
+cv2 + numpy (no new dependency). Each series is normalized to [0,1] by its own min/max
+so they fit in the same panel — to SEE whether the reward shaping and training are
+heading the right way. Runs post-training, alongside the notes.
 """
 import os
 from typing import Dict, List, Sequence
@@ -13,10 +13,10 @@ import numpy as np
 
 # (chave no snapshot, rótulo na legenda, cor BGR)
 SERIES = [
-    ("mean_reward", "recompensa/ep", (90, 220, 90)),
-    ("shooting_accuracy", "precisao tiro", (250, 180, 90)),
+    ("mean_reward", "reward/ep", (90, 220, 90)),
+    ("shooting_accuracy", "accuracy", (250, 180, 90)),
     ("kills_per_episode", "kills/ep", (90, 170, 250)),
-    ("success_rate", "sucesso", (220, 120, 230)),
+    ("success_rate", "success", (220, 120, 230)),
 ]
 
 
@@ -55,8 +55,8 @@ def render_learning_curve(
                 cv2.line(img, prev, (px, py), color, 2, cv2.LINE_AA)
             prev = (px, py)
 
-    # título + legenda + eixos
-    cv2.putText(img, "Curva de aprendizado (cada serie normalizada)", (ml, 26),
+    # title + legend + axes
+    cv2.putText(img, "Learning curve (each series normalized)", (ml, 26),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, (230, 230, 230), 1, cv2.LINE_AA)
     for i, (_key, label, color) in enumerate(SERIES):
         y = mt + 16 + i * 18
@@ -79,7 +79,7 @@ def render_run_comparison(
     runs: Dict[str, Sequence[Dict]], metric: str, out_path: str,
     title: str = None, w: int = 780, h: int = 400,
 ) -> bool:
-    """Sobrepõe `metric` ao longo do tempo, uma linha por run (mesma escala Y)."""
+    """Overlay `metric` over time, one line per run (same Y scale)."""
     valid = {
         label: [s for s in snaps if "num_timesteps" in s and metric in s]
         for label, snaps in runs.items()

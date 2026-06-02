@@ -1,11 +1,11 @@
-"""Estatísticas sobre a distribuição de ações escolhidas pela política."""
+"""Statistics about the distribution of actions chosen by the policy."""
 from typing import Dict, List
 
 import numpy as np
 
 
 def action_distribution(counts: np.ndarray, button_names: List[str]) -> Dict[str, float]:
-    """Fração de cada ação no total da janela."""
+    """Fraction of each action over the window total."""
     total = counts.sum()
     if total == 0:
         return {name: 0.0 for name in button_names}
@@ -13,10 +13,10 @@ def action_distribution(counts: np.ndarray, button_names: List[str]) -> Dict[str
 
 
 def action_entropy(counts: np.ndarray) -> float:
-    """Entropia (em nats) da distribuição empírica de ações.
+    """Entropy (in nats) of the empirical action distribution.
 
-    Alta = política explorando/variando; baixa = política colapsando numa ação.
-    Útil para detectar quando o agente 'travou' num comportamento.
+    High = policy exploring/varied; low = policy collapsing onto one action.
+    Useful to detect when the agent has "locked" into a behavior.
     """
     total = counts.sum()
     if total == 0:
@@ -27,5 +27,5 @@ def action_entropy(counts: np.ndarray) -> float:
 
 
 def max_entropy(n_actions: int) -> float:
-    """Entropia máxima possível (distribuição uniforme), para normalizar."""
+    """Maximum possible entropy (uniform distribution), for normalization."""
     return float(np.log(n_actions)) if n_actions > 1 else 0.0

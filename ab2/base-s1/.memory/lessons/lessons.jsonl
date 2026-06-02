@@ -1,0 +1,3 @@
+{"title": "Agents frequently die at low health levels", "insight": "In 92% of the deaths, agents had a mean health just before death below 30 HP.", "evidence": "Low-HP deaths (health < 30): 92% of deaths"}
+{"title": "Agents often die near the end of episodes", "insight": "The mean episode length for deaths is significantly longer than for successes, indicating frequent death occurrences towards the end of runs.", "evidence": "Mean episode length — deaths 99 vs successes 0 steps"}
+{"title": "Agents frequently die in corridors", "insight": "Given the lack of timeouts and only a few successes, agents are likely dying due to poor corridor navigation or combat strategies.", "evidence": "No timeouts reported; only 0 successes out of 820 runs"}

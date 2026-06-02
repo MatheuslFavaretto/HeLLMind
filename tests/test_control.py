@@ -20,7 +20,7 @@ def test_coerce_types():
 def test_ensure_is_idempotent(tmp_path):
     p = os.path.join(tmp_path, "00-index", "control.md")
     ensure_control_note(p, 0.15, 50000)
-    # edita e garante que ensure NÃO sobrescreve o que o usuário mudou
+    # edit and ensure that `ensure` does NOT overwrite what the user changed
     open(p, "a", encoding="utf-8").write("\nMARCA DO USUARIO\n")
     ensure_control_note(p, 0.99, 1)
     assert "MARCA DO USUARIO" in open(p, encoding="utf-8").read()
@@ -54,7 +54,7 @@ def test_callback_stop(tmp_path):
         "stop_training: false", "stop_training: true"
     )
     open(p, "w", encoding="utf-8").write(txt)
-    assert _make_cb(p)._on_step() is False  # interrompe o treino
+    assert _make_cb(p)._on_step() is False  # stops training
 
 
 def test_callback_applies_live_changes(tmp_path):

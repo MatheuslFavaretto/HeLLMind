@@ -1,12 +1,26 @@
-"""Currículo de mapas: avança sequencialmente para o próximo mapa por timesteps.
+"""Map curriculum: advances sequentially to the next map by timesteps.
 
-Decisão do usuário: o agente treina `steps_per_map` em cada mapa e então passa ao
-próximo da lista. Ao terminar a lista, repete (se loop) ou para de trocar.
-A troca é aplicada via `env_method("set_map", ...)`; cada env aplica no reset.
+The agent trains `steps_per_map` on each map and then moves to the next in the list.
+When the list ends, it repeats (if loop) or stops switching. The switch is applied via
+`env_method("set_map", ...)`; each env applies it on reset.
 """
-from typing import List
+from collections import Counter
+from typing import Dict, List, Optional
 
 from stable_baselines3.common.callbacks import BaseCallback
+
+
+def map_step_weights(events: List[dict], maps: List[str]) -> Dict[str, float]:
+    """Closed-loop feedback: weight each map by how often the agent DIED there (from
+    persistent memory), normalized so the mean is 1.0. More deaths -> more training.
+    With no memory it returns all 1.0 (uniform = the previous behavior)."""
+    deaths = Counter(
+        e.get("map") for e in events
+        if e.get("type") == "death" and e.get("map")
+    )
+    raw = {m: float(deaths.get(m, 0)) + 1.0 for m in maps}  # +1 smoothing
+    mean = sum(raw.values()) / len(maps)
+    return {m: raw[m] / mean for m in maps}
 
 
 class MapCurriculumCallback(BaseCallback):
@@ -15,14 +29,18 @@ class MapCurriculumCallback(BaseCallback):
         maps: List[str],
         steps_per_map: int,
         loop_maps: bool = False,
+        weights: Optional[Dict[str, float]] = None,
         verbose: int = 1,
     ) -> None:
         super().__init__(verbose)
         self.maps = maps
         self.steps_per_map = steps_per_map
         self.loop_maps = loop_maps
+        # Per-map step budgets: memory-weighted (mean 1.0) so harder maps get more steps.
+        w = weights or {m: 1.0 for m in maps}
+        self.budgets = [max(1, int(steps_per_map * w.get(m, 1.0))) for m in maps]
         self._map_idx = 0
-        self._next_switch = steps_per_map  # primeiro switch após steps_per_map
+        self._next_switch = self.budgets[0]  # first switch after map 0's budget
 
     def _current_map(self) -> str:
         return self.maps[self._map_idx]
@@ -31,23 +49,23 @@ class MapCurriculumCallback(BaseCallback):
         if self.num_timesteps < self._next_switch:
             return True
 
-        # Hora de avançar de mapa.
+        # Time to advance to the next map.
         last = self._map_idx >= len(self.maps) - 1
         if last and not self.loop_maps:
-            # Já estamos no último mapa e não há loop: nada a trocar.
+            # Already on the last map and no loop: nothing to switch.
             self._next_switch = float("inf")
             if self.verbose:
-                print(f"[curriculum] último mapa ({self._current_map()}) — sem mais trocas.")
+                print(f"[curriculum] last map ({self._current_map()}) — no more switches.")
             return True
 
         self._map_idx = (self._map_idx + 1) % len(self.maps)
         new_map = self._current_map()
-        # Agenda o novo mapa em todos os envs (aplica no próximo reset de cada um).
+        # Schedule the new map on all envs (applied on each one's next reset).
         self.training_env.env_method("set_map", new_map)
-        self._next_switch = self.num_timesteps + self.steps_per_map
+        self._next_switch = self.num_timesteps + self.budgets[self._map_idx]
         if self.verbose:
             print(
-                f"[curriculum] step={self.num_timesteps} -> trocando para {new_map} "
+                f"[curriculum] step={self.num_timesteps} -> switching to {new_map} "
                 f"({self._map_idx + 1}/{len(self.maps)})"
             )
         return True

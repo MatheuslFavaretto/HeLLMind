@@ -1,8 +1,8 @@
-"""Wrapper Gymnasium em torno do ViZDoom.
+"""Gymnasium wrapper around ViZDoom.
 
-Cada passo emite, além de obs/reward, um dicionário `info["doom"]` com os deltas
-dos contadores e os níveis instantâneos (vida/munição). É esse sinal que alimenta
-o StatsTracker e, por fim, as notas do Obsidian.
+Each step emits, besides obs/reward, an `info["doom"]` dict with the counter deltas
+and the instantaneous levels (health/ammo). That signal feeds the StatsTracker and,
+ultimately, the Obsidian notes.
 """
 import os
 from typing import Any, Dict, List, Optional, Tuple
@@ -16,19 +16,19 @@ from gymnasium import spaces
 from doom.geometry import read_wall_segments
 from instrumentation.game_vars import LEVELS, MONOTONIC, TRACKED_VARS, VAR_NAMES
 
-# --- Reward shaping (acertos/erros e perda de desempenho) ---
-# Recompensa por tiro que ACERTOU (delta de HITCOUNT na janela do frame_skip).
+# --- Reward shaping (hits/misses and performance loss) ---
+# Reward for a shot that LANDED (HITCOUNT delta within the frame_skip window).
 HIT_REWARD = 1.0
-# Punição por ATACAR e NÃO acertar nada. Menor que HIT_REWARD de propósito:
-# punição alta demais ensina o agente a parar de atirar (vira passivo).
+# Penalty for ATTACKING and hitting nothing. Smaller than HIT_REWARD on purpose:
+# too high a penalty teaches the agent to stop shooting (becomes passive).
 MISS_PENALTY = 0.25
-# Punição por PERDER DESEMPENHO: tomar dano (por ponto) e morrer.
+# Penalty for LOSING PERFORMANCE: taking damage (per point) and dying.
 DAMAGE_TAKEN_PENALTY = 0.05
 DEATH_PENALTY = 5.0
 
 
 class DoomEnv(gym.Env):
-    """Ambiente single-process. Use a factory `make_doom_env` com SubprocVecEnv."""
+    """Single-process env. Use the `make_doom_env` factory with SubprocVecEnv."""
 
     metadata = {"render_modes": []}
 
@@ -38,38 +38,44 @@ class DoomEnv(gym.Env):
         frame_skip: int = 4,
         resolution: Tuple[int, int] = (84, 84),
         window_visible: bool = False,
+        rewards: Optional[Dict[str, float]] = None,
     ) -> None:
         super().__init__()
         self.frame_skip = frame_skip
         self.width, self.height = resolution
+        r = rewards or {}
+        self._hit_reward = float(r.get("hit_reward", HIT_REWARD))
+        self._miss_penalty = float(r.get("miss_penalty", MISS_PENALTY))
+        self._damage_penalty = float(r.get("damage_taken_penalty", DAMAGE_TAKEN_PENALTY))
+        self._death_penalty = float(r.get("death_penalty", DEATH_PENALTY))
 
         game = vzd.DoomGame()
         cfg = os.path.join(vzd.scenarios_path, f"{scenario}.cfg")
         game.load_config(cfg)
         game.set_window_visible(window_visible)
         game.set_screen_format(vzd.ScreenFormat.GRAY8)
-        # Janela visível pede uma resolução maior para dar pra enxergar.
+        # A visible window needs a larger resolution to actually be watchable.
         game.set_screen_resolution(
             vzd.ScreenResolution.RES_640X480
             if window_visible
             else vzd.ScreenResolution.RES_160X120
         )
-        # Sobrescrevemos as variáveis do cfg pelo nosso conjunto rico.
+        # Override the cfg variables with our rich set.
         game.set_available_game_variables(TRACKED_VARS)
-        game.set_sectors_info_enabled(True)  # geometria do mapa p/ o minimapa real
+        game.set_sectors_info_enabled(True)  # map geometry for the real minimap
         game.init()
         self.game = game
-        self._walls_pending = True  # envia as paredes uma vez (mapa fixo no cenário)
+        self._walls_pending = True  # send the walls once (fixed map in a scenario)
 
         self.buttons: List[vzd.Button] = game.get_available_buttons()
         self.button_names: List[str] = [b.name for b in self.buttons]
         n = len(self.buttons)
-        # Ações discretas one-hot: uma ação por botão disponível.
+        # Discrete one-hot actions: one action per available button.
         self.actions: List[List[int]] = [
             [1 if i == j else 0 for i in range(n)] for j in range(n)
         ]
 
-        # Índice do botão de ATAQUE (p/ saber quando o agente "errou" um tiro).
+        # Index of the ATTACK button (to know when the agent "missed" a shot).
         self._attack_idx = next(
             (i for i, nm in enumerate(self.button_names) if "ATTACK" in nm.upper()),
             None,
@@ -108,6 +114,7 @@ class DoomEnv(gym.Env):
             self.game.set_seed(seed)
         self.game.new_episode()
         self._last_vars = self._read_raw_vars()
+        self._ep_base = 0.0  # native (unshaped) scenario return, for fair A/B eval
         return self._get_obs(), {}
 
     def step(
@@ -115,12 +122,13 @@ class DoomEnv(gym.Env):
     ) -> Tuple[np.ndarray, float, bool, bool, Dict[str, Any]]:
         buttons = self.actions[int(action)]
         base_reward = self.game.make_action(buttons, self.frame_skip)
+        self._ep_base += base_reward
         done = self.game.is_episode_finished()
 
         if not done:
             raw = self._read_raw_vars()
             deltas = {n: max(0.0, raw[n] - self._last_vars[n]) for n in MONOTONIC}
-            # Distância percorrida neste passo (p/ medir exploração do mapa).
+            # Distance traveled this step (to measure map exploration).
             dx = raw["position_x"] - self._last_vars["position_x"]
             dy = raw["position_y"] - self._last_vars["position_y"]
             deltas["distance"] = float((dx * dx + dy * dy) ** 0.5)
@@ -128,23 +136,28 @@ class DoomEnv(gym.Env):
             self._last_vars = raw
             obs = self._get_obs()
         else:
-            # Estado final não tem screen/vars; usamos o último conhecido.
+            # The terminal state has no screen/vars; use the last known ones.
             deltas = {n: 0.0 for n in MONOTONIC}
             deltas["distance"] = 0.0
             levels = {n: self._last_vars[n] for n in LEVELS}
             obs = np.zeros(self.observation_space.shape, dtype=np.uint8)
 
-        # Shaping: + por acerto; - por errar; - por perder desempenho (dano/morte).
-        reward = base_reward + HIT_REWARD * deltas["hitcount"]
+        # Shaping: + for a hit; - for a miss; - for losing performance (damage/death).
+        reward = base_reward + self._hit_reward * deltas["hitcount"]
         attacked = self._attack_idx is not None and int(action) == self._attack_idx
         if attacked and deltas["hitcount"] == 0 and not done:
-            reward -= MISS_PENALTY
-        reward -= DAMAGE_TAKEN_PENALTY * deltas["damage_taken"]
-        if done and levels["health"] <= 0:
-            reward -= DEATH_PENALTY
+            reward -= self._miss_penalty
+        reward -= self._damage_penalty * deltas["damage_taken"]
+        if done and self.game.is_player_dead():
+            reward -= self._death_penalty
 
         doom = {"deltas": deltas, "levels": levels, "action": int(action)}
-        # Geometria do mapa: enviada UMA vez (não a cada passo — não pesa no loop).
+        if done:
+            # Reliable terminal type: health reported is the pre-death frame, so use
+            # ViZDoom's is_player_dead() instead of checking health<=0.
+            doom["terminal"] = "death" if self.game.is_player_dead() else "timeout"
+            doom["base_return"] = self._ep_base  # native episode return (no shaping)
+        # Map geometry: sent ONCE (not every step — doesn't weigh on the loop).
         if self._walls_pending:
             doom["walls"] = read_wall_segments(self.game)
             self._walls_pending = False
@@ -161,11 +174,12 @@ def make_doom_env(
     seed: int,
     rank: int,
     window_visible: bool = False,
+    rewards: Optional[Dict[str, float]] = None,
 ):
-    """Factory para SubprocVecEnv. Cada subprocesso recebe um seed distinto.
+    """Factory for SubprocVecEnv. Each subprocess gets a distinct seed.
 
-    Não envolvemos com Monitor aqui: o VecMonitor (aplicado uma vez sobre o
-    vec env) já injeta info["episode"], evitando o aviso de Monitor duplicado.
+    We don't wrap with Monitor here: VecMonitor (applied once over the vec env)
+    already injects info["episode"], avoiding the duplicate-Monitor warning.
     """
 
     def _init():
@@ -174,6 +188,7 @@ def make_doom_env(
             frame_skip=frame_skip,
             resolution=resolution,
             window_visible=window_visible,
+            rewards=rewards,
         )
         env.reset(seed=seed + rank)
         return env
@@ -184,10 +199,10 @@ def make_doom_env(
 def probe_env_metadata(
     scenario: str, frame_skip: int, resolution: Tuple[int, int]
 ) -> Dict[str, Any]:
-    """Cria um env temporário só para descobrir nomes de botões e nº de ações.
+    """Create a temporary env just to discover button names and action count.
 
-    Útil para o StatsTracker (rótulos da distribuição de ações) sem precisar
-    iniciar o treino inteiro.
+    Useful for the StatsTracker (action-distribution labels) without booting the
+    whole training.
     """
     env = DoomEnv(scenario=scenario, frame_skip=frame_skip, resolution=resolution)
     meta = {

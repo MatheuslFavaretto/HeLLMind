@@ -1,46 +1,46 @@
-"""Análise de regressão entre checkpoints (feature D).
+"""Regression analysis between checkpoints (feature D).
 
-Faz a documentação INTERPRETAR, não só descrever: quando uma métrica-chave despenca
-de um checkpoint para o outro, isso costuma indicar que o agente "esqueceu" algo que
-já sabia (Catastrophic Forgetting). Esta função pura detecta essas quedas para o
-NoteWriter destacar na nota e linkar o conceito automaticamente.
+Makes the documentation INTERPRET, not just describe: when a key metric drops sharply
+from one checkpoint to the next, it often means the agent "forgot" something it already
+knew (Catastrophic Forgetting). This pure function detects those drops so the NoteWriter
+can highlight them and link the concept automatically.
 """
 from typing import Dict, List, Optional
 
-# Conceito que será criado/linkado quando houver regressão.
+# Concept that gets created/linked when a regression is found.
 FORGETTING_CONCEPT = "Catastrophic Forgetting"
 FORGETTING_DESCRIPTION = (
-    "Quando uma rede perde habilidades já aprendidas ao otimizar para algo novo — "
-    "no RL, o agente regride em métricas que antes dominava."
+    "When a network loses skills it already learned while optimizing for something new "
+    "— in RL, the agent regresses on metrics it previously mastered."
 )
 
-# (chave no snapshot, rótulo legível, é porcentagem?)
+# (snapshot key, readable label, is it a percentage?)
 _WATCH = [
-    ("shooting_accuracy", "precisão de tiro", True),
-    ("mean_reward", "recompensa média", False),
-    ("kills_per_episode", "kills/episódio", False),
-    ("success_rate", "taxa de sucesso", True),
+    ("shooting_accuracy", "shooting accuracy", True),
+    ("mean_reward", "mean reward", False),
+    ("kills_per_episode", "kills/episode", False),
+    ("success_rate", "success rate", True),
 ]
 
-# Queda relativa (vs. o checkpoint anterior) a partir da qual marcamos regressão.
+# Relative drop (vs. the previous checkpoint) at which we flag a regression.
 REGRESSION_DROP = 0.30
 
 
 def detect_regressions(
     current: Dict, previous: Optional[Dict], threshold: float = REGRESSION_DROP
 ) -> List[str]:
-    """Retorna descrições das métricas que caíram >= `threshold` (vazio se nada)."""
+    """Return descriptions of metrics that dropped >= `threshold` (empty if none)."""
     if not previous:
         return []
     out: List[str] = []
     for key, label, pct in _WATCH:
         cur = float(current.get(key, 0.0))
         prev = float(previous.get(key, 0.0))
-        if prev <= 1e-6:  # sem base positiva para falar em "queda"
+        if prev <= 1e-6:  # no positive baseline to call it a "drop"
             continue
         drop = (prev - cur) / prev
         if drop >= threshold:
             cf = f"{cur:.0%}" if pct else f"{cur:,.2f}"
             pf = f"{prev:.0%}" if pct else f"{prev:,.2f}"
-            out.append(f"{label} caiu de {pf} para {cf} (−{drop:.0%})")
+            out.append(f"{label} dropped from {pf} to {cf} (-{drop:.0%})")
     return out

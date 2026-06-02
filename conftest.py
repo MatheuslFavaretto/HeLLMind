@@ -1,10 +1,10 @@
-"""Configuração compartilhada dos testes.
+"""Shared test configuration.
 
-A presença deste arquivo na raiz faz o pytest colocar o diretório do projeto no
-sys.path, então `from writer... import ...` funciona sem instalar o pacote.
+Having this file at the root makes pytest put the project directory on sys.path, so
+`from writer... import ...` works without installing the package.
 
-Fornece também uma fábrica de `info["doom"]` sintético, para testar o StatsTracker
-e afins SEM precisar subir o ViZDoom (rápido e determinístico em CI).
+It also provides a synthetic `info["doom"]` factory, to test the StatsTracker and
+friends WITHOUT booting ViZDoom (fast and deterministic in CI).
 """
 from typing import Optional, Tuple
 
@@ -54,5 +54,5 @@ def _make_doom_info(
 
 @pytest.fixture
 def make_doom_info():
-    """Fábrica de info sintético do env (parametrizável por teste)."""
+    """Synthetic env-info factory (parameterizable per test)."""
     return _make_doom_info

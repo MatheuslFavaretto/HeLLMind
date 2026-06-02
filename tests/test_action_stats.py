@@ -1,4 +1,4 @@
-"""Distribuição e entropia das ações."""
+"""Action distribution and entropy."""
 import math
 
 import numpy as np

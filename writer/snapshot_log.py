@@ -1,9 +1,9 @@
-"""Coleta de snapshots durante o treino — RÁPIDO, sem LLM.
+"""Snapshot collection during training — FAST, no LLM.
 
-Por que existe: chamar o Ollama dentro do loop do PPO trava o treino. Aqui só
-serializamos os snapshots "novos" (já filtrados por novidade) num JSONL
-append-only + um sidecar `.meta.json`. O LLM roda DEPOIS, em `writer.process_run`,
-então o loop de RL nunca trava por causa de I/O do modelo.
+Why it exists: calling Ollama inside the PPO loop freezes training. Here we only
+serialize the "new" snapshots (already novelty-filtered) to an append-only JSONL +
+a `.meta.json` sidecar. The LLM runs LATER, in `writer.process_run`, so the RL loop
+never blocks on model I/O.
 """
 import json
 import os
@@ -13,7 +13,7 @@ import numpy as np
 
 
 def _sanitize(obj: Any) -> Any:
-    """Torna o snapshot 100% serializável (tipos numpy -> nativos)."""
+    """Make the snapshot 100% serializable (numpy types -> native)."""
     if isinstance(obj, dict):
         return {k: _sanitize(v) for k, v in obj.items()}
     if isinstance(obj, (list, tuple)):
@@ -36,12 +36,12 @@ def meta_path_for(pending_dir: str, run_name: str) -> str:
 
 
 class SnapshotLog:
-    """Escreve snapshots novos num JSONL. Uma instância por run (zera no início)."""
+    """Writes new snapshots to a JSONL. One instance per run (truncates at start)."""
 
     def __init__(self, path: str) -> None:
         self.path = path
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        open(self.path, "w", encoding="utf-8").close()  # começa a run zerada
+        open(self.path, "w", encoding="utf-8").close()  # start the run empty
         self.count = 0
 
     def append(self, snapshot: Dict[str, Any]) -> None:

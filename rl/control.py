@@ -1,12 +1,12 @@
 """Loop de feedback: o Obsidian deixa de ser só receptor e passa a CONTROLAR.
 
-Cria uma nota de controle em `00-index/control.md` com um frontmatter YAML simples.
-A cada N steps o treino relê esse arquivo e se adapta SEM reiniciar:
-- `stop_training: true`  -> encerra o treino de forma limpa.
-- `novelty_threshold`    -> mais/menos sensível para escrever notas (ao vivo).
-- `write_every_steps`    -> cadência de coleta de snapshots (ao vivo).
+Creates a control note at `00-index/control.md` with a simple YAML frontmatter.
+Every N steps training re-reads this file and adapts WITHOUT restarting:
+- `stop_training: true`  -> ends training cleanly.
+- `novelty_threshold`    -> more/less sensitive about writing notes (live).
+- `write_every_steps`    -> snapshot collection cadence (live).
 
-Mantemos um parser minúsculo (sem dependência de YAML): o frontmatter é só
+We keep a tiny parser (no YAML dependency): the frontmatter is just
 `chave: valor` entre `---`, o que basta para um painel de controle.
 """
 import os
@@ -34,7 +34,7 @@ def _coerce(v: str) -> Any:
 
 
 def read_frontmatter(path: str) -> Dict[str, Any]:
-    """Lê o frontmatter YAML simples de uma nota. Tolerante a erros (retorna {})."""
+    """Read a note's simple YAML frontmatter. Error-tolerant (returns {})."""
     if not os.path.exists(path):
         return {}
     try:
@@ -58,7 +58,7 @@ def read_frontmatter(path: str) -> Dict[str, Any]:
 def ensure_control_note(
     path: str, novelty_threshold: float, write_every_steps: int
 ) -> None:
-    """Cria a nota de controle com defaults, se ela ainda não existir."""
+    """Create the control note with defaults, if it doesn't exist yet."""
     if os.path.exists(path):
         return
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -69,19 +69,19 @@ def ensure_control_note(
         f"novelty_threshold: {novelty_threshold}\n"
         f"write_every_steps: {write_every_steps}\n"
         "---\n\n"
-        "# Painel de controle do treino\n\n"
-        "Edite os valores do **frontmatter** acima enquanto o treino roda — ele relê\n"
-        "este arquivo a cada poucos milhares de steps e se adapta sem reiniciar.\n\n"
-        "- `stop_training: true` encerra o treino de forma limpa (salva o modelo).\n"
-        "- `novelty_threshold` controla o quão diferente algo precisa ser p/ virar nota.\n"
-        "- `write_every_steps` controla a cadência de coleta.\n"
+        "# Training control panel\n\n"
+        "Edit the **frontmatter** values above while training runs — it re-reads this\n"
+        "file every few thousand steps and adapts without restarting.\n\n"
+        "- `stop_training: true` ends training cleanly (saves the model).\n"
+        "- `novelty_threshold` controls how different something must be to become a note.\n"
+        "- `write_every_steps` controls the collection cadence.\n"
     )
     with open(path, "w", encoding="utf-8") as f:
         f.write(body)
 
 
 class ControlCallback(BaseCallback):
-    """Relê a nota de controle periodicamente e aplica as mudanças no treino."""
+    """Periodically re-reads the control note and applies its changes to training."""
 
     def __init__(
         self,
@@ -101,7 +101,7 @@ class ControlCallback(BaseCallback):
         we = getattr(self.doc_callback, "write_every_steps", 50000)
         ensure_control_note(self.control_path, nt, we)
         if self.verbose:
-            print(f"[control] painel em {self.control_path} (edite p/ controlar o treino)")
+            print(f"[control] panel at {self.control_path} (edit it to steer training)")
 
     def _on_step(self) -> bool:
         if self.num_timesteps < self._next_check:
@@ -113,8 +113,8 @@ class ControlCallback(BaseCallback):
             return True
 
         if ctrl.get("stop_training") is True:
-            print(f"[control] stop_training=true — encerrando em {self.num_timesteps} steps.")
-            return False  # SB3 interrompe o learn() de forma limpa
+            print(f"[control] stop_training=true — stopping at {self.num_timesteps} steps.")
+            return False  # SB3 stops learn() cleanly
 
         if self.doc_callback is not None:
             nt = ctrl.get("novelty_threshold")

@@ -1,16 +1,16 @@
-"""Lê a geometria do mapa do ViZDoom (segmentos de parede) para o minimapa real.
+"""Reads the ViZDoom map geometry (wall segments) for the real minimap.
 
-Com `set_sectors_info_enabled(True)`, cada estado traz `state.sectors`, e cada setor
-tem `lines` (segmentos com x1,y1,x2,y2 e is_blocking). Juntando as linhas que bloqueiam
-temos o contorno real do nível — é o que desenhamos como fundo do minimapa, com o
-caminho do agente por cima (em vez de "quadrados soltos").
+With `set_sectors_info_enabled(True)`, each state carries `state.sectors`, and each
+sector has `lines` (segments with x1,y1,x2,y2 and is_blocking). Collecting the blocking
+lines gives the real level outline — which we draw as the minimap background, with the
+agent's path on top (instead of "loose squares").
 """
 from typing import List
 
 
 def read_wall_segments(game, blocking_only: bool = True, max_segments: int = 5000) -> List[List[float]]:
-    """Retorna [[x1,y1,x2,y2], ...] das paredes do mapa atual (mundo, mesmas unidades
-    de POSITION_X/Y). Vazio se a info de setores não estiver disponível."""
+    """Return [[x1,y1,x2,y2], ...] of the current map's walls (world units, same as
+    POSITION_X/Y). Empty if sector info isn't available."""
     state = game.get_state()
     sectors = getattr(state, "sectors", None) if state is not None else None
     if not sectors:

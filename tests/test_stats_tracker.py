@@ -1,4 +1,4 @@
-"""StatsTracker: pontaria, caminho/cobertura, armas e agregação de episódios."""
+"""StatsTracker: aim, path/coverage, weapons and episode aggregation."""
 import numpy as np
 
 from instrumentation.stats_tracker import StatsTracker
@@ -17,7 +17,7 @@ def test_shooting_accuracy_and_counts(make_doom_info):
     # 4 ataques: 2 acertam, 2 erram
     for hit in (1.0, 0.0, 1.0, 0.0):
         _feed(tr, make_doom_info(ATTACK, hits=hit), ATTACK)
-    # 6 movimentos (não contam como tiro)
+    # 6 moves (don't count as shots)
     for i in range(6):
         _feed(tr, make_doom_info(MOVE, distance=10.0, pos=(i * 100.0, 0.0)), MOVE)
 
@@ -34,8 +34,8 @@ def test_distance_and_coverage(make_doom_info):
         _feed(tr, make_doom_info(MOVE, distance=10.0, pos=(i * 200.0, 0.0)), MOVE)
     snap = tr.snapshot(500)
     assert snap["distance_traveled"] == 50.0
-    assert snap["cells_visited"] >= 2  # posições espalhadas -> várias células
-    assert snap["path_cells"]  # não vazio (alimenta o minimapa)
+    assert snap["cells_visited"] >= 2  # spread-out positions -> several cells
+    assert snap["path_cells"]  # non-empty (feeds the minimap)
 
 
 def test_weapons_distribution(make_doom_info):
@@ -62,7 +62,28 @@ def test_episode_aggregation_and_success(make_doom_info):
     assert snap["episodes"] == 1
     assert snap["success_rate"] == 1.0
     assert snap["mean_reward"] == 12.5
-    assert snap["kills_per_episode"] == 3.0  # 2+1 kills / 1 episódio
+    assert snap["kills_per_episode"] == 3.0  # 2+1 kills / 1 episode
+
+
+def test_base_return_is_collected(make_doom_info):
+    # native (unshaped) episode return is tracked separately from the shaped reward
+    tr = StatsTracker(button_names=BUTTONS)
+    info = make_doom_info(ATTACK, episode={"r": 5.0, "l": 80})
+    info["doom"]["base_return"] = 3.0
+    _feed(tr, info, ATTACK)
+    snap = tr.snapshot(1)
+    assert snap["mean_base_reward"] == 3.0
+    assert snap["mean_reward"] == 5.0  # shaped, from the Monitor 'episode' r
+
+
+def test_coverage_static_scenario_suppressed(make_doom_info):
+    # stationary agent (constant position) -> "% explored" must not be an artifact
+    tr = StatsTracker(button_names=BUTTONS)
+    for _ in range(20):
+        _feed(tr, make_doom_info(ATTACK, pos=(0.0, 0.0)), ATTACK)
+    cov = tr.snapshot(20)["map_coverage"]
+    assert cov.get("static") is True
+    assert cov["explored_fraction"] == 0.0
 
 
 def test_reset_window_clears(make_doom_info):

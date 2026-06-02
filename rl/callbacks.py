@@ -1,14 +1,14 @@
-"""Callback que coleta métricas a cada passo e SERIALIZA snapshots novos.
+"""Callback that collects metrics every step and SERIALIZES new snapshots.
 
-IMPORTANTE (anti-trava): este callback NÃO chama o LLM. Durante o treino ele só
-acumula métricas (numpy puro, microssegundos) e grava os snapshots relevantes num
-JSONL. As notas do Obsidian são geradas DEPOIS do treino, por `writer.process_run`,
-para que o loop do PPO nunca congele esperando o Ollama.
+IMPORTANT (anti-freeze): this callback does NOT call the LLM. During training it only
+accumulates metrics (pure numpy, microseconds) and writes the relevant snapshots to a
+JSONL. The Obsidian notes are generated AFTER training, by `writer.process_run`, so the
+PPO loop never freezes waiting on Ollama.
 
-Controle de frequência em duas camadas:
-1. Cadência: só considera coletar a cada `write_every_steps`.
-2. Filtro de novidade: dentro da cadência, só grava se alguma métrica-chave variou
-   além de `novelty_threshold` (relativo) vs. o último snapshot gravado.
+Two-layer frequency control:
+1. Cadence: only consider collecting every `write_every_steps`.
+2. Novelty filter: within the cadence, only write if some key metric varied beyond
+   `novelty_threshold` (relative) vs. the last written snapshot.
 """
 from typing import Dict, Optional
 
@@ -60,6 +60,9 @@ class DoomDocumentationCallback(BaseCallback):
         self.novelty_threshold = novelty_threshold
         self._last_write_step = 0
         self._last_written_snapshot: Optional[Dict] = None
+        # Dedup of the map geometry: walls (~tens of KB) are static per map, so we
+        # only keep them on the first logged snapshot of each map (not every one).
+        self._last_walls_token = None
 
     def _on_step(self) -> bool:
         infos = self.locals.get("infos", [])
@@ -71,23 +74,30 @@ class DoomDocumentationCallback(BaseCallback):
 
         snapshot = self.tracker.snapshot(self.num_timesteps)
 
-        # Precisa ter visto pelo menos alguns episódios para a nota fazer sentido.
+        # Need at least a few episodes for the note to make sense.
         if snapshot["episodes"] == 0:
             return True
 
         if _is_novel(snapshot, self._last_written_snapshot, self.novelty_threshold):
-            self.log.append(snapshot)  # gravação local, sem LLM -> não trava
+            # Drop repeated map geometry: keep walls only when they change (per map).
+            walls = snapshot.get("map_walls") or []
+            token = (len(walls), tuple(walls[0]) if walls else None)
+            if walls and token == self._last_walls_token:
+                snapshot = {**snapshot, "map_walls": []}
+            elif walls:
+                self._last_walls_token = token
+            self.log.append(snapshot)  # local write, no LLM -> doesn't block
             if self.verbose:
                 print(
                     f"[doc] step={self.num_timesteps} snapshot #{self.log.count} "
-                    f"coletado (reward={snapshot['mean_reward']:.2f}, "
+                    f"collected (reward={snapshot['mean_reward']:.2f}, "
                     f"kills/ep={snapshot['kills_per_episode']:.2f}, "
-                    f"precisão={snapshot['shooting_accuracy']:.0%})"
+                    f"accuracy={snapshot['shooting_accuracy']:.0%})"
                 )
             self._last_written_snapshot = snapshot
         else:
             if self.verbose:
-                print(f"[doc] step={self.num_timesteps} sem novidade — pulando.")
+                print(f"[doc] step={self.num_timesteps} no novelty — skipping.")
 
         self._last_write_step = self.num_timesteps
         self.tracker.reset_window()

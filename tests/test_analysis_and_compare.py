@@ -1,4 +1,4 @@
-"""Detecção de regressão (D) e resumo/gráfico de comparação de runs (B)."""
+"""Regression detection (D) and run-comparison summary/chart (B)."""
 import os
 
 import cv2
@@ -8,7 +8,7 @@ from writer.charts import render_run_comparison
 from writer.compare_runs import summarize
 
 
-# ----------------------------- D: regressão -----------------------------
+# ----------------------------- D: regression -----------------------------
 def test_no_previous_means_no_regression():
     assert detect_regressions({"shooting_accuracy": 0.4}, None) == []
 
@@ -17,9 +17,9 @@ def test_detects_sharp_drop():
     cur = {"shooting_accuracy": 0.15, "mean_reward": 9.0}
     prev = {"shooting_accuracy": 0.40, "mean_reward": 10.0}
     regs = detect_regressions(cur, prev)
-    # precisão caiu 0.40 -> 0.15 (−63%) -> regressão; recompensa caiu só 10% -> não
-    assert any("precisão de tiro" in r for r in regs)
-    assert not any("recompensa" in r for r in regs)
+    # accuracy fell 0.40 -> 0.15 (-63%) -> regression; reward fell only 10% -> not
+    assert any("shooting accuracy" in r for r in regs)
+    assert not any("mean reward" in r for r in regs)
 
 
 def test_small_drop_not_flagged():
@@ -27,11 +27,11 @@ def test_small_drop_not_flagged():
 
 
 def test_zero_baseline_skipped():
-    # sem base positiva não dá pra falar em "queda"
+    # no positive baseline -> can't call it a "drop"
     assert detect_regressions({"success_rate": 0.0}, {"success_rate": 0.0}) == []
 
 
-# --------------------------- B: comparação ---------------------------
+# --------------------------- B: comparison ---------------------------
 def _run(rewards):
     return [{"num_timesteps": i * 10000, "mean_reward": r,
              "shooting_accuracy": min(1.0, 0.1 * i), "kills_per_episode": r / 2,

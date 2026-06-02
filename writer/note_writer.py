@@ -1,7 +1,7 @@
-"""Orquestra a escrita das notas .md no vault (checkpoints + conceitos).
+"""Writes the .md notes into the vault (checkpoints, concepts, runs, maps).
 
-O Obsidian lê arquivos .md diretamente — não precisa de plugin nem API. Os
-wikilinks [[Nome]] referenciam o STEM do arquivo (sem .md).
+Obsidian reads .md files directly — no plugin or API needed. Wikilinks [[Name]]
+reference the file STEM (without .md).
 """
 import os
 import re
@@ -18,16 +18,27 @@ from writer.concept_registry import ConceptRegistry, clean_concept_name
 from writer.llm_client import CheckpointNote, ConceptNote, LLMWriter
 from writer.minimap import render_minimap
 
+# Below this many episodes in a window, the signal is too noisy for strong claims.
+LOW_SIGNAL_EPISODES = 3
+
 
 def _one_line(text: str, max_len: int) -> str:
-    """1ª linha, sem markdown de cabeçalho/citação, truncada — p/ título/headline."""
+    """First line, no header/quote markdown, truncated — for title/headline."""
     s = str(text or "").strip()
     s = s.split("\n", 1)[0].lstrip("#> ").strip()
     return s[:max_len].strip()
 
 
+def _strip_citations(text: str) -> str:
+    """Remove fake citations small models invent: '(Report, p. ...)', '(2)'."""
+    s = str(text or "")
+    s = re.sub(r"\s*\((?:Report|Relat[óo]rio)[^)]*\)", "", s, flags=re.I)
+    s = re.sub(r"\s*\(\d{1,2}\)", "", s)  # standalone numeric ref markers (not "(25%)")
+    return re.sub(r"[ \t]{2,}", " ", s).strip()
+
+
 def _slug_concept(name: str) -> str:
-    """Nome do arquivo de uma nota de conceito (= alvo do wikilink, sem .md)."""
+    """File name of a concept note (= wikilink target, without .md)."""
     safe = re.sub(r"[^\w\s\-]", "", clean_concept_name(name)).strip()
     return f"Concept - {safe}"
 
@@ -49,14 +60,22 @@ class NoteWriter:
     def __init__(self, cfg: Config, button_names: List[str]) -> None:
         self.cfg = cfg
         self.button_names = button_names
-        self.llm = LLMWriter(model=cfg.llm_model, host=cfg.ollama_host)
+        self.llm = LLMWriter(
+            model=cfg.llm_model,
+            host=cfg.ollama_host,
+            num_ctx=cfg.llm_num_ctx,
+            num_predict=cfg.llm_num_predict,
+            keep_alive=cfg.llm_keep_alive,
+        )
 
+        self.dir_index = os.path.join(cfg.vault_path, cfg.dir_index)
         self.dir_ckpt = os.path.join(cfg.vault_path, cfg.dir_checkpoints)
         self.dir_concept = os.path.join(cfg.vault_path, cfg.dir_concepts)
         self.dir_runs = os.path.join(cfg.vault_path, cfg.dir_runs)
         self.dir_maps = os.path.join(cfg.vault_path, cfg.dir_maps)
+        self.dir_lessons = os.path.join(cfg.vault_path, cfg.dir_lessons)
         self.dir_attach = os.path.join(cfg.vault_path, cfg.dir_attachments)
-        for d in (self.dir_ckpt, self.dir_concept, self.dir_runs,
+        for d in (self.dir_index, self.dir_ckpt, self.dir_concept, self.dir_runs,
                   self.dir_maps, self.dir_attach):
             os.makedirs(d, exist_ok=True)
 
@@ -66,9 +85,17 @@ class NoteWriter:
         self._ckpt_index = 0
         self._last_ckpt_stem: Optional[str] = None
         self._seen_maps: set = set()
+        self._last_walls: list = []  # geometry is logged once per map; remember it
         self._ensure_run_note()
 
     # ------------------------------------------------------------------
+    def _task_label(self) -> str:
+        """Correct task description (campaign vs scenario) for the notes."""
+        if self.cfg.campaign:
+            wad = os.path.basename(self.cfg.wad_path) or "WAD"
+            return f"campaign · {wad} · maps {', '.join(self.cfg.maps)}"
+        return f"scenario {self.cfg.scenario}"
+
     def _ensure_run_note(self) -> None:
         path = os.path.join(self.dir_runs, f"{self.cfg.run_name}.md")
         if os.path.exists(path):
@@ -76,16 +103,17 @@ class NoteWriter:
         fm = _yaml_frontmatter(
             {
                 "type": "run",
-                "scenario": self.cfg.scenario,
+                "mode": "campaign" if self.cfg.campaign else "scenario",
+                "task": self._task_label(),
                 "created": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                 "tags": ["run", "doom-rl"],
             }
         )
         body = (
             f"# Run: {self.cfg.run_name}\n\n"
-            f"Treino PPO no cenário **{self.cfg.scenario}**.\n\n"
+            f"PPO training — **{self._task_label()}**.\n\n"
             f"## Checkpoints\n\n"
-            f"_As notas de checkpoint desta run aparecem aqui conforme o treino avança._\n"
+            f"_Checkpoint notes for this run appear here as training progresses._\n"
         )
         with open(path, "w", encoding="utf-8") as f:
             f.write(fm + "\n\n" + body)
@@ -96,24 +124,24 @@ class NoteWriter:
             f.write(f"- [[{ckpt_stem}]] — {headline}\n")
 
     def write_run_chart(self, snapshots: List[dict]) -> Optional[str]:
-        """Renderiza a curva de aprendizado da run e embute na nota da run."""
+        """Render the run's learning curve and embed it in the run note."""
         from writer.charts import render_learning_curve
 
-        img_name = f"{self.cfg.run_name}-curva.png"
+        img_name = f"{self.cfg.run_name}-curve.png"
         out = os.path.join(self.dir_attach, img_name)
         if not render_learning_curve(snapshots, out):
             return None
         path = os.path.join(self.dir_runs, f"{self.cfg.run_name}.md")
         with open(path, "a", encoding="utf-8") as f:
-            f.write(f"\n## Curva de aprendizado\n\n![[{img_name}]]\n")
+            f.write(f"\n## Learning curve\n\n![[{img_name}]]\n")
         return img_name
 
     def write_run_story(self, snapshots: List[dict]) -> Optional[str]:
-        """(A) Síntese narrativa da run inteira; linka da nota da run."""
+        """(A) Narrative synthesis of the whole run; linked from the run note."""
         if not snapshots:
             return None
 
-        # LLM conta o arco; se falhar, caímos num resumo factual mínimo.
+        # The LLM tells the arc; if it fails, fall back to a minimal factual summary.
         try:
             story = self.llm.generate_run_story(
                 self.cfg.run_name, snapshots, self.registry.names()
@@ -122,27 +150,31 @@ class NoteWriter:
             milestones, key_concepts = story.milestones, story.key_concepts
         except Exception:
             first, last = snapshots[0], snapshots[-1]
-            title = f"Síntese: {self.cfg.run_name}"
+            title = f"Synthesis: {self.cfg.run_name}"
             narrative = (
-                f"Run com {len(snapshots)} checkpoints, de "
-                f"{int(first.get('num_timesteps', 0)):,} a "
+                f"Run with {len(snapshots)} checkpoints, from "
+                f"{int(first.get('num_timesteps', 0)):,} to "
                 f"{int(last.get('num_timesteps', 0)):,} steps. "
-                f"Precisão de tiro foi de {first.get('shooting_accuracy', 0):.0%} "
-                f"para {last.get('shooting_accuracy', 0):.0%}; recompensa média de "
-                f"{first.get('mean_reward', 0):.1f} para {last.get('mean_reward', 0):.1f}."
+                f"Shooting accuracy went from {first.get('shooting_accuracy', 0):.0%} "
+                f"to {last.get('shooting_accuracy', 0):.0%}; mean reward from "
+                f"{first.get('mean_reward', 0):.1f} to {last.get('mean_reward', 0):.1f}."
             )
             milestones, key_concepts = [], []
 
-        # Linka conceitos existentes pelo nome canônico (sem criar novos aqui).
+        # Link existing concepts by canonical name (matched by stable slug id).
         concept_links = [
             _slug_concept(self.registry.canonical(c))
             for c in key_concepts
             if self.registry.exists(c)
         ]
-        concepts_md = "\n".join(f"- [[{c}]]" for c in dict.fromkeys(concept_links)) or "_(nenhum)_"
-        milestones_md = "\n".join(f"- {m}" for m in milestones) or "_(n/d)_"
+        # Fallback: if nothing matched, link the most-mentioned concepts of the vault
+        # so the synthesis is never an orphan node.
+        if not concept_links:
+            concept_links = [_slug_concept(n) for n in self.registry.top(6)]
+        concepts_md = "\n".join(f"- [[{c}]]" for c in dict.fromkeys(concept_links)) or "_(none)_"
+        milestones_md = "\n".join(f"- {m}" for m in milestones) or "_(n/a)_"
 
-        stem = f"{self.cfg.run_name} - Síntese"
+        stem = f"{self.cfg.run_name} - Synthesis"
         fm = _yaml_frontmatter(
             {
                 "type": "synthesis",
@@ -156,24 +188,72 @@ class NoteWriter:
             f"# {title}\n\n"
             f"**Run:** [[{self.cfg.run_name}]]\n\n"
             f"{narrative}\n\n"
-            f"## Marcos do treino\n\n{milestones_md}\n\n"
-            f"## Conceitos centrais\n\n{concepts_md}\n"
+            f"## Milestones\n\n{milestones_md}\n\n"
+            f"## Core concepts\n\n{concepts_md}\n"
         )
         with open(os.path.join(self.dir_runs, f"{stem}.md"), "w", encoding="utf-8") as f:
             f.write(fm + "\n\n" + body)
 
         run_path = os.path.join(self.dir_runs, f"{self.cfg.run_name}.md")
         with open(run_path, "a", encoding="utf-8") as f:
-            f.write(f"\n## Síntese\n\n- [[{stem}]]\n")
+            f.write(f"\n## Synthesis\n\n- [[{stem}]]\n")
         return stem
 
     # ------------------------------------------------------------------
+    def _stems_in(self, directory: str, exclude: str = "") -> List[str]:
+        """Wikilink stems of the .md notes in a vault folder (for the MOC hub)."""
+        if not os.path.isdir(directory):
+            return []
+        out = []
+        for fname in sorted(os.listdir(directory)):
+            if fname.endswith(".md"):
+                stem = fname[:-3]
+                if not exclude or exclude not in stem:
+                    out.append(stem)
+        return out
+
+    def write_knowledge_hub(self) -> str:
+        """(Phase 2) A Map-of-Content note that connects runs, maps, concepts and
+        lessons — so the Graph View becomes one connected network, not islands."""
+        runs = [s for s in self._stems_in(self.dir_runs) if not s.endswith("- Synthesis")]
+        syntheses = [s for s in self._stems_in(self.dir_runs) if s.endswith("- Synthesis")]
+        maps = self._stems_in(self.dir_maps)
+        concepts = [_slug_concept(n) for n in self.registry.top(12)]
+        lessons_exists = os.path.exists(os.path.join(self.dir_lessons, "Lessons.md"))
+
+        def section(title, stems):
+            if not stems:
+                return ""
+            links = "\n".join(f"- [[{s}]]" for s in stems)
+            return f"## {title}\n\n{links}\n\n"
+
+        fm = _yaml_frontmatter({
+            "type": "moc",
+            "updated": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "tags": ["moc", "index", "doom-rl"],
+        })
+        body = (
+            "# 🔥 HeLLMind — Knowledge Graph\n\n"
+            "Hub connecting everything the agent has learned and documented.\n\n"
+            + section("Runs", runs)
+            + section("Run syntheses", syntheses)
+            + section("Maps", maps)
+            + section("Core concepts", concepts)
+            + ("## Lessons\n\n- [[Lessons]]\n\n" if lessons_exists else "")
+            + ("## Control\n\n- [[control]] — edit to steer training live\n" )
+        )
+        path = os.path.join(self.dir_index, "Knowledge Graph.md")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(fm + "\n\n" + body)
+        return path
+
+    # ------------------------------------------------------------------
     def _map_stem(self, doom_map: str) -> str:
-        """Stem (alvo de wikilink) da nota de um mapa, ex.: 'Map - MAP01'."""
+        """Stem (wikilink target) of a map note, e.g. 'Map - MAP01'."""
         return f"Map - {doom_map}"
 
     def _ensure_map_note(self, doom_map: str) -> str:
-        """Cria a nota do mapa (uma por mapa) se ainda não existir; retorna o stem."""
+        """Create the map note (one per map) if missing; return the stem."""
         stem = self._map_stem(doom_map)
         path = os.path.join(self.dir_maps, f"{stem}.md")
         if doom_map in self._seen_maps or os.path.exists(path):
@@ -189,9 +269,9 @@ class NoteWriter:
             }
         )
         body = (
-            f"# Mapa: {doom_map}\n\n"
-            f"Progresso do agente no mapa **{doom_map}** (run [[{self.cfg.run_name}]]).\n\n"
-            f"## Checkpoints neste mapa\n\n"
+            f"# Map: {doom_map}\n\n"
+            f"Agent progress on map **{doom_map}** (run [[{self.cfg.run_name}]]).\n\n"
+            f"## Checkpoints on this map\n\n"
         )
         with open(path, "w", encoding="utf-8") as f:
             f.write(fm + "\n\n" + body)
@@ -204,11 +284,16 @@ class NoteWriter:
             f.write(f"- [[{ckpt_stem}]] — {headline}\n")
 
     # ------------------------------------------------------------------
-    def _ensure_concept_note(self, name: str, description: str, created_step: int) -> str:
-        """Cria a nota de conceito se for nova; retorna o stem (alvo do wikilink).
+    def _ensure_concept_note(
+        self, name: str, description: str, created_step: int, use_llm: bool = True
+    ) -> str:
+        """Create the concept note if new; return the stem (wikilink target).
 
-        O stem usa o nome CANÔNICO (1º visto) e a nota carrega um `id` estável,
-        então variações de título do LLM não duplicam o arquivo (Passo 3).
+        The stem uses the CANONICAL name (first seen) and the note carries a stable
+        `id`, so small title variations from the LLM don't duplicate the file.
+
+        `use_llm=False` writes a cheap stub (no Ollama call) — used to cap LLM cost
+        for referenced/overflow concepts; the stub can be enriched on a later run.
         """
         is_new = self.registry.register(name, created_step)
         canonical = self.registry.canonical(name)
@@ -218,17 +303,26 @@ class NoteWriter:
         if not is_new or os.path.exists(path):
             return stem
 
-        # Conceito genuinamente novo: pede ao LLM uma nota atemporal.
-        try:
-            note: ConceptNote = self.llm.generate_concept(canonical, description)
-            summary, manifestation = note.summary, note.manifestation_in_doom
-            related, tags = note.related, note.tags
-        except Exception:
-            # Fallback robusto: nunca derruba o pipeline por causa da nota.
+        # Genuinely new concept: ask the LLM for a timeless note (unless capped).
+        if use_llm:
+            try:
+                note: ConceptNote = self.llm.generate_concept(canonical, description)
+                summary, manifestation = note.summary, note.manifestation_in_doom
+                related, tags = note.related, note.tags
+            except Exception:
+                # Robust fallback: a note never crashes the pipeline.
+                summary, manifestation = description, ""
+                related, tags = [], ["concept"]
+        else:
             summary, manifestation = description, ""
-            related, tags = [], ["concept"]
+            related, tags = [], ["concept", "stub"]
 
-        related_links = "\n".join(f"- [[{_slug_concept(r)}]]" for r in related)
+        # Only link related concepts that already exist (avoid orphan/grey links).
+        related_links = "\n".join(
+            f"- [[{_slug_concept(self.registry.canonical(r))}]]"
+            for r in related
+            if self.registry.exists(r)
+        ) or "_(none yet)_"
         fm = _yaml_frontmatter(
             {
                 "type": "concept",
@@ -240,8 +334,8 @@ class NoteWriter:
         body = (
             f"# {canonical}\n\n"
             f"{summary}\n\n"
-            f"## No treino (Doom)\n\n{manifestation}\n\n"
-            f"## Relacionados\n\n{related_links}\n"
+            f"## In training (Doom)\n\n{manifestation}\n\n"
+            f"## Related\n\n{related_links}\n"
         )
         with open(path, "w", encoding="utf-8") as f:
             f.write(fm + "\n\n" + body)
@@ -251,35 +345,35 @@ class NoteWriter:
     def _fallback_checkpoint_note(
         self, snapshot: dict, previous: Optional[dict]
     ) -> CheckpointNote:
-        """Nota factual quando o LLM não está disponível — o projeto funciona sem Ollama."""
+        """Factual note when the LLM is unavailable — the project works without Ollama."""
         reward = snapshot.get("mean_reward", 0.0)
         acc = snapshot.get("shooting_accuracy", 0.0)
         kills = snapshot.get("kills_per_episode", 0.0)
         step = int(snapshot.get("num_timesteps", 0))
         evidence = [
-            f"Recompensa média/episódio: {reward:.2f}",
-            f"Precisão de tiro: {acc:.0%} "
+            f"Mean reward/episode: {reward:.2f}",
+            f"Shooting accuracy: {acc:.0%} "
             f"({int(snapshot.get('shots_hit', 0))}/{int(snapshot.get('shots_fired', 0))})",
-            f"Kills/episódio: {kills:.2f}",
-            f"Dano causado/tomado: {snapshot.get('damage_dealt', 0):.0f}/"
+            f"Kills/episode: {kills:.2f}",
+            f"Damage dealt/taken: {snapshot.get('damage_dealt', 0):.0f}/"
             f"{snapshot.get('damage_taken', 0):.0f}",
-            f"Distância/episódio: {snapshot.get('distance_per_episode', 0):.0f} u",
+            f"Distance/episode: {snapshot.get('distance_per_episode', 0):.0f} u",
         ]
         return CheckpointNote(
             title=f"Checkpoint @ {step:,} steps",
-            headline=f"Recompensa {reward:.1f}, precisão {acc:.0%}, {kills:.1f} kills/ep.",
+            headline=f"Reward {reward:.1f}, accuracy {acc:.0%}, {kills:.1f} kills/ep.",
             behavior_change=(
-                "_Resumo factual gerado SEM o LLM. Para a narrativa interpretativa, "
-                "suba o `ollama serve` e rode `python -m writer.process_run`._"
+                "_Factual summary generated WITHOUT the LLM. For the interpretive "
+                "narrative, start `ollama serve` and run `python -m writer.process_run`._"
             ),
             evidence=evidence,
             linked_concepts=[],
             new_concepts=[],
-            tags=["sem-llm"],
+            tags=["no-llm"],
         )
 
     def write_checkpoint(self, snapshot: dict, previous: Optional[dict]) -> str:
-        """Gera e grava uma nota de checkpoint. Retorna o stem do arquivo criado."""
+        """Generate and write a checkpoint note. Returns the created file stem."""
         try:
             note: CheckpointNote = self.llm.generate_checkpoint(
                 snapshot=snapshot,
@@ -288,35 +382,46 @@ class NoteWriter:
                 button_names=self.button_names,
             )
         except Exception:
-            # Ollama indisponível/erro -> nota factual (não derruba o pipeline).
+            # Ollama unavailable/error -> factual note (never crash the pipeline).
             note = self._fallback_checkpoint_note(snapshot, previous)
 
-        # Blindagem: modelos pequenos às vezes despejam o relatório inteiro no
-        # título/headline. Mantém só a 1ª linha, sem markdown, truncada.
+        # Hardening: small models sometimes dump the whole report into the
+        # title/headline. Keep only the first line, no markdown, truncated.
         note.title = _one_line(note.title, 90) or f"Checkpoint @ {snapshot['num_timesteps']:,}"
         note.headline = _one_line(note.headline, 180) or note.title
+        note.behavior_change = _strip_citations(note.behavior_change)
 
         step = snapshot["num_timesteps"]
         self._ckpt_index += 1
         stem = f"CKPT-{self._ckpt_index:04d}-step{step}"
         path = os.path.join(self.dir_ckpt, f"{stem}.md")
 
-        # Garante notas de conceito (existentes -> touch; novos -> cria).
+        # Ensure concept notes (existing -> touch; new -> create). To cap Ollama
+        # cost, only the first few NEW concepts get an LLM-written body; the rest
+        # (and linked-but-missing ones) are cheap stubs, enriched on a later run.
         concept_links: List[str] = []
+        llm_budget = self.cfg.max_new_concepts_per_ckpt
         for cname in note.linked_concepts:
             if self.registry.exists(cname):
                 self.registry.touch(cname)
                 concept_links.append(_slug_concept(self.registry.canonical(cname)))
             else:
-                # LLM linkou algo que não existe ainda: cria com descrição mínima.
+                # Linked something that doesn't exist yet: cheap stub.
                 concept_links.append(
-                    self._ensure_concept_note(cname, f"Conceito referenciado em {stem}.", step)
+                    self._ensure_concept_note(
+                        cname, f"Concept referenced in {stem}.", step, use_llm=False
+                    )
                 )
         for nc in note.new_concepts:
-            concept_links.append(self._ensure_concept_note(nc.name, nc.description, step))
+            use_llm = llm_budget > 0
+            if use_llm:
+                llm_budget -= 1
+            concept_links.append(
+                self._ensure_concept_note(nc.name, nc.description, step, use_llm=use_llm)
+            )
 
-        # (D) Detecção de regressão: se uma métrica despencou, destaca e linka o
-        # conceito "Catastrophic Forgetting" automaticamente.
+        # (D) Regression detection: if a metric dropped sharply, highlight it and link
+        # the "Catastrophic Forgetting" concept automatically.
         regressions = detect_regressions(snapshot, previous)
         if regressions:
             cf_stem = self._ensure_concept_note(
@@ -324,33 +429,35 @@ class NoteWriter:
             )
             concept_links.append(cf_stem)
 
-        concept_links = list(dict.fromkeys(concept_links))  # dedup preservando ordem
+        concept_links = list(dict.fromkeys(concept_links))  # dedup, keep order
 
-        # Strip de bullet/anotações que modelos pequenos copiam do fact-sheet.
+        # Strip bullets/annotations that small models copy from the fact sheet.
         def _clean_ev(e: str) -> str:
             e = str(e).lstrip("-•* ").strip()
-            # remove a anotação "(1º checkpoint)" que o modelo copia do fact-sheet
-            e = re.sub(r"\s*\((?:1º|primeiro)\s+checkpoint\)\.?", "", e, flags=re.I)
+            e = re.sub(r"\s*\((?:1st|first|1º|primeiro)\s+checkpoint\)\.?", "", e, flags=re.I)
+            e = _strip_citations(e)
             return re.sub(r"\s{2,}", " ", e).strip()
 
         evidence_md = "\n".join(f"- {_clean_ev(e)}" for e in note.evidence if str(e).strip())
-        concepts_md = "\n".join(f"- [[{c}]]" for c in concept_links) or "_(nenhum)_"
-        prev_link = f"[[{self._last_ckpt_stem}]]" if self._last_ckpt_stem else "_(primeiro)_"
+        concepts_md = "\n".join(f"- [[{c}]]" for c in concept_links) or "_(none)_"
+        prev_link = f"[[{self._last_ckpt_stem}]]" if self._last_ckpt_stem else "_(first)_"
         dist = snapshot.get("action_distribution", {})
         dist_md = "\n".join(f"- `{k}`: {v:.1%}" for k, v in dist.items())
 
-        # Modo campanha: nota do mapa + link bidirecional.
+        # Campaign mode: map note + bidirectional link.
         doom_map = snapshot.get("map") or ""
         map_link = ""
         if doom_map:
             map_stem = self._ensure_map_note(doom_map)
-            map_link = f"  |  **Mapa:** [[{map_stem}]]"
+            map_link = f"  |  **Map:** [[{map_stem}]]"
+
+        low_signal = int(snapshot.get("episodes", 0)) < LOW_SIGNAL_EPISODES
 
         fm_fields = {
             "type": "checkpoint",
             "id": stem,
             "run": self.cfg.run_name,
-            "scenario": self.cfg.scenario,
+            "mode": "campaign" if self.cfg.campaign else "scenario",
             "timesteps": step,
             "created": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "mean_reward": round(snapshot.get("mean_reward", 0.0), 3),
@@ -362,85 +469,101 @@ class NoteWriter:
             "distance_per_episode": round(snapshot.get("distance_per_episode", 0.0), 1),
             "tags": list(dict.fromkeys((note.tags or []) + ["checkpoint", "doom-rl"])),
         }
-        if doom_map:
-            fm_fields["map"] = doom_map
-            fm_fields["success_rate"] = round(snapshot.get("success_rate", 0.0), 3)
+        if self.cfg.campaign:
+            if doom_map:
+                fm_fields["map"] = doom_map
+                fm_fields["success_rate"] = round(snapshot.get("success_rate", 0.0), 3)
+        else:
+            fm_fields["scenario"] = self.cfg.scenario
+        if low_signal:
+            fm_fields["low_signal"] = True
         if regressions:
             fm_fields["regression"] = True
             fm_fields["tags"] = list(dict.fromkeys(fm_fields["tags"] + ["regression"]))
         fm = _yaml_frontmatter(fm_fields)
 
-        # Callout de regressão (Obsidian renderiza `> [!warning]`).
+        # Low-signal caveat (few episodes -> noisy; don't over-read the narrative).
+        low_signal_md = ""
+        if low_signal:
+            low_signal_md = (
+                f"> [!note] Low signal — only {int(snapshot.get('episodes', 0))} "
+                "episode(s) in this window; treat the narrative as tentative.\n\n"
+            )
+
+        # Regression callout (Obsidian renders `> [!warning]`).
         regression_md = ""
         if regressions:
             bullets = "\n".join(f"> - {r}" for r in regressions)
             regression_md = (
-                "> [!warning] Regressão detectada\n"
-                f"> Possível esquecimento — ver [[{_slug_concept(FORGETTING_CONCEPT)}]].\n"
+                "> [!warning] Regression detected\n"
+                f"> Possible forgetting — see [[{_slug_concept(FORGETTING_CONCEPT)}]].\n"
                 f"{bullets}\n\n"
             )
 
         success_md = ""
         if doom_map:
             success_md = (
-                f"## Progresso no mapa {doom_map}\n\n"
-                f"- Taxa de conclusão (sucesso): "
+                f"## Map progress ({doom_map})\n\n"
+                f"- Completion (success) rate: "
                 f"{snapshot.get('success_rate', 0.0):.1%}\n\n"
             )
 
-        # Pontaria (acertos x erros) e exploração do mapa (caminho percorrido).
+        # Aim (hits vs misses) and map exploration (path taken).
         cov = snapshot.get("map_coverage", {}) or {}
         weapons = snapshot.get("weapons_used", {}) or {}
         weapons_md = (
-            ", ".join(f"`{k}` {v:.0%}" for k, v in weapons.items()) or "_(n/d)_"
+            ", ".join(f"`{k}` {v:.0%}" for k, v in weapons.items()) or "_(n/a)_"
         )
         aim_md = (
-            "## Pontaria e exploração\n\n"
-            f"- Tiros: {snapshot.get('shots_fired', 0):.0f} disparados, "
-            f"{snapshot.get('shots_hit', 0):.0f} acertos, "
-            f"{snapshot.get('shots_missed', 0):.0f} erros "
-            f"(**precisão {snapshot.get('shooting_accuracy', 0.0):.0%}**)\n"
-            f"- Caminho: {snapshot.get('distance_traveled', 0.0):,.0f} u no total, "
-            f"{snapshot.get('distance_per_episode', 0.0):,.0f} u/episódio\n"
-            f"- Exploração: {int(snapshot.get('cells_visited', 0))} células visitadas "
-            f"(~{cov.get('explored_fraction', 0.0):.0%} da área percorrida)\n"
-            f"- Armas usadas: {weapons_md}\n\n"
+            "## Aim & exploration\n\n"
+            f"- Shots: {snapshot.get('shots_fired', 0):.0f} fired, "
+            f"{snapshot.get('shots_hit', 0):.0f} hits, "
+            f"{snapshot.get('shots_missed', 0):.0f} misses "
+            f"(**accuracy {snapshot.get('shooting_accuracy', 0.0):.0%}**)\n"
+            f"- Path: {snapshot.get('distance_traveled', 0.0):,.0f} u total, "
+            f"{snapshot.get('distance_per_episode', 0.0):,.0f} u/episode\n"
+            f"- Exploration: {int(snapshot.get('cells_visited', 0))} cells visited "
+            f"(~{cov.get('explored_fraction', 0.0):.0%} of the traversed area)\n"
+            f"- Weapons used: {weapons_md}\n\n"
         )
 
-        # Minimapa do caminho percorrido (heatmap de visitas) -> attachments/.
+        # Level minimap with the path taken (heatmap) -> attachments/.
         minimap_md = ""
         path_cells = snapshot.get("path_cells") or []
+        # Walls are logged once per map; reuse the last seen ones when deduped.
+        if snapshot.get("map_walls"):
+            self._last_walls = snapshot["map_walls"]
         if path_cells:
             img_name = f"{stem}.png"
             try:
                 if render_minimap(
                     path_cells,
                     os.path.join(self.dir_attach, img_name),
-                    walls=snapshot.get("map_walls"),
+                    walls=self._last_walls,
                 ):
                     minimap_md = (
-                        "## Minimapa do nível (caminho percorrido)\n\n"
+                        "## Level minimap (path taken)\n\n"
                         f"![[{img_name}]]\n\n"
-                        "_Paredes reais do mapa; mais quente = onde o agente passou "
-                        "mais tempo._\n\n"
+                        "_Real level walls; hotter = where the agent spent more time._\n\n"
                     )
             except Exception:
-                minimap_md = ""  # imagem é opcional; nunca derruba a nota
+                minimap_md = ""  # image is optional; never crash the note
 
         body = (
             f"# {note.title}\n\n"
             f"> {note.headline}\n\n"
-            f"**Run:** [[{self.cfg.run_name}]]  |  **Anterior:** {prev_link}"
+            f"**Run:** [[{self.cfg.run_name}]]  |  **Previous:** {prev_link}"
             f"{map_link}  |  **Timesteps:** {step:,}\n\n"
+            f"{low_signal_md}"
             f"{regression_md}"
             f"{success_md}"
-            f"## O que mudou no comportamento\n\n{note.behavior_change}\n\n"
-            f"## Evidências\n\n{evidence_md}\n\n"
+            f"## What changed in behavior\n\n{note.behavior_change}\n\n"
+            f"## Evidence\n\n{evidence_md}\n\n"
             f"{aim_md}"
             f"{minimap_md}"
-            f"## Distribuição de ações (entropia norm. "
+            f"## Action distribution (norm. entropy "
             f"{snapshot.get('action_entropy_normalized', 0.0):.2f})\n\n{dist_md}\n\n"
-            f"## Conceitos de RL\n\n{concepts_md}\n"
+            f"## RL concepts\n\n{concepts_md}\n"
         )
         with open(path, "w", encoding="utf-8") as f:
             f.write(fm + "\n\n" + body)

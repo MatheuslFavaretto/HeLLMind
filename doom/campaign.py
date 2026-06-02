@@ -1,16 +1,16 @@
-"""Modo CAMPANHA: jogar mapas completos de um WAD (Doom 1 / Freedoom), em ordem.
+"""CAMPAIGN mode: play full WAD maps (Doom 1 / Freedoom), in order.
 
-Diferente dos cenários do ViZDoom (objetivo único e curto), aqui carregamos um
-WAD com mapas de verdade (MAP01.., ou E1M1.. no doom.wad original) e treinamos o
-agente a "completar e seguir para o próximo".
+Unlike the ViZDoom scenarios (single, short objective), here we load a WAD with real
+maps (MAP01.., or E1M1.. in the original doom.wad) and train the agent to "complete
+and move on to the next".
 
-Decisões desta POC (escolhidas pelo usuário):
-- "Completar" = sobreviver E/OU matar X inimigos (critério de sucesso, usado em
-  reward shaping e logging).
-- Avanço entre mapas = SEQUENCIAL POR TIMESTEPS (ver MapCurriculumCallback).
+Design decisions:
+- "Complete" = survive AND/OR kill X enemies (success criterion, used in reward
+  shaping and logging).
+- Advancing between maps = SEQUENTIAL BY TIMESTEPS (see MapCurriculumCallback).
 
-O env emite `info["doom"]` no MESMO formato do env de cenário (deltas/levels/action)
-para reaproveitar o StatsTracker, e adiciona `info["map"]` e `info["doom"]["success"]`.
+The env emits `info["doom"]` in the SAME format as the scenario env (deltas/levels/
+action) to reuse the StatsTracker, plus `info["map"]` and `info["doom"]["success"]`.
 """
 import os
 from typing import Any, Dict, List, Optional, Tuple
@@ -25,30 +25,30 @@ from doom.env import HIT_REWARD, MISS_PENALTY
 from doom.geometry import read_wall_segments
 from instrumentation.game_vars import LEVELS, MONOTONIC, TRACKED_VARS, VAR_NAMES
 
-# Botões necessários para ATRAVESSAR um mapa (mover, virar, atirar, usar portas).
+# Buttons needed to TRAVERSE a map (move, turn, shoot, open doors).
 CAMPAIGN_BUTTONS = [
     vzd.Button.MOVE_FORWARD,
     vzd.Button.MOVE_BACKWARD,
     vzd.Button.TURN_LEFT,
     vzd.Button.TURN_RIGHT,
     vzd.Button.ATTACK,
-    vzd.Button.USE,                  # abrir portas / acionar a saída do nível
+    vzd.Button.USE,                  # open doors / trigger the level exit
     vzd.Button.SPEED,
-    vzd.Button.SELECT_NEXT_WEAPON,   # trocar de arma (gera variedade de armas)
+    vzd.Button.SELECT_NEXT_WEAPON,   # switch weapons (creates weapon variety)
 ]
 
 
 def default_wad() -> str:
-    """WAD padrão: o freedoom2.wad que vem embutido no ViZDoom (gratuito/legal).
+    """Default WAD: the freedoom2.wad bundled with ViZDoom (free/legal).
 
-    Ele fica na raiz do pacote vizdoom (ao lado de scenarios/), não dentro de
+    It lives at the root of the vizdoom package (next to scenarios/), not inside
     scenarios/.
     """
     return os.path.join(os.path.dirname(vzd.scenarios_path), "freedoom2.wad")
 
 
 class CampaignDoomEnv(gym.Env):
-    """Joga um mapa completo de um WAD. O mapa pode ser trocado em runtime."""
+    """Plays a full WAD map. The map can be switched at runtime."""
 
     metadata = {"render_modes": []}
 
@@ -58,19 +58,24 @@ class CampaignDoomEnv(gym.Env):
         doom_map: str = "MAP01",
         frame_skip: int = 4,
         resolution: Tuple[int, int] = (84, 84),
-        episode_timeout: int = 2100,   # ticks (~60s a 35fps) para não travar
+        episode_timeout: int = 2100,   # ticks (~60s at 35fps) so it doesn't hang
         kills_to_clear: int = 5,
         window_visible: bool = False,
+        rewards: Optional[Dict[str, float]] = None,
     ) -> None:
         super().__init__()
         self.frame_skip = frame_skip
         self.width, self.height = resolution
         self.kills_to_clear = kills_to_clear
+        r = rewards or {}
+        self._hit_reward = float(r.get("hit_reward", HIT_REWARD))
+        self._miss_penalty = float(r.get("miss_penalty", MISS_PENALTY))
+        self._damage_penalty = float(r.get("damage_taken_penalty", 0.1))
         self._current_map = doom_map
         self._pending_map: Optional[str] = None
 
         game = vzd.DoomGame()
-        # IWAD completo (freedoom2.wad / doom.wad) -> game path; mapas via set_doom_map.
+        # Full IWAD (freedoom2.wad / doom.wad) -> game path; maps via set_doom_map.
         game.set_doom_game_path(wad_path)
         game.set_doom_map(doom_map)
         game.set_screen_format(vzd.ScreenFormat.GRAY8)
@@ -84,8 +89,8 @@ class CampaignDoomEnv(gym.Env):
         game.set_episode_timeout(episode_timeout)
         game.set_available_buttons(CAMPAIGN_BUTTONS)
         game.set_available_game_variables(TRACKED_VARS)
-        game.set_sectors_info_enabled(True)  # geometria do mapa p/ o minimapa real
-        # Recompensas internas do ViZDoom: vivo é bom, morrer é ruim.
+        game.set_sectors_info_enabled(True)  # map geometry for the real minimap
+        # ViZDoom's built-in rewards: being alive is good, dying is bad.
         game.set_living_reward(0.01)
         game.set_death_penalty(100.0)
         game.init()
@@ -106,11 +111,11 @@ class CampaignDoomEnv(gym.Env):
             low=0, high=255, shape=(self.height, self.width, 1), dtype=np.uint8
         )
         self._last_vars: Optional[Dict[str, float]] = None
-        self._walls_pending = True  # envia paredes 1x por mapa (re-arma na troca)
+        self._walls_pending = True  # send walls once per map (re-armed on switch)
 
     # ------------------------------------------------------------------
     def set_map(self, doom_map: str) -> None:
-        """Agenda troca de mapa; aplica no próximo reset (usado pelo currículo)."""
+        """Schedule a map switch; applied on the next reset (used by the curriculum)."""
         self._pending_map = doom_map
 
     @property
@@ -145,9 +150,10 @@ class CampaignDoomEnv(gym.Env):
             self.game.set_doom_map(self._pending_map)
             self._current_map = self._pending_map
             self._pending_map = None
-            self._walls_pending = True  # mapa novo -> reenvia a geometria
+            self._walls_pending = True  # new map -> resend the geometry
         self.game.new_episode()
         self._last_vars = self._read_raw_vars()
+        self._ep_base = 0.0  # native (unshaped) return, for fair A/B eval
         return self._get_obs(), {"map": self._current_map}
 
     def step(
@@ -155,6 +161,7 @@ class CampaignDoomEnv(gym.Env):
     ) -> Tuple[np.ndarray, float, bool, bool, Dict[str, Any]]:
         buttons = self.actions[int(action)]
         base_reward = self.game.make_action(buttons, self.frame_skip)
+        self._ep_base += base_reward
         done = self.game.is_episode_finished()
 
         if not done:
@@ -172,20 +179,21 @@ class CampaignDoomEnv(gym.Env):
             levels = {n: self._last_vars[n] for n in LEVELS}
             obs = np.zeros(self.observation_space.shape, dtype=np.uint8)
 
-        # Reward shaping: kills positivos, dano tomado negativo, + pontaria.
-        shaped = base_reward + 5.0 * deltas["killcount"] - 0.1 * deltas["damage_taken"]
-        shaped += HIT_REWARD * deltas["hitcount"]
+        # Reward shaping: kills positive, damage taken negative, + aim.
+        shaped = base_reward + 5.0 * deltas["killcount"]
+        shaped -= self._damage_penalty * deltas["damage_taken"]
+        shaped += self._hit_reward * deltas["hitcount"]
         attacked = self._attack_idx is not None and int(action) == self._attack_idx
         if attacked and deltas["hitcount"] == 0 and not done:
-            shaped -= MISS_PENALTY
+            shaped -= self._miss_penalty
 
-        # "Completou" = terminou o episódio sem ter morrido (chegou na saída / sobreviveu
-        # ao timeout) OU já bateu a cota de kills no episódio.
+        # "Completed" = the episode ended without dying (reached the exit / survived
+        # the timeout) OR already hit the kill quota in the episode.
         alive = levels["health"] > 0
         kills_total = self._last_vars.get("killcount", 0.0) if self._last_vars else 0.0
         success = bool(done and alive) or (kills_total >= self.kills_to_clear)
         if done and alive:
-            shaped += 100.0  # bônus por concluir o mapa vivo
+            shaped += 100.0  # bonus for completing the map alive
 
         doom = {
             "deltas": deltas,
@@ -193,6 +201,12 @@ class CampaignDoomEnv(gym.Env):
             "action": int(action),
             "success": success,
         }
+        if done:
+            doom["terminal"] = (
+                "death" if self.game.is_player_dead()
+                else ("success" if success else "timeout")
+            )
+            doom["base_return"] = self._ep_base  # native episode return (no shaping)
         if self._walls_pending:
             doom["walls"] = read_wall_segments(self.game)
             self._walls_pending = False
@@ -212,8 +226,9 @@ def make_campaign_env(
     seed: int,
     rank: int,
     window_visible: bool = False,
+    rewards: Optional[Dict[str, float]] = None,
 ):
-    """Factory para SubprocVecEnv/DummyVecEnv."""
+    """Factory for SubprocVecEnv/DummyVecEnv."""
 
     def _init():
         env = CampaignDoomEnv(
@@ -224,6 +239,7 @@ def make_campaign_env(
             episode_timeout=episode_timeout,
             kills_to_clear=kills_to_clear,
             window_visible=window_visible,
+            rewards=rewards,
         )
         env.reset(seed=seed + rank)
         return env
@@ -232,7 +248,7 @@ def make_campaign_env(
 
 
 def campaign_metadata(wad_path: str, doom_map: str) -> Dict[str, Any]:
-    """Descobre nomes de botões/nº de ações sem subir o treino."""
+    """Discover button names / action count without booting training."""
     env = CampaignDoomEnv(wad_path=wad_path, doom_map=doom_map)
     meta = {"button_names": list(env.button_names), "num_actions": int(env.action_space.n)}
     env.close()

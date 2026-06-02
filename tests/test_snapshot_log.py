@@ -1,4 +1,4 @@
-"""SnapshotLog: round-trip, sanitização de tipos numpy e meta sidecar."""
+"""SnapshotLog: round-trip, numpy-type sanitization, and meta sidecar."""
 import os
 
 import numpy as np
@@ -34,7 +34,7 @@ def test_append_and_read_all(tmp_path):
 def test_init_truncates_previous_run(tmp_path):
     p = os.path.join(tmp_path, "run.jsonl")
     SnapshotLog(p).append({"a": 1})
-    SnapshotLog(p)  # nova run -> zera o arquivo
+    SnapshotLog(p)  # new run -> truncates the file
     assert SnapshotLog.read_all(p) == []
 
 

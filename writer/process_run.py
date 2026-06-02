@@ -1,16 +1,17 @@
-"""Pós-processamento: lê os snapshots coletados no treino e gera as notas.
+"""Post-processing: read the snapshots collected during training and write the notes.
 
-Roda DEPOIS do treino (o `rl.train` chama isto automaticamente no fim), então o
-Ollama nunca trava o loop do PPO. Também dá pra rodar à mão:
+Runs AFTER training (rl.train calls this automatically at the end), so Ollama never
+blocks the PPO loop. You can also run it by hand:
 
-    python -m writer.process_run                 # processa a run do .env (RUN_NAME)
-    python -m writer.process_run --run NOME      # processa uma run específica
-    python -m writer.process_run --model qwen2.5:7b   # usa um modelo melhor p/ as notas
+    python -m writer.process_run                 # process the .env run (RUN_NAME)
+    python -m writer.process_run --run NAME       # a specific run
+    python -m writer.process_run --model qwen2.5:7b   # use a better model for notes
 
-Como o LLM agora roda em lote, vale usar um modelo MAIOR aqui (ex.: qwen2.5:7b):
-o treino já acabou, então não há custo de velocidade — só notas melhores.
+Since the LLM now runs in batch, it's worth using a BIGGER model here (e.g. qwen2.5:7b):
+training is over, so there's no speed cost — just better notes.
 """
 import argparse
+import os
 from typing import List, Optional
 
 from config import Config
@@ -28,16 +29,16 @@ def process_run(
     button_names: List[str],
     log_path: Optional[str] = None,
 ) -> int:
-    """Gera as notas de todos os snapshots da run. Retorna quantas notas escreveu."""
+    """Generate notes for all of the run's snapshots. Returns how many were written."""
     log_path = log_path or log_path_for(cfg.pending_dir, cfg.run_name)
     snaps = SnapshotLog.read_all(log_path)
     if not snaps:
-        print(f"[process_run] nenhum snapshot em {log_path} — nada a gerar.")
+        print(f"[process_run] no snapshots at {log_path} — nothing to generate.")
         return 0
 
     print(
-        f"[process_run] {len(snaps)} snapshot(s) | modelo: {cfg.llm_model} | "
-        f"vault: {cfg.vault_path}\n[process_run] gerando notas (pode levar um tempo)..."
+        f"[process_run] {len(snaps)} snapshot(s) | model: {cfg.llm_model} | "
+        f"vault: {cfg.vault_path}\n[process_run] generating notes (may take a while)..."
     )
     writer = NoteWriter(cfg, button_names=button_names)
     previous = None
@@ -47,37 +48,62 @@ def process_run(
             stem = writer.write_checkpoint(snap, previous=previous)
             written += 1
             print(f"[process_run] {i}/{len(snaps)} -> {stem}")
-        except Exception as e:  # uma nota ruim não derruba o resto
+        except Exception as e:  # one bad note doesn't kill the rest
             print(
-                f"[process_run] {i}/{len(snaps)} FALHOU "
+                f"[process_run] {i}/{len(snaps)} FAILED "
                 f"(step={snap.get('num_timesteps')}): {e}"
             )
         previous = snap
 
-    # Curva de aprendizado da run inteira (embutida na nota da run).
+    # Learning curve for the whole run (embedded in the run note).
     try:
         chart = writer.write_run_chart(snaps)
         if chart:
-            print(f"[process_run] curva de aprendizado: attachments/{chart}")
+            print(f"[process_run] learning curve: attachments/{chart}")
     except Exception as e:
-        print(f"[process_run] curva falhou (ignorando): {e}")
+        print(f"[process_run] curve failed (ignoring): {e}")
 
-    # (A) Síntese narrativa da run inteira.
+    # (A) Narrative synthesis of the whole run.
     try:
         story = writer.write_run_story(snaps)
         if story:
-            print(f"[process_run] síntese da run: {story}")
+            print(f"[process_run] run synthesis: {story}")
     except Exception as e:
-        print(f"[process_run] síntese falhou (ignorando): {e}")
+        print(f"[process_run] synthesis failed (ignoring): {e}")
 
-    print(f"[process_run] concluído: {written}/{len(snaps)} notas em {cfg.vault_path}")
+    # (Phase 4) Reflect over the persistent memory to extract cross-run lessons.
+    if cfg.memory_enabled:
+        try:
+            from writer.reflect import reflect
+
+            reflect(cfg)
+        except Exception as e:
+            print(f"[process_run] reflection failed (ignoring): {e}")
+
+    # (Phase 6) Reward-weight suggestions for human approval (never auto-applied).
+    if cfg.memory_enabled and cfg.suggest_rewards:
+        try:
+            from writer.suggest import suggest
+
+            suggest(cfg)
+        except Exception as e:
+            print(f"[process_run] suggestions failed (ignoring): {e}")
+
+    # (Phase 2) Knowledge-graph hub connecting runs/maps/concepts/lessons.
+    try:
+        hub = writer.write_knowledge_hub()
+        print(f"[process_run] knowledge hub: {os.path.relpath(hub, cfg.vault_path)}")
+    except Exception as e:
+        print(f"[process_run] hub failed (ignoring): {e}")
+
+    print(f"[process_run] done: {written}/{len(snaps)} notes in {cfg.vault_path}")
     return written
 
 
 def main() -> None:
-    p = argparse.ArgumentParser(description="Gera as notas do Obsidian a partir dos snapshots.")
-    p.add_argument("--run", default=None, help="Nome da run (default: RUN_NAME do .env).")
-    p.add_argument("--model", default=None, help="Modelo Ollama p/ as notas (override).")
+    p = argparse.ArgumentParser(description="Generate the Obsidian notes from snapshots.")
+    p.add_argument("--run", default=None, help="Run name (default: RUN_NAME from .env).")
+    p.add_argument("--model", default=None, help="Ollama model for the notes (override).")
     args = p.parse_args()
 
     cfg = Config()
@@ -90,6 +116,9 @@ def main() -> None:
     button_names = meta.get("button_names", [])
     if meta.get("scenario"):
         cfg.scenario = meta["scenario"]
+    cfg.campaign = bool(meta.get("campaign", cfg.campaign))  # correct note labeling
+    if meta.get("maps"):
+        cfg.maps = tuple(meta["maps"])
     process_run(cfg, button_names)
 
 

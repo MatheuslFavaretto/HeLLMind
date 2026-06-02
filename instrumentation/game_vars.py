@@ -1,28 +1,28 @@
-"""Definição das GameVariables do ViZDoom que vamos extrair a cada passo.
+"""The ViZDoom GameVariables we extract on every step.
 
-A ideia central: capturar MUITO sinal além do reward. Separamos as variáveis em:
-- MONOTONIC: contadores que só sobem dentro de um episódio (kills, dano, etc).
-  Para essas, reportamos o DELTA por passo — assim podemos somar ao longo de uma
-  janela mesmo com episódios resetando no meio.
-- LEVELS: valores instantâneos (vida, munição). Reportamos o valor atual e
-  amostramos para tirar média/mínimo na janela.
+Core idea: capture LOTS of signal beyond the reward. We split the variables into:
+- MONOTONIC: counters that only go up within an episode (kills, damage, etc). For
+  these we report the per-step DELTA — so we can sum across a window even when
+  episodes reset in the middle.
+- LEVELS: instantaneous values (health, ammo). We report the current value and sample
+  it for mean/min over the window.
 """
 import vizdoom as vzd
 
-# A ORDEM aqui define a ordem de `state.game_variables`. Não reordene sem ajustar.
+# The ORDER here defines the order of `state.game_variables`. Don't reorder blindly.
 TRACKED_VARS = [
-    vzd.GameVariable.KILLCOUNT,       # inimigos mortos
-    vzd.GameVariable.HITCOUNT,        # tiros que acertaram
-    vzd.GameVariable.HITS_TAKEN,      # vezes que o agente foi atingido
-    vzd.GameVariable.DAMAGECOUNT,     # dano total causado
-    vzd.GameVariable.DAMAGE_TAKEN,    # dano total tomado
-    vzd.GameVariable.DEATHCOUNT,      # mortes
-    vzd.GameVariable.ITEMCOUNT,       # itens pegos
-    vzd.GameVariable.HEALTH,          # vida atual (nível)
-    vzd.GameVariable.AMMO2,           # munição da arma inicial (nível)
-    vzd.GameVariable.POSITION_X,      # posição no mapa (p/ caminho/cobertura)
-    vzd.GameVariable.POSITION_Y,      # posição no mapa (p/ caminho/cobertura)
-    vzd.GameVariable.SELECTED_WEAPON, # arma selecionada (slot)
+    vzd.GameVariable.KILLCOUNT,       # enemies killed
+    vzd.GameVariable.HITCOUNT,        # shots that landed
+    vzd.GameVariable.HITS_TAKEN,      # times the agent was hit
+    vzd.GameVariable.DAMAGECOUNT,     # total damage dealt
+    vzd.GameVariable.DAMAGE_TAKEN,    # total damage taken
+    vzd.GameVariable.DEATHCOUNT,      # deaths
+    vzd.GameVariable.ITEMCOUNT,       # items picked up
+    vzd.GameVariable.HEALTH,          # current health (level)
+    vzd.GameVariable.AMMO2,           # starting-weapon ammo (level)
+    vzd.GameVariable.POSITION_X,      # map position (for path/coverage)
+    vzd.GameVariable.POSITION_Y,      # map position (for path/coverage)
+    vzd.GameVariable.SELECTED_WEAPON, # selected weapon (slot)
 ]
 
 VAR_NAMES = [
@@ -31,12 +31,12 @@ VAR_NAMES = [
     "position_x", "position_y", "selected_weapon",
 ]
 
-# Contadores cumulativos -> reportamos delta por passo
+# Cumulative counters -> we report a per-step delta
 MONOTONIC = [
     "killcount", "hitcount", "hits_taken", "damagecount", "damage_taken",
     "deathcount", "itemcount",
 ]
-# Valores instantâneos -> reportamos nível atual (média/mín na janela)
+# Instantaneous values -> we report the current level (mean/min over the window)
 LEVELS = ["health", "ammo2", "position_x", "position_y", "selected_weapon"]
 
 assert len(TRACKED_VARS) == len(VAR_NAMES)

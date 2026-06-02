@@ -1,14 +1,13 @@
-"""Prompts: o fact-sheet (não JSON cru) e os indicadores de tendência."""
+"""Prompts: the fact sheet (not raw JSON) and the trend indicators."""
 from writer.prompts import _trend, build_checkpoint_user_message
 
 
 def test_trend_up_down_stable_first():
     up = _trend(0.31, 0.18, pct=True)
-    assert "↑" in up and "31%" in up and "18%" in up
-    down = _trend(10.0, 20.0)
-    assert "↓" in down
-    assert "estável" in _trend(5.0, 5.0)
-    assert "1º checkpoint" in _trend(3.0, None)
+    assert "up from" in up and "31%" in up and "18%" in up
+    assert "down from" in _trend(10.0, 20.0)
+    assert "stable" in _trend(5.0, 5.0)
+    assert "1st checkpoint" in _trend(3.0, None)
 
 
 def _snapshot():
@@ -31,15 +30,15 @@ def test_factsheet_is_readable_not_raw_json():
         _snapshot(), previous=None,
         existing_concepts=["Reward Shaping"], button_names=["ATTACK"],
     )
-    # Seções legíveis em vez de um dump JSON
-    assert "Pontaria" in msg and "Exploração" in msg
-    assert "Reward Shaping" in msg          # conceitos existentes injetados
-    assert "30%" in msg                     # precisão formatada
-    assert not msg.strip().startswith("{")  # não é JSON cru
+    # Readable sections instead of a JSON dump
+    assert "Aim" in msg and "Exploration" in msg
+    assert "Reward Shaping" in msg          # existing concepts injected
+    assert "30%" in msg                     # formatted accuracy
+    assert not msg.strip().startswith("{")  # not raw JSON
 
 
 def test_factsheet_shows_deltas_vs_previous():
     cur = _snapshot()
     prev = {**cur, "shooting_accuracy": 0.15}
     msg = build_checkpoint_user_message(cur, prev, [], ["ATTACK"])
-    assert "↑" in msg  # precisão subiu de 15% -> 30%
+    assert "up from" in msg  # accuracy rose 15% -> 30%

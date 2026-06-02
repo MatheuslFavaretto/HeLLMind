@@ -1,9 +1,9 @@
-"""Minimapa do nível: desenha as PAREDES reais do mapa + o caminho percorrido.
+"""Level minimap: draws the real map WALLS + the path taken.
 
-Antes eram só "quadrados soltos". Agora, quando o env fornece a geometria do mapa
-(`map_walls`, via ViZDoom sectors), desenhamos o contorno real do nível e pintamos
-por cima um heatmap de onde o agente andou — tudo nas mesmas coordenadas de mundo.
-Sem geometria (ou sem paredes), cai no modo antigo (só as células). Usa numpy + cv2.
+It used to be just "loose squares". Now, when the env provides the map geometry
+(`map_walls`, via ViZDoom sectors), we draw the real level outline and paint a heatmap
+of where the agent walked on top — all in the same world coordinates. Without geometry
+(or without walls), it falls back to the old mode (cells only). Uses numpy + cv2.
 """
 import os
 from typing import List, Optional, Sequence
@@ -35,7 +35,7 @@ def render_minimap(
     target_px: int = 420,
     pad: int = 12,
 ) -> bool:
-    """Gera o PNG do minimapa (paredes reais + caminho). True se escreveu o arquivo."""
+    """Generate the minimap PNG (real walls + path). True if the file was written."""
     cells: List[Sequence[float]] = [c for c in (path_cells or []) if c]
     walls = [w for w in (walls or []) if w and len(w) == 4]
     if not cells and not walls:
@@ -54,14 +54,14 @@ def render_minimap(
 
     def to_px(x: float, y: float):
         px = int((x - minx) * scale) + pad
-        py = int((maxy - y) * scale) + pad  # Y do Doom cresce p/ cima -> inverte
+        py = int((maxy - y) * scale) + pad  # Doom's Y grows upward -> invert
         return px, py
 
-    # 1) Paredes do nível (fundo).
+    # 1) Level walls (background).
     for x1, y1, x2, y2 in walls:
         cv2.line(img, to_px(x1, y1), to_px(x2, y2), (110, 110, 120), 1, cv2.LINE_AA)
 
-    # 2) Caminho percorrido por cima (heatmap por nº de visitas), translúcido.
+    # 2) Path taken on top (heatmap by visit count), translucent.
     if cells:
         max_c = max(float(c[2]) for c in cells) or 1.0
         half = COVERAGE_CELL / 2.0

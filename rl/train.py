@@ -1,12 +1,12 @@
-"""Entrypoint: treina PPO no Doom e (opcionalmente) documenta no Obsidian.
+"""Entrypoint: trains PPO on Doom and (optionally) documents into Obsidian.
 
-Uso:
-    python -m rl.train                 # treino + notas no vault (Ollama)
-    python -m rl.train --no-docs       # treino puro, sem LLM/notas (mais leve)
-    python -m rl.train --render        # abre a janela do Doom (1 env, mais lento)
+Usage:
+    python -m rl.train                 # training + notes in the vault (Ollama)
+    python -m rl.train --no-docs       # pure training, no LLM/notes (lighter)
+    python -m rl.train --render        # opens the Doom window (1 env, slower)
     python -m rl.train --render --no-docs --timesteps 100000
 
-Flags sobrescrevem o .env.
+Flags override the .env.
 """
 import argparse
 import glob
@@ -29,6 +29,8 @@ from instrumentation.stats_tracker import StatsTracker
 from rl.callbacks import DoomDocumentationCallback
 from rl.campaign_callbacks import MapCurriculumCallback
 from rl.control import ControlCallback
+from rl.memory_callback import MemoryRecorderCallback
+from writer.memory_store import MemoryStore
 from writer.snapshot_log import (
     SnapshotLog,
     log_path_for,
@@ -38,39 +40,44 @@ from writer.snapshot_log import (
 
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Treina PPO no Doom + notas no Obsidian.")
+    p = argparse.ArgumentParser(description="Train PPO on Doom + Obsidian notes.")
     p.add_argument(
         "--no-docs",
         action="store_true",
-        help="Não chama o LLM nem escreve notas (treino puro, mais leve).",
+        help="Don't call the LLM or write notes (pure training, lighter).",
     )
     p.add_argument(
         "--render",
         action="store_true",
-        help="Abre a janela do Doom (força 1 env, não-paralelo, mais lento).",
+        help="Open the Doom window (forces 1 env, non-parallel, slower).",
     )
-    p.add_argument("--model", type=str, default=None, help="Modelo Ollama (override).")
-    p.add_argument("--timesteps", type=int, default=None, help="Total de timesteps.")
-    p.add_argument("--n-envs", type=int, default=None, help="Nº de ambientes paralelos.")
+    p.add_argument("--model", type=str, default=None, help="Ollama model (override).")
+    p.add_argument("--timesteps", type=int, default=None, help="Total timesteps.")
+    p.add_argument("--n-envs", type=int, default=None, help="Number of parallel envs.")
     p.add_argument(
         "--campaign",
         action="store_true",
-        help="Modo campanha: joga mapas completos de um WAD, em ordem.",
+        help="Campaign mode: play full WAD maps, in order.",
     )
     p.add_argument(
         "--maps",
         type=str,
         default=None,
-        help="Lista de mapas separados por vírgula (ex.: MAP01,MAP02 ou E1M1,E1M2).",
+        help="Comma-separated map list (e.g. MAP01,MAP02 or E1M1,E1M2).",
     )
-    p.add_argument("--wad", type=str, default=None, help="Caminho do WAD (campanha).")
+    p.add_argument("--wad", type=str, default=None, help="WAD path (campaign).")
     p.add_argument(
         "--resume",
         nargs="?",
         const="auto",
         default=None,
-        help="Continua de um checkpoint salvo (treino em lotes). Sem valor = "
-        "pega o último .zip automaticamente; ou passe o caminho de um .zip.",
+        help="Resume from a specific .zip. By default the vault's brain is ALREADY "
+        "reused automatically; use this only to point at a file.",
+    )
+    p.add_argument(
+        "--fresh",
+        action="store_true",
+        help="Ignore the saved brain and start from ZERO (overwrites the vault's).",
     )
     return p.parse_args()
 
@@ -92,18 +99,18 @@ def apply_args(cfg: Config, args: argparse.Namespace) -> Config:
         cfg.maps = tuple(args.maps.split(","))
     if args.wad:
         cfg.wad_path = args.wad
-    # Render exige um único ambiente com janela; paralelo não dá pra visualizar.
+    # Render needs a single windowed env; you can't watch parallel subprocesses.
     if cfg.render and cfg.n_envs != 1:
-        print("[render] forçando n_envs=1 para mostrar a janela do Doom.")
+        print("[render] forcing n_envs=1 to show the Doom window.")
         cfg.n_envs = 1
     return cfg
 
 
 def _probe_ollama(cfg: Config) -> bool:
-    """Verifica o Ollama SEM derrubar o treino. Retorna True se estiver pronto.
+    """Check Ollama WITHOUT crashing training. Returns True if it's ready.
 
-    O projeto funciona perfeitamente sem o Ollama: os snapshots são coletados de
-    qualquer jeito e, no fim, as notas saem em modo factual (sem narrativa do LLM).
+    The project works perfectly without Ollama: snapshots are collected anyway and,
+    at the end, notes come out in factual mode (no LLM narrative).
     """
     try:
         from ollama import Client
@@ -112,30 +119,24 @@ def _probe_ollama(cfg: Config) -> bool:
         models = [m.model for m in client.list().models]
     except Exception:
         print(
-            f"[docs] Ollama indisponível em {cfg.ollama_host} — seguindo assim mesmo.\n"
-            f"       As notas sairão em modo FACTUAL (sem narrativa). Para narrativa,\n"
-            f"       suba o `ollama serve` e rode depois: python -m writer.process_run"
+            f"[docs] Ollama unavailable at {cfg.ollama_host} — continuing anyway.\n"
+            f"       Notes will come out FACTUAL (no narrative). For the narrative,\n"
+            f"       start `ollama serve` and run later: python -m writer.process_run"
         )
         return False
     wanted = cfg.llm_model if ":" in cfg.llm_model else cfg.llm_model + ":latest"
     if not any((m or "") == wanted for m in models):
         print(
-            f"[docs] Modelo '{cfg.llm_model}' não encontrado no Ollama (baixe com "
-            f"`ollama pull {cfg.llm_model}`). Notas sairão em modo FACTUAL."
+            f"[docs] Model '{cfg.llm_model}' not found in Ollama (pull it with "
+            f"`ollama pull {cfg.llm_model}`). Notes will be FACTUAL."
         )
         return False
-    print(f"[docs] Ollama OK em {cfg.ollama_host} | modelo: {cfg.llm_model}")
+    print(f"[docs] Ollama OK at {cfg.ollama_host} | model: {cfg.llm_model}")
     return True
 
 
-def _resolve_resume(cfg: Config, arg: Optional[str], name_prefix: str) -> Optional[str]:
-    """Resolve o caminho do checkpoint p/ continuar o treino (modo lotes)."""
-    if arg is None:
-        return None
-    if arg != "auto":
-        path = arg if arg.endswith(".zip") else arg + ".zip"
-        return path if os.path.exists(path) else None
-    # auto: prioriza o _final; senão o .zip mais recente do prefixo.
+def _latest_checkpoint(cfg: Config, name_prefix: str) -> Optional[str]:
+    """The most recent brain for this task in the vault (prefers _final)."""
     final = os.path.join(cfg.checkpoint_dir, f"{name_prefix}_final.zip")
     if os.path.exists(final):
         return final
@@ -146,7 +147,19 @@ def _resolve_resume(cfg: Config, arg: Optional[str], name_prefix: str) -> Option
     return candidates[-1] if candidates else None
 
 
+def _resolve_resume(cfg: Config, args: argparse.Namespace, name_prefix: str) -> Optional[str]:
+    """By DEFAULT reuse the vault's brain. --fresh starts from zero; --resume PATH
+    uses a specific file."""
+    if args.fresh:
+        return None
+    if args.resume and args.resume != "auto":
+        path = args.resume if args.resume.endswith(".zip") else args.resume + ".zip"
+        return path if os.path.exists(path) else None
+    return _latest_checkpoint(cfg, name_prefix)  # default: continue where it stopped
+
+
 def build_vec_env(cfg: Config):
+    rewards = cfg.reward_weights()
     if cfg.campaign:
         first_map = cfg.maps[0]
         env_fns = [
@@ -160,6 +173,7 @@ def build_vec_env(cfg: Config):
                 cfg.seed,
                 rank,
                 window_visible=cfg.render,
+                rewards=rewards,
             )
             for rank in range(cfg.n_envs)
         ]
@@ -172,13 +186,14 @@ def build_vec_env(cfg: Config):
                 cfg.seed,
                 rank,
                 window_visible=cfg.render,
+                rewards=rewards,
             )
             for rank in range(cfg.n_envs)
         ]
-    # Render precisa de janela no processo principal -> DummyVecEnv (sem subprocess).
+    # Render needs a window in the main process -> DummyVecEnv (no subprocess).
     venv = DummyVecEnv(env_fns) if cfg.render else SubprocVecEnv(env_fns)
-    venv = VecMonitor(venv)  # garante stats de episódio agregados
-    venv = VecFrameStack(venv, n_stack=cfg.frame_stack)  # empilha frames (movimento)
+    venv = VecMonitor(venv)  # aggregated episode stats
+    venv = VecFrameStack(venv, n_stack=cfg.frame_stack)  # stack frames (motion)
     return venv
 
 
@@ -187,40 +202,46 @@ def main() -> None:
     cfg = apply_args(Config(), args)
     os.makedirs(cfg.checkpoint_dir, exist_ok=True)
 
-    # O Ollama é OPCIONAL: se faltar, o treino segue e as notas saem em modo factual.
+    # Ollama is OPTIONAL: if missing, training continues and notes come out factual.
     if cfg.docs_enabled:
         _probe_ollama(cfg)
     else:
-        print("[docs] desabilitado — treino puro, sem chamar o LLM.")
+        print("[docs] disabled — pure training, no LLM calls.")
     if cfg.render:
-        print("[render] janela do Doom habilitada (1 env).")
+        print("[render] Doom window enabled (1 env).")
 
-    # Descobre nomes de botões (rótulos da distribuição de ações) sem subir o treino.
+    # Discover button names (action-distribution labels) without booting training.
     if cfg.campaign:
         meta = campaign_metadata(cfg.wad_path, cfg.maps[0])
         button_names = meta["button_names"]
         print(
-            f"Campanha | WAD: {os.path.basename(cfg.wad_path)} | "
-            f"mapas: {list(cfg.maps)} | {cfg.steps_per_map} steps/mapa | "
-            f"ações: {meta['num_actions']} {button_names}"
+            f"Campaign | WAD: {os.path.basename(cfg.wad_path)} | "
+            f"maps: {list(cfg.maps)} | {cfg.steps_per_map} steps/map | "
+            f"actions: {meta['num_actions']} {button_names}"
         )
     else:
         meta = probe_env_metadata(cfg.scenario, cfg.frame_skip, cfg.resolution)
         button_names = meta["button_names"]
-        print(f"Cenário: {cfg.scenario} | ações: {meta['num_actions']} {button_names}")
+        print(f"Scenario: {cfg.scenario} | actions: {meta['num_actions']} {button_names}")
 
     venv = build_vec_env(cfg)
-    name_prefix = f"ppo_{'campaign' if cfg.campaign else cfg.scenario}"
+    # Include the action count so resume never loads an incompatible brain
+    # (e.g., a 7-button campaign checkpoint into an 8-button one).
+    task = "campaign" if cfg.campaign else cfg.scenario
+    name_prefix = f"ppo_{task}_a{meta['num_actions']}"
 
-    # Treino em LOTES: continua o "cérebro" salvo em vez de começar do zero.
-    resume_path = _resolve_resume(cfg, args.resume, name_prefix)
+    # By DEFAULT, reuse this vault's brain (don't restart from scratch).
+    resume_path = _resolve_resume(cfg, args, name_prefix)
     if resume_path:
-        print(f"[resume] continuando o treino de {resume_path}")
+        print(f"[brain] reusing this vault's learning: {resume_path}")
         model = PPO.load(resume_path, env=venv, tensorboard_log=cfg.tensorboard_log)
         reset_timesteps = False
     else:
-        if args.resume is not None:
-            print("[resume] nenhum checkpoint encontrado — começando do zero.")
+        if args.fresh:
+            print("[brain] --fresh: starting from ZERO (overwrites this vault's brain).")
+        else:
+            print(f"[brain] no brain in this vault ({cfg.checkpoint_dir}) — "
+                  "starting from zero.")
         model = PPO(
             policy="CnnPolicy",
             env=venv,
@@ -238,14 +259,35 @@ def main() -> None:
         )
         reset_timesteps = True
 
+    # When reusing the brain, `--timesteps` is ADDITIONAL (train X more); otherwise
+    # SB3 would treat it as an absolute target and do nothing if it's already met.
+    if resume_path:
+        learn_total = model.num_timesteps + cfg.total_timesteps
+        print(f"[brain] already has {model.num_timesteps:,} steps — training "
+              f"+{cfg.total_timesteps:,} (target {learn_total:,}).")
+    else:
+        learn_total = cfg.total_timesteps
+
     callbacks = []
-    # No modo campanha, o currículo troca de mapa por timesteps.
+    # In campaign mode, the curriculum switches maps by timesteps. Closed loop:
+    # weight each map's budget by past deaths there (from memory) -> the agent
+    # trains MORE where it died MORE. No memory yet = uniform (previous behavior).
     if cfg.campaign and len(cfg.maps) > 1:
+        weights = None
+        if cfg.memory_enabled:
+            from rl.campaign_callbacks import map_step_weights
+
+            events = MemoryStore.read_events(cfg.memory_dir)
+            if events:
+                weights = map_step_weights(events, list(cfg.maps))
+                focus = ", ".join(f"{m}×{w:.2f}" for m, w in weights.items())
+                print(f"[curriculum] memory-weighted focus (more deaths = more steps): {focus}")
         callbacks.append(
             MapCurriculumCallback(
                 maps=list(cfg.maps),
                 steps_per_map=cfg.steps_per_map,
                 loop_maps=cfg.loop_maps,
+                weights=weights,
             )
         )
     log_path = log_path_for(cfg.pending_dir, cfg.run_name)
@@ -253,13 +295,15 @@ def main() -> None:
     if cfg.docs_enabled:
         tracker = StatsTracker(button_names=button_names)
         snap_log = SnapshotLog(log_path)
-        # Sidecar com metadados p/ o pós-processamento (writer.process_run).
+        # Sidecar metadata for post-processing (writer.process_run).
         write_meta(
             meta_path_for(cfg.pending_dir, cfg.run_name),
             {
                 "run_name": cfg.run_name,
                 "scenario": cfg.scenario,
                 "campaign": cfg.campaign,
+                "maps": list(cfg.maps),
+                "total_timesteps": cfg.total_timesteps,
                 "button_names": button_names,
             },
         )
@@ -271,7 +315,13 @@ def main() -> None:
         )
         callbacks.append(doc_cb)
 
-    # Loop de feedback: o Obsidian (00-index/control.md) controla o treino ao vivo.
+    # Persistent memory (Phase 1): record episode-end events across runs.
+    if cfg.memory_enabled:
+        callbacks.append(
+            MemoryRecorderCallback(MemoryStore(cfg.memory_dir, run_name=cfg.run_name))
+        )
+
+    # Feedback loop: Obsidian (00-index/control.md) controls training live.
     if cfg.control_enabled:
         control_path = os.path.join(cfg.vault_path, cfg.dir_index, "control.md")
         callbacks.append(
@@ -297,11 +347,11 @@ def main() -> None:
         use_bar = True
     except ImportError:
         use_bar = False
-        print("[info] tqdm/rich ausentes — seguindo sem barra de progresso.")
+        print("[info] tqdm/rich missing — continuing without a progress bar.")
 
     try:
         model.learn(
-            total_timesteps=cfg.total_timesteps,
+            total_timesteps=learn_total,
             callback=callbacks,
             progress_bar=use_bar,
             reset_num_timesteps=reset_timesteps,
@@ -310,10 +360,10 @@ def main() -> None:
         model.save(os.path.join(cfg.checkpoint_dir, f"{name_prefix}_final"))
         venv.close()
 
-    # PÓS-TREINO: agora (e só agora) chamamos o LLM, em lote. O loop do PPO já
-    # terminou, então gerar as notas não trava mais nada (conserto da travadinha).
+    # POST-TRAINING: only now do we call the LLM, in batch. The PPO loop is already
+    # done, so generating notes no longer blocks anything (the freeze fix).
     if cfg.docs_enabled:
-        print("\n[docs] treino concluído — gerando notas no Obsidian (em lote)...")
+        print("\n[docs] training finished — generating Obsidian notes (batch)...")
         from writer.process_run import process_run
 
         process_run(cfg, button_names, log_path)

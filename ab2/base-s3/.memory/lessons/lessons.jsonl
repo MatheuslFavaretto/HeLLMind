@@ -1,0 +1,3 @@
+{"title": "Agents frequently die in low health states", "insight": "The majority (91%) of deaths occur when the agent's health is below 30 HP.", "evidence": "Low-HP deaths: 91%"}
+{"title": "Agent tends to die near episode end", "insight": "Most deaths happen close to the end of an episode, with a mean length of 100 steps before death.", "evidence": "Mean episode length — deaths: 100"}
+{"title": "Agent frequently runs out of ammo", "insight": "The agent's ammo levels are often depleted just before dying, with a mean of 7.7 ammo at the time of death.", "evidence": "Mean ammo just before death: 7.7"}

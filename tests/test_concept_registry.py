@@ -1,4 +1,4 @@
-"""ConceptRegistry: IDs determinísticos, dedup por slug e migração (Passo 3)."""
+"""ConceptRegistry: deterministic IDs, slug dedup, and migration."""
 import json
 import os
 
@@ -12,7 +12,7 @@ def test_concept_id_normalizes():
 
 
 def test_clean_concept_name_strips_hallucinated_urls():
-    # bug real visto rodando: o LLM colou uma URL no nome do conceito
+    # real bug seen at runtime: the LLM glued a URL onto the concept name
     dirty = "Exploration vs Exploitation https://obsidian.md/notes/Exploration"
     assert clean_concept_name(dirty) == "Exploration vs Exploitation"
     assert clean_concept_name("Policy Entropy\nmais texto") == "Policy Entropy"
@@ -21,11 +21,25 @@ def test_clean_concept_name_strips_hallucinated_urls():
     assert concept_id(dirty) == "concept_exploration_vs_exploitation"
 
 
+def test_clean_concept_name_strips_trend_and_value_tails():
+    # real bug seen at 150k: the 3b appended trends/values to concept names
+    assert clean_concept_name("Action Entropy down from 09 to 07") == "Action Entropy"
+    assert clean_concept_name("Action Entropy Down") == "Action Entropy"
+    assert clean_concept_name("Accuracy 25") == "Accuracy"
+    # all collapse to the same id -> one note
+    cid = concept_id("Action Entropy")
+    assert concept_id("Action Entropy Down") == cid
+    assert concept_id("Action Entropy down from 09 to 07") == cid
+    # legit names are untouched
+    assert clean_concept_name("Sample Efficiency") == "Sample Efficiency"
+    assert clean_concept_name("Exploration vs Exploitation") == "Exploration vs Exploitation"
+
+
 def test_register_dedup_and_canonical(tmp_path):
     reg = ConceptRegistry(os.path.join(tmp_path, "reg.json"))
     assert reg.register("Reward Shaping", 100) is True       # inédito
-    assert reg.register("reward  shaping", 200) is False      # mesmo id -> não cria
-    assert reg.canonical("REWARD SHAPING") == "Reward Shaping"  # nome original mantido
+    assert reg.register("reward  shaping", 200) is False      # same id -> not created
+    assert reg.canonical("REWARD SHAPING") == "Reward Shaping"  # original name kept
     assert reg.exists("reward shaping") is True
     assert reg.names() == ["Reward Shaping"]
 
@@ -41,7 +55,7 @@ def test_touch_increments_mentions(tmp_path):
 
 
 def test_migration_from_name_keyed(tmp_path):
-    """Formato antigo (chaveado pelo nome) deve migrar para chaveado por id."""
+    """Old (name-keyed) format must migrate to the id-keyed format."""
     p = os.path.join(tmp_path, "reg.json")
     json.dump({"Reward Shaping": {"created_step": 5, "mentions": 2}},
               open(p, "w", encoding="utf-8"))

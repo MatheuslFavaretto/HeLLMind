@@ -1,8 +1,8 @@
-"""Cliente do LLM LOCAL via Ollama, com saída estruturada (JSON Schema).
+"""Local LLM client via Ollama, with structured output (JSON Schema).
 
-Roda 100% local — sem API key, sem custo por chamada. No Ollama, structured
-output é nativo: passamos `format=Model.model_json_schema()` e validamos a
-resposta com Pydantic.
+Runs 100% locally — no API key, no per-call cost. In Ollama, structured output is
+native: we pass `format=Model.model_json_schema()` and validate the response with
+Pydantic.
 """
 from typing import List, Optional
 
@@ -14,80 +14,122 @@ from writer import prompts
 
 # ----------------------------- Schemas -----------------------------
 class NewConcept(BaseModel):
-    name: str = Field(description="Nome curto em Title Case, vira título de nota.")
-    description: str = Field(description="1-3 frases explicando o conceito.")
+    name: str = Field(description="Short Title Case name; becomes a note title.")
+    description: str = Field(description="1-3 sentences explaining the concept.")
     related: List[str] = Field(
         default_factory=list,
-        description="Outros conceitos relacionados (nomes), para wikilinks.",
+        description="Other related concepts (names), for wikilinks.",
     )
 
 
 class CheckpointNote(BaseModel):
-    title: str = Field(description="Título curto e descritivo da nota de checkpoint.")
-    headline: str = Field(description="Uma frase resumindo a mudança principal.")
+    title: str = Field(description="Short, descriptive title for the checkpoint note.")
+    headline: str = Field(description="One sentence summarizing the main change.")
     behavior_change: str = Field(
-        description="Parágrafo(s) interpretando o que mudou no comportamento do agente."
+        description="Paragraph(s) interpreting what changed in the agent's behavior."
     )
     evidence: List[str] = Field(
-        description="Bullets com evidências numéricas específicas da janela."
+        description="Bullets with specific numeric evidence from the window."
     )
     linked_concepts: List[str] = Field(
         default_factory=list,
-        description="Conceitos JÁ EXISTENTES a linkar (use os nomes fornecidos).",
+        description="EXISTING concepts to link (use the provided names).",
     )
     new_concepts: List[NewConcept] = Field(
         default_factory=list,
-        description="Conceitos novos a criar (somente se genuínos e reutilizáveis).",
+        description="New concepts to create (only if genuine and reusable).",
     )
     tags: List[str] = Field(
-        default_factory=list, description="Tags do Obsidian, sem '#'."
+        default_factory=list, description="Obsidian tags, without '#'."
     )
 
 
 class ConceptNote(BaseModel):
-    summary: str = Field(description="Explicação objetiva do conceito.")
+    summary: str = Field(description="Objective explanation of the concept.")
     manifestation_in_doom: str = Field(
-        description="Como o conceito aparece no treino do agente jogando Doom."
+        description="How the concept shows up while training the agent on Doom."
     )
     related: List[str] = Field(
-        default_factory=list, description="Conceitos relacionados (wikilinks)."
+        default_factory=list, description="Related concepts (wikilinks)."
     )
     tags: List[str] = Field(default_factory=list)
 
 
 class RunStory(BaseModel):
-    """Síntese narrativa de uma run inteira (feature A)."""
+    """Narrative synthesis of a whole run (feature A)."""
 
-    title: str = Field(description="Título curto da síntese da run.")
+    title: str = Field(description="Short title for the run synthesis.")
     narrative: str = Field(
-        description="2-4 parágrafos contando o ARCO do aprendizado, do início ao fim."
+        description="2-4 paragraphs telling the ARC of the learning, start to finish."
     )
     milestones: List[str] = Field(
         default_factory=list,
-        description="Marcos do treino, cada um com o step aproximado em que ocorreu.",
+        description="Milestones, each citing the approximate step where it happened.",
     )
     key_concepts: List[str] = Field(
-        default_factory=list, description="Conceitos centrais desta run (p/ wikilinks)."
+        default_factory=list, description="Core concepts of this run (for wikilinks)."
     )
 
 
 class ComparisonVerdict(BaseModel):
-    """Veredito de uma comparação entre runs (feature B)."""
+    """Verdict of a comparison between runs (feature B)."""
 
-    summary: str = Field(description="Resumo do que difere entre as runs.")
-    winner: str = Field(description="Rótulo da run vencedora, ou 'empate'.")
-    reasoning: str = Field(description="Justificativa ancorada nos números fornecidos.")
+    summary: str = Field(description="Summary of what differs between the runs.")
+    winner: str = Field(description="Label of the winning run, or 'tie'.")
+    reasoning: str = Field(description="Justification anchored in the given numbers.")
 
 
-# ----------------------------- Cliente -----------------------------
+class Lesson(BaseModel):
+    """A single reusable lesson learned across runs (Phase 4)."""
+
+    title: str = Field(description="Short title for the lesson.")
+    insight: str = Field(description="The actionable lesson, e.g. a failure pattern.")
+    evidence: str = Field(description="The numbers from the report that support it.")
+
+
+class LessonsNote(BaseModel):
+    lessons: List[Lesson] = Field(
+        default_factory=list,
+        description="3-6 concrete lessons grounded in the aggregated numbers.",
+    )
+
+
+class RewardTweak(BaseModel):
+    """A proposed change to one reward-shaping weight (Phase 6)."""
+
+    knob: str = Field(description="One of: hit_reward, miss_penalty, "
+                                 "damage_taken_penalty, death_penalty.")
+    suggested: float = Field(description="Proposed new value for this knob.")
+    reason: str = Field(description="Why, anchored in the observed numbers.")
+
+
+class RewardSuggestions(BaseModel):
+    summary: str = Field(description="One-line summary of the behavior issue seen.")
+    tweaks: List[RewardTweak] = Field(default_factory=list)
+
+
+# ----------------------------- Client -----------------------------
 class LLMWriter:
-    """Gera notas usando um modelo local servido pelo Ollama."""
+    """Generates notes using a local model served by Ollama."""
 
-    def __init__(self, model: str, host: str = "http://localhost:11434") -> None:
+    def __init__(
+        self,
+        model: str,
+        host: str = "http://localhost:11434",
+        num_ctx: int = 4096,
+        num_predict: int = 700,
+        keep_alive: str = "5m",
+    ) -> None:
         self.client = Client(host=host)
         self.model = model
-        # temperatura baixa -> JSON mais estável; num_ctx folgado p/ o snapshot.
-        self.options = {"temperature": 0.3, "num_ctx": 8192}
+        self.keep_alive = keep_alive
+        # low temperature -> stable JSON; small num_ctx (fact sheet is tiny) saves
+        # memory; num_predict caps generation -> faster and bounded.
+        self.options = {
+            "temperature": 0.3,
+            "num_ctx": num_ctx,
+            "num_predict": num_predict,
+        }
 
     def _chat(self, system: str, user: str, schema: dict) -> str:
         resp = self.client.chat(
@@ -96,8 +138,9 @@ class LLMWriter:
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
             ],
-            format=schema,          # JSON Schema -> structured output nativo
+            format=schema,          # JSON Schema -> native structured output
             options=self.options,
+            keep_alive=self.keep_alive,  # keep the model warm across the batch
         )
         return resp.message.content
 
@@ -140,3 +183,19 @@ class LLMWriter:
             prompts.COMPARE_SYSTEM, user, ComparisonVerdict.model_json_schema()
         )
         return ComparisonVerdict.model_validate_json(content)
+
+    def generate_lessons(self, stats: dict) -> LessonsNote:
+        user = prompts.build_lessons_user_message(stats)
+        content = self._chat(
+            prompts.LESSONS_SYSTEM, user, LessonsNote.model_json_schema()
+        )
+        return LessonsNote.model_validate_json(content)
+
+    def generate_reward_suggestions(
+        self, stats: dict, weights: dict
+    ) -> RewardSuggestions:
+        user = prompts.build_suggest_user_message(stats, weights)
+        content = self._chat(
+            prompts.SUGGEST_SYSTEM, user, RewardSuggestions.model_json_schema()
+        )
+        return RewardSuggestions.model_validate_json(content)

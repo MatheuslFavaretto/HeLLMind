@@ -1,0 +1,3 @@
+{"title": "Agents frequently die in low health", "insight": "The majority, 91%, of deaths occur when the agent's health is below 30 HP.", "evidence": "Low-HP deaths (health < 30): 91% of deaths"}
+{"title": "Agents often die in corridors", "insight": "Corridors are a common area where agents frequently die, likely due to low health and limited ammo.", "evidence": "Not explicitly stated but inferred from the context; consider focusing on specific areas or conditions."}
+{"title": "Agents fail to succeed in Doom episodes", "insight": "There were no successful episodes out of 844 runs, indicating a high failure rate.", "evidence": "Successes: 0"}

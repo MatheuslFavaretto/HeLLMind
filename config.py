@@ -1,6 +1,6 @@
-"""Configuração central do projeto. Lê do ambiente (.env) com defaults sensatos."""
+"""Central project configuration. Reads from the environment (.env) with sane defaults."""
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Tuple
 
 from dotenv import load_dotenv
@@ -10,19 +10,19 @@ load_dotenv()
 
 @dataclass
 class Config:
-    # ---------- Ambiente Doom ----------
+    # ---------- Doom environment ----------
     scenario: str = os.getenv("DOOM_SCENARIO", "defend_the_center")
     frame_skip: int = 4
     frame_stack: int = 4
-    resolution: Tuple[int, int] = (84, 84)  # (largura, altura)
+    resolution: Tuple[int, int] = (84, 84)  # (width, height)
 
-    # ---------- Modo CAMPANHA (mapas completos de um WAD, em ordem) ----------
-    # Liga o modo campanha (treina mapas inteiros e avança para o próximo).
+    # ---------- CAMPAIGN mode (full WAD maps, in order) ----------
+    # Enable campaign mode (train full maps and advance to the next).
     campaign: bool = os.getenv("CAMPAIGN", "0") in ("1", "true", "True")
-    # WAD com os mapas. Default: freedoom2.wad embutido (gratuito).
-    # Para os mapas do Doom 1 originais, aponte para o seu doom.wad.
+    # WAD with the maps. Default: bundled freedoom2.wad (free).
+    # For the original Doom 1 maps, point to your doom.wad.
     wad_path: str = os.getenv("WAD_PATH", "")
-    # Lista de mapas, em ordem. freedoom2 usa MAP01..; doom.wad usa E1M1..
+    # Map list, in order. freedoom2 uses MAP01..; doom.wad uses E1M1..
     maps: Tuple[str, ...] = tuple(
         os.getenv("MAPS", "MAP01,MAP02,MAP03,MAP04,MAP05").split(",")
     )
@@ -31,10 +31,10 @@ class Config:
     kills_to_clear: int = int(os.getenv("KILLS_TO_CLEAR", "5"))
     episode_timeout: int = int(os.getenv("EPISODE_TIMEOUT", "2100"))  # ticks
 
-    # ---------- Treino PPO ----------
+    # ---------- PPO training ----------
     total_timesteps: int = int(os.getenv("TOTAL_TIMESTEPS", "2000000"))
     n_envs: int = int(os.getenv("N_ENVS", "8"))
-    n_steps: int = 1024          # rollout por env antes de cada update
+    n_steps: int = 1024          # rollout per env before each update
     batch_size: int = 2048
     n_epochs: int = 4
     gamma: float = 0.99
@@ -42,46 +42,86 @@ class Config:
     ent_coef: float = 0.01
     learning_rate: float = 2.5e-4
     clip_range: float = 0.2
-    seed: int = 42
+    seed: int = int(os.getenv("SEED", "42"))  # configurable for multi-seed A/B
 
-    # ---------- Saídas ----------
+    # ---------- Reward shaping weights (tunable via .env; Phase 6 can suggest) ----------
+    hit_reward: float = float(os.getenv("HIT_REWARD", "1.0"))
+    miss_penalty: float = float(os.getenv("MISS_PENALTY", "0.25"))
+    damage_taken_penalty: float = float(os.getenv("DAMAGE_TAKEN_PENALTY", "0.05"))
+    death_penalty: float = float(os.getenv("DEATH_PENALTY", "5.0"))
+
+    # ---------- Outputs ----------
     checkpoint_dir: str = os.getenv("CHECKPOINT_DIR", "./checkpoints")
     tensorboard_log: str = os.getenv("TENSORBOARD_LOG", "./tb")
-    # Onde os snapshots da run ficam até o pós-processamento (gera as notas).
+    # Where the run's snapshots live until post-processing (which writes the notes).
     pending_dir: str = os.getenv("PENDING_DIR", "./.cache/pending_runs")
 
-    # ---------- Documentação (LLM local via Ollama -> Obsidian) ----------
+    # ---------- Documentation (local LLM via Ollama -> Obsidian) ----------
     vault_path: str = os.getenv("VAULT_PATH", "./vault")
-    # Modelo leve por padrão (rápido no M5 16GB; bom o bastante p/ as notas).
+    # Light default model (fast on M5 16GB; good enough for the notes).
     llm_model: str = os.getenv("OLLAMA_MODEL", "qwen2.5:3b")
     ollama_host: str = os.getenv("OLLAMA_HOST", "http://localhost:11434")
     write_every_steps: int = int(os.getenv("WRITE_EVERY_STEPS", "50000"))
     novelty_threshold: float = float(os.getenv("NOVELTY_THRESHOLD", "0.15"))
-    # Loop de feedback: o treino relê 00-index/control.md a cada N steps e se
-    # adapta (stop_training, novelty_threshold, write_every_steps) sem reiniciar.
+    # LLM cost knobs (the fact sheet is small, so a big context is wasteful):
+    # smaller num_ctx = less memory; num_predict caps generation = faster & bounded;
+    # keep_alive keeps the model warm across the batch (no reload between notes).
+    llm_num_ctx: int = int(os.getenv("LLM_NUM_CTX", "4096"))
+    llm_num_predict: int = int(os.getenv("LLM_NUM_PREDICT", "700"))
+    llm_keep_alive: str = os.getenv("LLM_KEEP_ALIVE", "5m")
+    # Max new concept notes to generate per checkpoint (each is an extra LLM call).
+    max_new_concepts_per_ckpt: int = int(os.getenv("MAX_NEW_CONCEPTS_PER_CKPT", "2"))
+
+    # ---------- Cognitive memory (persists ACROSS runs) ----------
+    # Records episode-end events (death/success/timeout) during training (cheap,
+    # async-safe) and, post-training, an LLM extracts reusable "lessons" from them.
+    memory_enabled: bool = os.getenv("MEMORY_ENABLED", "1") not in ("0", "false", "False")
+    memory_dir: str = os.getenv("MEMORY_DIR", "")  # default tied to vault in __post_init__
+    min_events_for_lessons: int = int(os.getenv("MIN_EVENTS_FOR_LESSONS", "10"))
+    # Phase 6: offline LLM proposes reward-weight tweaks (human approves; NEVER auto-applied).
+    suggest_rewards: bool = os.getenv("SUGGEST_REWARDS", "1") not in ("0", "false", "False")
+
+    def reward_weights(self) -> dict:
+        """The tunable reward-shaping weights, passed into the envs."""
+        return {
+            "hit_reward": self.hit_reward,
+            "miss_penalty": self.miss_penalty,
+            "damage_taken_penalty": self.damage_taken_penalty,
+            "death_penalty": self.death_penalty,
+        }
+    # Feedback loop: training re-reads 00-index/control.md every N steps and adapts
+    # (stop_training, novelty_threshold, write_every_steps) without restarting.
     control_enabled: bool = os.getenv("CONTROL_ENABLED", "1") not in ("0", "false", "False")
     control_every_steps: int = int(os.getenv("CONTROL_EVERY_STEPS", "4096"))
-    # Quando True, NÃO chama o LLM nem escreve notas (treino puro, mais leve).
+    # When True, do NOT call the LLM or write notes (pure training, lighter).
     docs_enabled: bool = os.getenv("DOCS_ENABLED", "1") not in ("0", "false", "False")
-    # Quando True, abre a janela do Doom (força 1 env, não-paralelo).
+    # When True, open the Doom window (forces 1 env, non-parallel).
     render: bool = os.getenv("RENDER", "0") in ("1", "true", "True")
-    # nome da run (usado em frontmatter e no índice)
+    # run name (used in frontmatter and the index)
     run_name: str = os.getenv("RUN_NAME", "")
 
-    # subpastas do vault
+    # vault subfolders
     dir_index: str = "00-index"
     dir_checkpoints: str = "10-checkpoints"
     dir_concepts: str = "20-concepts"
     dir_runs: str = "30-runs"
     dir_maps: str = "40-maps"
-    dir_compare: str = "50-compare"        # notas de comparação entre runs
-    dir_attachments: str = "attachments"  # imagens (minimapa) embutidas nas notas
+    dir_compare: str = "50-compare"        # run-comparison notes
+    dir_lessons: str = "60-lessons"        # cross-run lessons (cognitive memory)
+    dir_attachments: str = "attachments"  # images (minimap) embedded in notes
 
     def __post_init__(self) -> None:
         if not self.run_name:
             from datetime import datetime
             self.run_name = "run-" + datetime.now().strftime("%Y%m%d-%H%M%S")
-        # WAD padrão: freedoom2.wad embutido no ViZDoom (resolvido em runtime).
+        # Default WAD: the freedoom2.wad bundled with ViZDoom (resolved at runtime).
         if not self.wad_path:
             from doom.campaign import default_wad
             self.wad_path = default_wad()
+        # The brain is TIED to the vault: same vault -> reuse; another vault -> start
+        # from zero. (Unless CHECKPOINT_DIR is set explicitly.)
+        if not os.getenv("CHECKPOINT_DIR"):
+            self.checkpoint_dir = os.path.join(self.vault_path, ".checkpoints")
+        # Memory persists across runs of the same vault (like the brain).
+        if not self.memory_dir:
+            self.memory_dir = os.path.join(self.vault_path, ".memory")

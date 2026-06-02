@@ -1,4 +1,4 @@
-"""Renderização do minimapa (caminho) e da curva de aprendizado (via cv2)."""
+"""Minimap (path) and learning-curve rendering (via cv2)."""
 import os
 
 import cv2

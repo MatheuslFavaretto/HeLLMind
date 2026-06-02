@@ -27,6 +27,8 @@ runs/
 
 # --- Vault local de teste (use VAULT_PATH p/ o seu vault real) ---
 vault/
+vault*
+_vizdoom.ini
 # -- todo --
 TODO.md
 
