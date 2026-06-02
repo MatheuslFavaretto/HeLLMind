@@ -47,8 +47,37 @@ class Config:
     # ---------- Reward shaping weights (tunable via .env; Phase 6 can suggest) ----------
     hit_reward: float = float(os.getenv("HIT_REWARD", "1.0"))
     miss_penalty: float = float(os.getenv("MISS_PENALTY", "0.25"))
+    # Campaign kill bonus (per enemy killed) — the strongest combat lever. Raise it to pull
+    # the agent out of the idle-to-timeout local optimum on maps where it avoids fighting.
+    kill_reward: float = float(os.getenv("KILL_REWARD", "5.0"))
     damage_taken_penalty: float = float(os.getenv("DAMAGE_TAKEN_PENALTY", "0.05"))
     death_penalty: float = float(os.getenv("DEATH_PENALTY", "5.0"))
+    # Anti-idle: reward movement, and make standing still cost reward (time penalty).
+    move_reward: float = float(os.getenv("MOVE_REWARD", "0.002"))
+    living_reward: float = float(os.getenv("LIVING_REWARD", "-0.005"))
+    # ---------- Exploration & completion (autonomy goal: explore the whole map) ----------
+    # Bonus the first time the agent steps on a NEW grid cell (count-based exploration).
+    # Drives covering the map instead of pacing the same corridor.
+    coverage_reward: float = float(os.getenv("COVERAGE_REWARD", "0.5"))
+    # Grid cell size (map units) for both the coverage reward and the spatial memory.
+    coverage_cell: float = float(os.getenv("COVERAGE_CELL", "96.0"))
+    # Big bonus for actually reaching the level EXIT (episode ends, not dead, pre-timeout).
+    exit_reward: float = float(os.getenv("EXIT_REWARD", "200.0"))
+    # Count-based weapon variety: bonus the FIRST time the agent wields a NEW weapon slot
+    # in an episode (campaign only). The campaign has SELECT_NEXT_WEAPON but, without this,
+    # no reason to ever switch — so it never used the weapons it picks up.
+    weapon_variety_reward: float = float(os.getenv("WEAPON_VARIETY_REWARD", "0.5"))
+    # Closed loop (bestiary -> reward): scale the kill bonus by what the agent LEARNED about
+    # each monster — killing a deadlier type (higher death-rate-when-present) pays more. Uses
+    # the persisted bestiary; needs one prior run to have data. Opt-in (changes the reward).
+    bestiary_reward: bool = os.getenv("BESTIARY_REWARD", "0") in ("1", "true", "True")
+    # Spatial memory: feed the agent a 2nd obs channel of where it has already been
+    # (so it can ACT on its own memory, not just be rewarded for it).
+    spatial_memory: bool = os.getenv("SPATIAL_MEMORY", "0") in ("1", "true", "True")
+    # Recurrent policy (LSTM): give the policy temporal memory across steps via
+    # RecurrentPPO (sb3-contrib). Opt-in — it changes the saved brain's format, so an
+    # LSTM brain and a feed-forward brain are NOT interchangeable (checkpoint is tagged).
+    use_lstm: bool = os.getenv("USE_LSTM", "0") in ("1", "true", "True")
 
     # ---------- Outputs ----------
     checkpoint_dir: str = os.getenv("CHECKPOINT_DIR", "./checkpoints")
@@ -85,9 +114,16 @@ class Config:
         """The tunable reward-shaping weights, passed into the envs."""
         return {
             "hit_reward": self.hit_reward,
+            "kill_reward": self.kill_reward,
             "miss_penalty": self.miss_penalty,
             "damage_taken_penalty": self.damage_taken_penalty,
             "death_penalty": self.death_penalty,
+            "move_reward": self.move_reward,
+            "living_reward": self.living_reward,
+            "coverage_reward": self.coverage_reward,
+            "coverage_cell": self.coverage_cell,
+            "exit_reward": self.exit_reward,
+            "weapon_variety_reward": self.weapon_variety_reward,
         }
     # Feedback loop: training re-reads 00-index/control.md every N steps and adapts
     # (stop_training, novelty_threshold, write_every_steps) without restarting.

@@ -34,6 +34,12 @@ class StatsTracker:
         self.delta_sums: Dict[str, float] = {}
         self.level_samples: Dict[str, List[float]] = {n: [] for n in LEVELS}
         self.action_counts = np.zeros(self.n_actions, dtype=np.float64)
+        # Attack accounting. With COMBINED actions (campaign) several actions press ATTACK,
+        # so we can't infer "did it shoot?" from a single button index — the env reports it
+        # per step via doom["attacked"]. When that's present we count it directly; otherwise
+        # we fall back to the single-button method (scenario env).
+        self.attack_steps = 0
+        self._has_attack_flag = False
         self.episode_rewards: List[float] = []
         self.base_returns: List[float] = []  # native (unshaped) episode returns
         self.episode_lengths: List[int] = []
@@ -45,11 +51,19 @@ class StatsTracker:
         self.current_map: str = ""
         self.episodes_done = 0
         self.episodes_success = 0
+        # How episodes ended (death / exit / timeout) — "exit" = reached the level end.
+        self.terminals: Counter = Counter()
+        self.coverage_cells_per_ep: List[int] = []  # distinct cells per episode
+        # Ordered trajectory of ONE representative env (env 0) so the minimap can draw
+        # the path as a CONNECTED LINE (visit order), not just an unordered heatmap.
+        # The heatmap mixes all parallel envs; an ordered line only makes sense per env.
+        self._env0_path: List[tuple] = []        # cells of env 0's CURRENT episode
+        self._env0_last_path: List[tuple] = []   # last COMPLETED episode (the one we draw)
 
     # ------------------------------------------------------------------
     def update(self, infos: List[dict], actions: np.ndarray) -> None:
         """Called every vec-env step, for all parallel envs."""
-        for info, act in zip(infos, actions):
+        for idx, (info, act) in enumerate(zip(infos, actions)):
             doom = info.get("doom")
             if doom is not None:
                 for k, v in doom["deltas"].items():
@@ -57,12 +71,19 @@ class StatsTracker:
                 for n in LEVELS:
                     self.level_samples[n].append(doom["levels"][n])
                 self.action_counts[int(doom["action"])] += 1
+                if "attacked" in doom:
+                    self._has_attack_flag = True
+                    if doom["attacked"]:
+                        self.attack_steps += 1
                 # Coverage/path: discretize position into a grid and count visits.
                 px = doom["levels"].get("position_x", 0.0)
                 py = doom["levels"].get("position_y", 0.0)
-                self.cell_counts[
-                    (round(px / COVERAGE_CELL), round(py / COVERAGE_CELL))
-                ] += 1
+                cell = (round(px / COVERAGE_CELL), round(py / COVERAGE_CELL))
+                self.cell_counts[cell] += 1
+                # Ordered trajectory of env 0 only (for the connected-line minimap),
+                # de-duplicating consecutive repeats so the line reflects movement.
+                if idx == 0 and (not self._env0_path or self._env0_path[-1] != cell):
+                    self._env0_path.append(cell)
                 walls = doom.get("walls")
                 if walls:  # sent once per map; we keep it for the minimap
                     self.map_walls = walls
@@ -80,6 +101,15 @@ class StatsTracker:
                         self.episodes_success += 1
                     if "base_return" in doom:
                         self.base_returns.append(float(doom["base_return"]))
+                    if doom.get("terminal"):
+                        self.terminals[doom["terminal"]] += 1
+                    if "coverage_cells" in doom:
+                        self.coverage_cells_per_ep.append(int(doom["coverage_cells"]))
+                # env 0 finished an episode: keep its (ordered) path as the one to draw,
+                # then start a fresh trajectory for the next episode.
+                if idx == 0 and len(self._env0_path) >= 2:
+                    self._env0_last_path = self._env0_path
+                    self._env0_path = []
 
     # ------------------------------------------------------------------
     def snapshot(self, num_timesteps: int) -> Dict[str, Any]:
@@ -87,14 +117,18 @@ class StatsTracker:
         n_eps = len(self.episode_rewards)
         d = self.delta_sums
         shots = float(d.get("hitcount", 0.0))  # shots that landed
-        # 'attack' is usually the fire button; we compute hits per attack.
-        attack_idx = next(
-            (i for i, n in enumerate(self.button_names) if "ATTACK" in n.upper()),
-            None,
-        )
-        attack_count = (
-            float(self.action_counts[attack_idx]) if attack_idx is not None else 0.0
-        )
+        # Prefer the env-reported attack count (handles combined actions); else infer it
+        # from the single ATTACK button (scenario env, one-hot actions).
+        if self._has_attack_flag:
+            attack_count = float(self.attack_steps)
+        else:
+            attack_idx = next(
+                (i for i, n in enumerate(self.button_names) if "ATTACK" in n.upper()),
+                None,
+            )
+            attack_count = (
+                float(self.action_counts[attack_idx]) if attack_idx is not None else 0.0
+            )
         accuracy = (shots / attack_count) if attack_count > 0 else 0.0
         misses = max(0.0, attack_count - shots)
 
@@ -114,6 +148,13 @@ class StatsTracker:
                 if self.episodes_done
                 else 0.0
             ),
+            # Completion: fraction of episodes that ended by reaching the level EXIT.
+            "exit_rate": (
+                self.terminals.get("exit", 0) / self.episodes_done
+                if self.episodes_done
+                else 0.0
+            ),
+            "terminals": dict(self.terminals),  # {death, exit, timeout} counts
             "mean_reward": _mean(self.episode_rewards),
             "mean_base_reward": _mean(self.base_returns),  # native, shaping-independent
             "mean_episode_length": _mean(self.episode_lengths),
@@ -139,8 +180,10 @@ class StatsTracker:
             "cells_visited": len(self.cell_counts),
             "map_coverage": self._coverage(),
             "weapons_used": self._weapon_distribution(),
-            # cells [gx, gy, visits] to render the path minimap
+            # cells [gx, gy, visits] to render the path minimap (heatmap)
             "path_cells": [[gx, gy, c] for (gx, gy), c in self.cell_counts.items()],
+            # ordered [gx, gy] of one episode -> minimap draws it as a connected line
+            "path_polyline": [[gx, gy] for (gx, gy) in (self._env0_last_path or self._env0_path)],
             # real map walls [x1,y1,x2,y2] (minimap background)
             "map_walls": self.map_walls,
             # levels
@@ -162,15 +205,28 @@ class StatsTracker:
 
     # ------------------------------------------------------------------
     def _coverage(self) -> Dict[str, float]:
-        """Estimate the explored fraction: visited cells / bounding-box area.
+        """Explored fraction of the map.
 
-        We don't know the real map size, so we normalize by the bounding box of the
-        seen positions — an honest approximation of 'how much of the traversed area
-        the agent actually covered'.
+        Preferred: visited cells / cells in the REAL map bounding box (from wall
+        geometry) — a true 'how much of the level did it see'. Fallback (no walls):
+        normalize by the bounding box of the seen positions.
         """
+        n_cells = len(self.cell_counts)
+        # True coverage: grid the real map extent (walls) and see how much we touched.
+        if self.map_walls:
+            xs_w = [c for w in self.map_walls for c in (w[0], w[2])]
+            ys_w = [c for w in self.map_walls for c in (w[1], w[3])]
+            gx = (max(xs_w) - min(xs_w)) / COVERAGE_CELL
+            gy = (max(ys_w) - min(ys_w)) / COVERAGE_CELL
+            map_cells = max(1.0, (gx + 1.0) * (gy + 1.0))
+            return {
+                "cells_visited": float(n_cells),
+                "map_cells": float(round(map_cells, 1)),
+                "explored_fraction": float(min(1.0, n_cells / map_cells)),
+                "source": "walls",
+            }
         xs = self.level_samples.get("position_x", [])
         ys = self.level_samples.get("position_y", [])
-        n_cells = len(self.cell_counts)
         if len(xs) < 2:
             return {"cells_visited": float(n_cells), "explored_fraction": 0.0}
         span_x = (max(xs) - min(xs)) / COVERAGE_CELL
@@ -185,6 +241,7 @@ class StatsTracker:
             "cells_visited": float(n_cells),
             "bbox_cells": float(round(bbox_cells, 1)),
             "explored_fraction": float(min(1.0, n_cells / bbox_cells)),
+            "source": "bbox",
         }
 
     def _weapon_distribution(self) -> Dict[str, float]:

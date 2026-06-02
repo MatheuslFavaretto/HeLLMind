@@ -48,6 +48,7 @@ class DoomEnv(gym.Env):
         self._miss_penalty = float(r.get("miss_penalty", MISS_PENALTY))
         self._damage_penalty = float(r.get("damage_taken_penalty", DAMAGE_TAKEN_PENALTY))
         self._death_penalty = float(r.get("death_penalty", DEATH_PENALTY))
+        self._move_reward = float(r.get("move_reward", 0.0))  # anti-idle (per distance)
 
         game = vzd.DoomGame()
         cfg = os.path.join(vzd.scenarios_path, f"{scenario}.cfg")
@@ -148,6 +149,7 @@ class DoomEnv(gym.Env):
         if attacked and deltas["hitcount"] == 0 and not done:
             reward -= self._miss_penalty
         reward -= self._damage_penalty * deltas["damage_taken"]
+        reward += self._move_reward * deltas["distance"]  # reward moving (anti-idle)
         if done and self.game.is_player_dead():
             reward -= self._death_penalty
 

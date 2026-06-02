@@ -188,14 +188,16 @@ tweaks, each with the new value and a reason grounded in the numbers.
 
 Guidance: low accuracy -> consider raising hit_reward or miss_penalty (but keep
 miss_penalty < hit_reward to avoid a passive agent); many low-HP deaths -> consider
-raising damage_taken_penalty or death_penalty. Keep changes modest (e.g. ≤ 2x).
+raising damage_taken_penalty or death_penalty. A PASSIVE agent (very low exit-rate AND
+low coverage AND low kills) is usually OVER-penalized -> consider LOWERING miss_penalty
+or damage_taken_penalty so it engages and moves. Keep changes modest (e.g. ≤ 2x).
 These are SUGGESTIONS for a human to approve — never assume they are applied. Respond
 ONLY in the requested structured format.\
 """
 
 
 def build_suggest_user_message(stats: Dict, weights: Dict) -> str:
-    return "\n".join([
+    lines = [
         "Current reward weights:",
         f"- hit_reward = {weights.get('hit_reward')}",
         f"- miss_penalty = {weights.get('miss_penalty')}",
@@ -208,7 +210,14 @@ def build_suggest_user_message(stats: Dict, weights: Dict) -> str:
         f"({int(stats.get('deaths', 0))} deaths)",
         f"- Low-HP deaths (<30): {stats.get('low_hp_death_rate', 0.0):.0%}",
         f"- Mean health just before death: {stats.get('mean_health_at_death', 0.0):.1f}",
-    ])
+        f"- Exit rate (finished the level): {stats.get('exit_rate', 0.0):.0%} | "
+        f"Timeouts: {int(stats.get('timeouts', 0))}",
+        f"- Mean cells explored/episode: {stats.get('mean_coverage', 0.0):.0f}",
+    ]
+    stuck = stats.get("stuck_maps", []) or []
+    if stuck:
+        lines.append(f"- Under-explored / stuck maps: {', '.join(stuck)}")
+    return "\n".join(lines)
 
 
 # --------------------------- Lessons / reflection (Phase 4) ---------------------------
@@ -217,6 +226,10 @@ You are an RL researcher extracting reusable LESSONS, in English, from aggregate
 outcomes of many Doom episodes ACROSS runs (deaths, successes, timeouts and their
 context). You receive a pre-computed statistics report. Write 3-6 concrete, actionable
 lessons — especially failure patterns (e.g. "the agent dies in corridors below 25 HP").
+
+Cover both combat failures AND exploration/completion: the agent should explore the
+whole map and reach the exit, so call out exploration stalls (low coverage, many
+timeouts, maps where it gets stuck) as their own lessons when the numbers show it.
 
 RULE: ground EVERY lesson in the numbers from the report; cite them in `evidence`. Do
 not invent. If the data is thin, say so and give fewer, hedged lessons. Respond ONLY
@@ -232,17 +245,32 @@ def build_lessons_user_message(stats: Dict) -> str:
         f"- Deaths: {int(stats.get('deaths', 0))} "
         f"({stats.get('death_rate', 0.0):.0%}) | "
         f"Successes: {int(stats.get('successes', 0))} | "
+        f"Exits reached: {int(stats.get('exits', 0))} "
+        f"({stats.get('exit_rate', 0.0):.0%}) | "
         f"Timeouts: {int(stats.get('timeouts', 0))}",
         f"- Mean health just before death: {stats.get('mean_health_at_death', 0.0):.1f}",
         f"- Mean ammo just before death: {stats.get('mean_ammo_at_death', 0.0):.1f}",
         f"- Low-HP deaths (health < 30): {stats.get('low_hp_death_rate', 0.0):.0%} of deaths",
         f"- Mean episode length — deaths {stats.get('mean_len_death', 0.0):.0f} "
-        f"vs successes {stats.get('mean_len_success', 0.0):.0f} steps",
+        f"vs completions {stats.get('mean_len_success', 0.0):.0f} steps",
+        f"- Mean cells explored/episode: {stats.get('mean_coverage', 0.0):.0f} "
+        f"(deaths {stats.get('mean_coverage_death', 0.0):.0f} vs "
+        f"exits {stats.get('mean_coverage_exit', 0.0):.0f})",
     ]
     by_map = stats.get("deaths_by_map", {}) or {}
     if by_map:
-        top = ", ".join(f"{m}={c}" for m, c in by_map.items())
-        lines.append(f"- Deaths by map: {top}")
+        lines.append("- Deaths by map: " + ", ".join(f"{m}={c}" for m, c in by_map.items()))
+    timeouts_by_map = stats.get("timeouts_by_map", {}) or {}
+    if timeouts_by_map:
+        lines.append("- Timeouts by map (didn't finish): "
+                     + ", ".join(f"{m}={c}" for m, c in timeouts_by_map.items()))
+    cov_by_map = stats.get("coverage_by_map", {}) or {}
+    if cov_by_map:
+        lines.append("- Mean coverage by map: "
+                     + ", ".join(f"{m}={c:.0f}" for m, c in cov_by_map.items()))
+    stuck = stats.get("stuck_maps", []) or []
+    if stuck:
+        lines.append(f"- Under-explored / stuck maps: {', '.join(stuck)}")
     return "\n".join(lines)
 
 

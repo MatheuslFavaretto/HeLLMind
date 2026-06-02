@@ -1,0 +1,10 @@
+#!/bin/zsh
+# HeLLMind launcher — run `doom-cli`, `doom-cli train --map MAP02`, `doom-cli status`...
+# Symlink it into your PATH (e.g. ~/.local/bin/doom-cli) and call it from anywhere; it
+# always operates from the project dir (where .env and the vault live). Uses the project
+# virtualenv so you don't have to activate it.
+HERE="${0:A:h}"            # real project dir, even when invoked through a symlink
+PY="$HERE/.venv/bin/python"
+[ -x "$PY" ] || PY="python3"
+cd "$HERE" || exit 1
+exec "$PY" -m doom_cli "$@"

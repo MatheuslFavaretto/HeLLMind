@@ -119,8 +119,11 @@ class LLMWriter:
         num_ctx: int = 4096,
         num_predict: int = 700,
         keep_alive: str = "5m",
+        timeout: float = 300.0,
     ) -> None:
-        self.client = Client(host=host)
+        # A read timeout is ESSENTIAL: without it a lost/stalled Ollama response
+        # blocks the socket recv forever (the whole post-train notes phase hangs).
+        self.client = Client(host=host, timeout=timeout)
         self.model = model
         self.keep_alive = keep_alive
         # low temperature -> stable JSON; small num_ctx (fact sheet is tiny) saves

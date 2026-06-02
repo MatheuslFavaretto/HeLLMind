@@ -49,3 +49,34 @@ def test_aggregate_events():
 def test_aggregate_empty():
     s = aggregate_events([])
     assert s["total"] == 0 and s["death_rate"] == 0.0 and s["deaths_by_map"] == {}
+    # exploration keys exist and are zero/empty on no data
+    assert s["exit_rate"] == 0.0 and s["mean_coverage"] == 0.0
+    assert s["stuck_maps"] == [] and s["coverage_by_map"] == {}
+
+
+def test_aggregate_exploration_dimensions():
+    events = [
+        {"type": "exit", "map": "MAP01", "coverage": 90, "length": 250, "run": "r1"},
+        {"type": "timeout", "map": "MAP02", "coverage": 8, "length": 400, "run": "r1"},
+        {"type": "timeout", "map": "MAP02", "coverage": 12, "length": 400, "run": "r1"},
+        {"type": "death", "map": "MAP02", "coverage": 10, "health": 5, "run": "r1"},
+    ]
+    s = aggregate_events(events)
+    assert s["exits"] == 1 and s["exit_rate"] == 0.25
+    assert s["completions"] == 1                      # exit counts as a completion
+    assert s["timeouts_by_map"] == {"MAP02": 2}
+    assert s["coverage_by_map"]["MAP01"] == 90.0
+    assert s["coverage_by_map"]["MAP02"] == 10.0       # mean of 8,12,10
+    assert s["stuck_maps"] == ["MAP02"]                # 10 << 0.6*90 -> under-explored
+    assert s["mean_coverage_exit"] == 90.0
+
+
+def test_lessons_and_suggest_prompts_mention_exploration():
+    from writer.prompts import build_lessons_user_message, build_suggest_user_message
+    stats = {"total": 4, "runs": 1, "exits": 1, "exit_rate": 0.25, "mean_coverage": 30.0,
+             "stuck_maps": ["MAP02"], "timeouts_by_map": {"MAP02": 2},
+             "coverage_by_map": {"MAP01": 90.0, "MAP02": 10.0}}
+    lessons = build_lessons_user_message(stats)
+    assert "Exits reached" in lessons and "stuck maps" in lessons.lower()
+    suggest = build_suggest_user_message(stats, {"hit_reward": 2.0})
+    assert "Exit rate" in suggest and "stuck maps" in suggest.lower()

@@ -1,3 +1,0 @@
-{"title": "Agents frequently die in low health", "insight": "The majority, 91%, of deaths occur when the agent's health is below 30 HP.", "evidence": "Low-HP deaths (health < 30): 91% of deaths"}
-{"title": "Agents often die in short episodes", "insight": "Episodes end with a death much faster than they succeed, indicating the agent's performance is precarious.", "evidence": "Mean episode length — deaths 95 vs successes 0 steps"}
-{"title": "Agent tends to die near the beginning of its life", "insight": "The mean health just before death (13.7) suggests agents often fail early in their lives.", "evidence": "Mean health just before death: 13.7"}
