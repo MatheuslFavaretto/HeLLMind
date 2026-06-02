@@ -55,6 +55,10 @@ class Config:
     # Anti-idle: reward movement, and make standing still cost reward (time penalty).
     move_reward: float = float(os.getenv("MOVE_REWARD", "0.002"))
     living_reward: float = float(os.getenv("LIVING_REWARD", "-0.005"))
+    # Anti-circle: reward NET outward progress (new max distance from spawn). Raw move_reward
+    # pays the agent to spin in circles (infinite distance); this only pays for going OUTWARD,
+    # so it can't be farmed by a limit cycle. Drives directed exploration. Campaign only.
+    frontier_reward: float = float(os.getenv("FRONTIER_REWARD", "0.0"))
     # ---------- Exploration & completion (autonomy goal: explore the whole map) ----------
     # Bonus the first time the agent steps on a NEW grid cell (count-based exploration).
     # Drives covering the map instead of pacing the same corridor.
@@ -120,6 +124,7 @@ class Config:
             "death_penalty": self.death_penalty,
             "move_reward": self.move_reward,
             "living_reward": self.living_reward,
+            "frontier_reward": self.frontier_reward,
             "coverage_reward": self.coverage_reward,
             "coverage_cell": self.coverage_cell,
             "exit_reward": self.exit_reward,

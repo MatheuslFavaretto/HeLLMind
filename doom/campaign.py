@@ -94,6 +94,12 @@ class CampaignDoomEnv(gym.Env):
         self._miss_penalty = float(r.get("miss_penalty", MISS_PENALTY))
         self._damage_penalty = float(r.get("damage_taken_penalty", 0.1))
         self._move_reward = float(r.get("move_reward", 0.0))  # anti-idle (per distance)
+        # Anti-circle: reward NET outward progress (new max distance from spawn), which
+        # spinning in place CANNOT farm — unlike raw move_reward, which literally pays the
+        # agent to drive in circles. Drives directed exploration instead of a limit cycle.
+        self._frontier_reward = float(r.get("frontier_reward", 0.0))
+        self._spawn_xy: Optional[Tuple[float, float]] = None
+        self._max_dist = 0.0
         # Kill bonus was hardcoded at 5.0 — i.e. the single strongest combat lever wasn't
         # tunable, so the supervisor/suggestions could never push the agent OUT of the
         # combat-avoidance local optimum (idle-to-timeout beats fight-and-die). Now a knob.
@@ -311,6 +317,8 @@ class CampaignDoomEnv(gym.Env):
         self._ep_enemies = {}
         self._mon_counts = {}
         self._nearest_enemy = None
+        self._spawn_xy = (self._last_vars["position_x"], self._last_vars["position_y"])
+        self._max_dist = 0.0
         self._visit_grid[:] = 0
         if self._spatial:
             self._compute_bbox()
@@ -328,6 +336,7 @@ class CampaignDoomEnv(gym.Env):
 
         cov_bonus = 0.0  # reward for stepping on a NEW grid cell this episode
         weapon_bonus = 0.0  # reward the first time a NEW weapon slot is wielded
+        frontier_bonus = 0.0  # reward NET outward progress (can't be farmed by circling)
         if not done:
             raw = self._read_raw_vars()
             deltas = {n: max(0.0, raw[n] - self._last_vars[n]) for n in MONOTONIC}
@@ -350,6 +359,15 @@ class CampaignDoomEnv(gym.Env):
                 if slot >= 2 and slot not in self._weapons_seen:
                     self._weapons_seen.add(slot)
                     weapon_bonus = self._weapon_variety_reward
+            # Frontier progress: reward only when the agent reaches a NEW farthest point
+            # from spawn. Circling never increases the max distance -> earns nothing.
+            if self._frontier_reward and self._spawn_xy is not None:
+                ddx = raw["position_x"] - self._spawn_xy[0]
+                ddy = raw["position_y"] - self._spawn_xy[1]
+                dist = (ddx * ddx + ddy * ddy) ** 0.5
+                if dist > self._max_dist:
+                    frontier_bonus = self._frontier_reward * (dist - self._max_dist)
+                    self._max_dist = dist
             self._mark_visit(raw["position_x"], raw["position_y"])
             self._track_enemies(raw["position_x"], raw["position_y"],
                                 int(raw.get("selected_weapon", 0)),
@@ -370,6 +388,7 @@ class CampaignDoomEnv(gym.Env):
         shaped += self._move_reward * deltas["distance"]  # reward moving (anti-idle)
         shaped += cov_bonus                               # reward exploring new ground
         shaped += weapon_bonus                            # reward using a new weapon
+        shaped += frontier_bonus                          # reward NET outward progress (anti-circle)
         shaped += self._step_threat_bonus                 # extra for deadlier monsters (bestiary)
         attacked = self._action_attacks[int(action)]  # this action pressed ATTACK
         if attacked and deltas["hitcount"] == 0 and not done:
