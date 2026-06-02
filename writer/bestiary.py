@@ -29,17 +29,20 @@ def _confidence(encounters: int) -> str:
 
 
 def threat_multipliers(store: Dict[str, Any], cap: float = 3.0) -> Dict[str, float]:
-    """Per-monster kill-reward multiplier learned from the bestiary: 1 + threat, where
-    threat = deaths-when-present / encounters (clamped to `cap`). Deadlier monster -> the
-    agent is paid more for killing it. Low-confidence (<5 encounters) monsters stay at 1.0
-    so a couple of noisy episodes can't distort the reward. Empty store -> {} (all 1.0)."""
+    """Per-monster kill-reward multiplier learned from the bestiary: the agent is paid more
+    for killing the monsters that actually KILL IT. Threat = this monster's share of the
+    agent's deaths (`killed_agent`, the nearest-at-death attribution) — NOT
+    deaths-when-present, which is useless here because the objects buffer is map-wide so
+    every monster is "present" every episode (identical for all). Multiplier = 1 + 3·share,
+    clamped to `cap`. Low-confidence (<5 encounters) monsters stay at 1.0. Empty -> {}."""
+    items = [(n, s) for n, s in (store or {}).items() if int(s.get("encounters", 0)) >= 5]
+    total_kills = sum(int(s.get("killed_agent", 0)) for _, s in items)
+    if not total_kills:
+        return {}
     out: Dict[str, float] = {}
-    for name, s in (store or {}).items():
-        enc = int(s.get("encounters", 0))
-        if enc < 5:
-            continue
-        threat = int(s.get("outcomes", {}).get("death", 0)) / enc
-        out[name] = float(min(cap, 1.0 + threat))
+    for name, s in items:
+        share = int(s.get("killed_agent", 0)) / total_kills
+        out[name] = float(min(cap, 1.0 + 3.0 * share))
     return out
 
 

@@ -101,19 +101,26 @@ def test_hitscan_shooters_marked_ranged(tmp_path):
     assert "hitscan — fires bullets" in open(write_bestiary(Cfg())).read()
 
 
-def test_threat_multipliers_scale_with_deadliness(tmp_path):
+def test_threat_multipliers_scale_with_who_kills_the_agent(tmp_path):
     from writer.bestiary import threat_multipliers
     store = _demon_imp_store(str(tmp_path / ".memory")).load()
     m = threat_multipliers(store)
-    # Demon: 12 deaths / 30 enc = 0.4 -> 1.4x; Imp: 1/8 = 0.125 -> 1.125x. Demon worth more.
-    assert abs(m["Demon"] - 1.4) < 1e-6
+    # Demon killed the agent 12× vs Imp's 1× -> Demon's share is far higher -> worth more.
     assert m["Demon"] > m["DoomImp"]
+    assert m["Demon"] == 3.0          # share 12/13 -> 1+3·0.92 = 3.77, clamped to cap 3.0
+    assert 1.0 < m["DoomImp"] < 1.5   # share 1/13 -> ~1.23
 
 
 def test_threat_multipliers_ignore_low_confidence():
     from writer.bestiary import threat_multipliers
-    # only 3 encounters -> too noisy -> stays flat (omitted).
-    assert threat_multipliers({"Demon": {"encounters": 3, "outcomes": {"death": 3}}}) == {}
+    # only 3 encounters -> too noisy -> dropped (and no killed_agent anyway) -> {}.
+    assert threat_multipliers({"Demon": {"encounters": 3, "killed_agent": 3}}) == {}
+
+
+def test_threat_multipliers_uniform_when_no_killer_data():
+    from writer.bestiary import threat_multipliers
+    # map-wide deaths but nobody attributed as killer -> no signal -> {} (all stay 1.0).
+    assert threat_multipliers({"Demon": {"encounters": 50, "outcomes": {"death": 40}}}) == {}
 
 
 def test_bestiary_chart_renders(tmp_path):
