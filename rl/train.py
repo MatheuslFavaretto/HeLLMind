@@ -136,12 +136,17 @@ def _probe_ollama(cfg: Config) -> bool:
 
 
 def _latest_checkpoint(cfg: Config, name_prefix: str) -> Optional[str]:
-    """The most recent brain for this task in the vault (prefers _final)."""
+    """The most recent brain for this task in the vault (prefers _final).
+
+    Matches only this exact family. The step files are `{name_prefix}_<digits>_steps.zip`,
+    so we glob the digit boundary — otherwise `ppo_campaign_a8` (a prefix of
+    `ppo_campaign_a8_lstm`) would wrongly pick up a RecurrentPPO brain and crash the load.
+    """
     final = os.path.join(cfg.checkpoint_dir, f"{name_prefix}_final.zip")
     if os.path.exists(final):
         return final
     candidates = sorted(
-        glob.glob(os.path.join(cfg.checkpoint_dir, f"{name_prefix}*.zip")),
+        glob.glob(os.path.join(cfg.checkpoint_dir, f"{name_prefix}_[0-9]*_steps.zip")),
         key=os.path.getmtime,
     )
     return candidates[-1] if candidates else None
@@ -160,6 +165,18 @@ def _resolve_resume(cfg: Config, args: argparse.Namespace, name_prefix: str) -> 
 
 def build_vec_env(cfg: Config):
     rewards = cfg.reward_weights()
+    # Closed loop: scale kill rewards by the learned per-monster threat (bestiary -> reward).
+    if cfg.campaign and getattr(cfg, "bestiary_reward", False):
+        try:
+            from writer.bestiary import BestiaryStore, threat_multipliers
+
+            mults = threat_multipliers(BestiaryStore(cfg.memory_dir).load())
+            if mults:
+                rewards["enemy_threat"] = mults
+                print(f"[bestiary] threat-weighted kills: "
+                      f"{', '.join(f'{k}×{v:.2f}' for k, v in mults.items())}")
+        except Exception:
+            pass
     if cfg.campaign:
         first_map = cfg.maps[0]
         env_fns = [
@@ -174,6 +191,7 @@ def build_vec_env(cfg: Config):
                 rank,
                 window_visible=cfg.render,
                 rewards=rewards,
+                spatial_memory=cfg.spatial_memory,
             )
             for rank in range(cfg.n_envs)
         ]
@@ -228,13 +246,17 @@ def main() -> None:
     # Include the action count so resume never loads an incompatible brain
     # (e.g., a 7-button campaign checkpoint into an 8-button one).
     task = "campaign" if cfg.campaign else cfg.scenario
-    name_prefix = f"ppo_{task}_a{meta['num_actions']}"
+    # Tag the policy family (`_lstm`) so a recurrent brain never cross-loads with a
+    # feed-forward one (same guard idea as the action-count `a{N}`).
+    from rl.algo import algo_class, describe, policy_name, policy_tag
+    name_prefix = f"ppo_{task}_a{meta['num_actions']}{policy_tag(cfg.use_lstm)}"
+    AlgoClass = algo_class(cfg.use_lstm)
 
     # By DEFAULT, reuse this vault's brain (don't restart from scratch).
     resume_path = _resolve_resume(cfg, args, name_prefix)
     if resume_path:
         print(f"[brain] reusing this vault's learning: {resume_path}")
-        model = PPO.load(resume_path, env=venv, tensorboard_log=cfg.tensorboard_log)
+        model = AlgoClass.load(resume_path, env=venv, tensorboard_log=cfg.tensorboard_log)
         reset_timesteps = False
     else:
         if args.fresh:
@@ -242,8 +264,10 @@ def main() -> None:
         else:
             print(f"[brain] no brain in this vault ({cfg.checkpoint_dir}) — "
                   "starting from zero.")
-        model = PPO(
-            policy="CnnPolicy",
+        algo_label, pol = describe(cfg.use_lstm)
+        print(f"[brain] policy: {algo_label} / {pol}")
+        model = AlgoClass(
+            policy=policy_name(cfg.use_lstm),
             env=venv,
             n_steps=cfg.n_steps,
             batch_size=cfg.batch_size,
@@ -259,29 +283,29 @@ def main() -> None:
         )
         reset_timesteps = True
 
-    # When reusing the brain, `--timesteps` is ADDITIONAL (train X more); otherwise
-    # SB3 would treat it as an absolute target and do nothing if it's already met.
+    # `--timesteps` is ALWAYS the number of steps to train NOW. On resume, SB3 itself adds
+    # the existing count (with reset_num_timesteps=False it does `total += num_timesteps`),
+    # so we pass cfg.total_timesteps directly — passing num+total here double-counted and
+    # trained ~2x too long. `learn_total` is just for the human-readable target message.
     if resume_path:
         learn_total = model.num_timesteps + cfg.total_timesteps
         print(f"[brain] already has {model.num_timesteps:,} steps — training "
               f"+{cfg.total_timesteps:,} (target {learn_total:,}).")
-    else:
-        learn_total = cfg.total_timesteps
 
     callbacks = []
     # In campaign mode, the curriculum switches maps by timesteps. Closed loop:
-    # weight each map's budget by past deaths there (from memory) -> the agent
-    # trains MORE where it died MORE. No memory yet = uniform (previous behavior).
+    # weight each map's budget by past deaths AND under-exploration there (from memory)
+    # -> the agent trains MORE where it died MORE or explored LESS. No memory = uniform.
     if cfg.campaign and len(cfg.maps) > 1:
         weights = None
         if cfg.memory_enabled:
-            from rl.campaign_callbacks import map_step_weights
+            from rl.campaign_callbacks import combined_map_weights
 
             events = MemoryStore.read_events(cfg.memory_dir)
             if events:
-                weights = map_step_weights(events, list(cfg.maps))
+                weights = combined_map_weights(events, list(cfg.maps))
                 focus = ", ".join(f"{m}×{w:.2f}" for m, w in weights.items())
-                print(f"[curriculum] memory-weighted focus (more deaths = more steps): {focus}")
+                print(f"[curriculum] memory-weighted focus (more deaths/less explored = more steps): {focus}")
         callbacks.append(
             MapCurriculumCallback(
                 maps=list(cfg.maps),
@@ -320,6 +344,16 @@ def main() -> None:
         callbacks.append(
             MemoryRecorderCallback(MemoryStore(cfg.memory_dir, run_name=cfg.run_name))
         )
+        # Per-map explored heatmap that persists across runs (campaign only — the
+        # geometry/coverage of full maps is what's worth remembering across layouts).
+        if cfg.campaign:
+            from rl.coverage_callback import CoverageMemoryCallback
+            from rl.enemy_callback import EnemyMemoryCallback
+            from writer.bestiary import BestiaryStore
+            from writer.coverage_store import CoverageStore
+
+            callbacks.append(CoverageMemoryCallback(CoverageStore(cfg.memory_dir)))
+            callbacks.append(EnemyMemoryCallback(BestiaryStore(cfg.memory_dir)))
 
     # Feedback loop: Obsidian (00-index/control.md) controls training live.
     if cfg.control_enabled:
@@ -351,7 +385,7 @@ def main() -> None:
 
     try:
         model.learn(
-            total_timesteps=learn_total,
+            total_timesteps=cfg.total_timesteps,  # SB3 adds the existing count on resume
             callback=callbacks,
             progress_bar=use_bar,
             reset_num_timesteps=reset_timesteps,

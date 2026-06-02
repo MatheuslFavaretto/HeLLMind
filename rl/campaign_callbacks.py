@@ -23,6 +23,34 @@ def map_step_weights(events: List[dict], maps: List[str]) -> Dict[str, float]:
     return {m: raw[m] / mean for m in maps}
 
 
+def frontier_step_weights(events: List[dict], maps: List[str]) -> Dict[str, float]:
+    """Weight each map by how UNDER-EXPLORED it is (frontier-seeking). Maps where the
+    agent has seen FEWER distinct cells get more training budget. Normalized to mean
+    1.0; no coverage data -> all 1.0."""
+    sums: Dict[str, float] = {m: 0.0 for m in maps}
+    counts: Dict[str, int] = {m: 0 for m in maps}
+    for e in events:
+        m = e.get("map")
+        if m in sums and "coverage" in e:
+            sums[m] += float(e["coverage"])
+            counts[m] += 1
+    mean_cov = {m: (sums[m] / counts[m] if counts[m] else 0.0) for m in maps}
+    # Inverse coverage: less explored -> bigger weight. +1 smoothing on cells.
+    raw = {m: 1.0 / (mean_cov[m] + 1.0) for m in maps}
+    mean = sum(raw.values()) / len(maps)
+    return {m: raw[m] / mean for m in maps}
+
+
+def combined_map_weights(events: List[dict], maps: List[str]) -> Dict[str, float]:
+    """Curriculum focus = die more OR explore less => train more. Product of the
+    death-weight and the frontier (under-exploration) weight, renormalized to mean 1.0."""
+    dw = map_step_weights(events, maps)
+    fw = frontier_step_weights(events, maps)
+    raw = {m: dw[m] * fw[m] for m in maps}
+    mean = sum(raw.values()) / len(maps)
+    return {m: raw[m] / mean for m in maps}
+
+
 class MapCurriculumCallback(BaseCallback):
     def __init__(
         self,

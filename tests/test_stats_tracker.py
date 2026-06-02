@@ -38,6 +38,42 @@ def test_distance_and_coverage(make_doom_info):
     assert snap["path_cells"]  # non-empty (feeds the minimap)
 
 
+def test_accuracy_uses_attacked_flag_for_combined_actions(make_doom_info):
+    # Campaign uses combined actions (several press ATTACK), so accuracy must come from
+    # the env-reported `attacked` flag, not a single ATTACK button index.
+    tr = StatsTracker(button_names=["FWD", "FWD+ATK", "ATK"])  # labels, not raw buttons
+    # 3 attacks (2 hit), 2 non-attack steps -> accuracy 2/3.
+    for attacked, hit in [(True, 1.0), (True, 0.0), (True, 1.0), (False, 0.0), (False, 0.0)]:
+        info = make_doom_info(0, hits=hit)
+        info["doom"]["attacked"] = attacked
+        _feed(tr, info, 0)
+    snap = tr.snapshot(10)
+    assert snap["shots_fired"] == 3        # counted from the flag, not a button index
+    assert snap["shots_hit"] == 2
+    assert round(snap["shooting_accuracy"], 3) == 0.667
+
+
+def test_path_polyline_is_ordered_and_dedups_repeats(make_doom_info):
+    tr = StatsTracker(button_names=BUTTONS)
+    # Two steps on the same cell (should collapse to one), then move to a new cell.
+    _feed(tr, make_doom_info(MOVE, pos=(0.0, 0.0)), MOVE)
+    _feed(tr, make_doom_info(MOVE, pos=(10.0, 0.0)), MOVE)   # same grid cell as above
+    _feed(tr, make_doom_info(MOVE, pos=(200.0, 0.0)), MOVE)  # new cell
+    _feed(tr, make_doom_info(MOVE, pos=(200.0, 200.0)), MOVE)  # new cell
+    line = tr.snapshot(40)["path_polyline"]
+    assert line == [[0, 0], [2, 0], [2, 2]]  # ordered, consecutive repeat collapsed
+
+
+def test_path_polyline_keeps_last_completed_episode(make_doom_info):
+    tr = StatsTracker(button_names=BUTTONS)
+    _feed(tr, make_doom_info(MOVE, pos=(0.0, 0.0)), MOVE)
+    _feed(tr, make_doom_info(MOVE, pos=(200.0, 0.0),
+                             episode={"r": 1.0, "l": 2}), MOVE)  # episode ends here
+    _feed(tr, make_doom_info(MOVE, pos=(800.0, 0.0)), MOVE)      # next episode begins
+    line = tr.snapshot(30)["path_polyline"]
+    assert line == [[0, 0], [2, 0]]  # the COMPLETED episode, not the fresh one
+
+
 def test_weapons_distribution(make_doom_info):
     tr = StatsTracker(button_names=BUTTONS)
     for _ in range(3):

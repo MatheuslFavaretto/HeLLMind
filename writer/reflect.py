@@ -28,21 +28,52 @@ def aggregate_events(events: List[dict]) -> Dict:
     def mean(xs: List[float]) -> float:
         return float(sum(xs) / len(xs)) if xs else 0.0
 
+    # Campaign tags a finished level as terminal "exit" (not "success"); count both as
+    # completions so the exploration/finishing dimension is visible to the LLM.
+    exits = [e for e in events if e.get("type") == "exit"]
+    completions = successes + exits
+
     n = len(events)
     low_hp = [e for e in deaths if float(e.get("health", 0)) < LOW_HP]
+
+    # Exploration: how much of the map each episode covered (distinct cells), per map.
+    cov_events = [e for e in events if e.get("coverage") is not None]
+    coverage_by_map: Dict[str, float] = {}
+    for m in {e.get("map", "") for e in cov_events if e.get("map")}:
+        ms = [float(e.get("coverage", 0)) for e in cov_events if e.get("map") == m]
+        coverage_by_map[m] = round(mean(ms), 1)
+    # "Stuck" = explores least relative to the best-covered map (a frontier signal),
+    # i.e. where the agent keeps getting trapped instead of covering ground.
+    stuck_maps: List[str] = []
+    if coverage_by_map:
+        best = max(coverage_by_map.values()) or 1.0
+        stuck_maps = sorted(m for m, c in coverage_by_map.items() if c < 0.6 * best)
+
     return {
         "total": n,
         "runs": len({e.get("run", "") for e in events}),
         "deaths": len(deaths),
         "successes": len(successes),
         "timeouts": len(timeouts),
+        "exits": len(exits),
+        "completions": len(completions),
         "death_rate": (len(deaths) / n) if n else 0.0,
+        "exit_rate": (len(exits) / n) if n else 0.0,
+        "completion_rate": (len(completions) / n) if n else 0.0,
         "mean_health_at_death": mean([float(e.get("health", 0)) for e in deaths]),
         "mean_ammo_at_death": mean([float(e.get("ammo", 0)) for e in deaths]),
         "low_hp_death_rate": (len(low_hp) / len(deaths)) if deaths else 0.0,
         "mean_len_death": mean([float(e.get("length", 0)) for e in deaths]),
-        "mean_len_success": mean([float(e.get("length", 0)) for e in successes]),
+        "mean_len_success": mean([float(e.get("length", 0)) for e in completions]),
         "deaths_by_map": dict(Counter(e.get("map", "") for e in deaths if e.get("map"))),
+        "timeouts_by_map": dict(Counter(e.get("map", "") for e in timeouts if e.get("map"))),
+        "mean_coverage": mean([float(e.get("coverage", 0)) for e in cov_events]),
+        "mean_coverage_death": mean([float(e.get("coverage", 0)) for e in deaths
+                                     if e.get("coverage") is not None]),
+        "mean_coverage_exit": mean([float(e.get("coverage", 0)) for e in exits
+                                    if e.get("coverage") is not None]),
+        "coverage_by_map": coverage_by_map,
+        "stuck_maps": stuck_maps,
     }
 
 
@@ -89,7 +120,9 @@ def reflect(cfg: Config, model: Optional[str] = None) -> Optional[str]:
             "# Lessons learned (across runs)", "",
             f"From **{stats['total']}** episode events over **{stats['runs']}** run(s): "
             f"{stats['deaths']} deaths ({stats['death_rate']:.0%}), "
-            f"{stats['successes']} successes.", ""]
+            f"{stats['completions']} completions "
+            f"(exit-rate {stats['exit_rate']:.0%}), "
+            f"~{stats['mean_coverage']:.0f} cells explored/episode.", ""]
     for i, l in enumerate(lessons, 1):
         body.append(f"## {i}. {l['title']}\n\n{l['insight']}\n\n_Evidence: {l['evidence']}_\n")
     # Link the maps these lessons came from -> connects lessons into the graph.

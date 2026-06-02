@@ -9,18 +9,37 @@ learning into an **Obsidian knowledge graph**. 100% local, no cost.
 
 ![python](https://img.shields.io/badge/python-3.12-blue)
 ![license](https://img.shields.io/badge/license-MIT-green)
-![tests](https://img.shields.io/badge/tests-61%20passing-brightgreen)
+![tests](https://img.shields.io/badge/tests-97%20passing-brightgreen)
 ![local](https://img.shields.io/badge/100%25-local-orange)
 
 </div>
 
-| 🎮 Agent playing | 🗺️ Real map + path | 📈 Performance (5%→18% accuracy) |
-|:---:|:---:|:---:|
-| ![](assets/doom-frame.png) | ![](assets/minimap-real.png) | ![](assets/performance.png) |
+<div align="center">
 
-> Training and the LLM are **decoupled**: Ollama never runs inside the PPO loop (that
-> froze training) — notes are generated in batch, at the end. It even works **without
-> Ollama** (factual notes) and trains **in batches** (the brain is reused by default).
+### 🎮 The agent playing (deterministic policy, MAP02)
+
+![gameplay](assets/gameplay.gif)
+
+> Real freedoom2 gameplay captured headless from the trained brain — it moves, aims, and
+> fights (≈4 kills/episode, 40% clear-rate under deterministic eval).
+
+</div>
+
+| 🎮 In-game | 🗺️ Real minimap + path | 📈 Learning curve |
+|:---:|:---:|:---:|
+| ![](assets/gameplay-still1.png) | ![](assets/minimap.png) | ![](assets/learning-curve.png) |
+| **🕸️ Obsidian graph** | **👹 Bestiary (combat by monster)** | **🔥 Where it played (the 9% pocket)** |
+| ![](assets/obsidian-graph.png) | ![](assets/bestiary.png) | ![](assets/run-map.png) |
+
+<div align="center">
+
+> Every image above is **auto-generated** from one training run: the agent plays, then a
+> local LLM + telemetry write the notes, minimaps, charts and a factual monster bestiary
+> straight into Obsidian. Training and the LLM are **decoupled** — Ollama never runs inside
+> the PPO loop (that froze training); notes are generated in batch, at the end. Works
+> **without Ollama** (factual mode) and **reuses the brain** across runs.
+
+</div>
 
 ---
 
@@ -54,6 +73,7 @@ budget). Two feedback loops close back onto training.
  ┌───────────────────────────────────────────────────────────────────────┐
  │ 1. TRAINING  (real-time, never blocks)                                  │
  │    ViZDoom → PPO CnnPolicy (N envs) ─ reward: +hit −miss −damage −death │
+ │    (optional RecurrentPPO/LSTM for temporal memory — USE_LSTM)          │
  │    • CheckpointCallback → ./<vault>/.checkpoints/*.zip   (the "brain")  │
  │    • DocCallback → snapshots .cache/pending_runs/*.jsonl (fast, no LLM) │
  │    • MemoryRecorder → <vault>/.memory/episodic/*.jsonl   (death/success)│
@@ -161,7 +181,7 @@ python3 -m rl.status                             # saved checkpoints + progress
 - **Reward suggestions** — an offline LLM proposes reward-weight tweaks from observed
   behavior (e.g. "raise damage penalty: 92% of deaths at low HP"); you approve via `.env`.
 - **Obsidian → training** — edit `control.md` and training adapts without restarting.
-- **Continuous learning** — the brain lives in the vault and is **reused automatically** (`--fresh` resets) · **works without Ollama** · **61 tests** (`pytest -q`).
+- **Continuous learning** — the brain lives in the vault and is **reused automatically** (`--fresh` resets) · **works without Ollama** · **97 tests** (`pytest -q`).
 
 ## 📊 Evaluate & prove performance
 
@@ -188,6 +208,26 @@ VAULT_PATH=./vault-B python3 -m rl.eval --episodes 50
 For rigor, run a few **seeds** per side (`SEED=...`) and compare the *means* — RL is
 noisy, and a single seed can mislead. Live curves: `tensorboard --logdir tb`.
 
+### ✅ Is it *really* learning (and fast)?
+
+Three independent checks — don't trust a single rising training curve:
+
+```bash
+doom-cli progress --points 5     # deterministic eval across checkpoints (the honest signal)
+doom-cli tb                      # TensorBoard: ep_rew_mean ↑, entropy_loss ↓, explained_variance ↑, fps
+doom-cli eval --episodes 50      # clean final numbers (argmax policy)
+```
+
+- **`doom-cli progress`** evaluates several saved checkpoints with the *deterministic*
+  policy and prints kills/accuracy/exploration over training — if those **rise across
+  checkpoints**, it's genuinely learning. (Measured here: kills 0 → 2.1 → 4.1 from 200k →
+  250k → 600k.)
+- **Throughput**: training prints `fps` every rollout (~600/s on an M5; ViZDoom is the
+  bottleneck, not the net). If fps craters, the loop is stalled. The LLM is decoupled
+  (batch, post-training) so it can never freeze the loop (±2% budget).
+- **Trust argmax, not the curve**: the deterministic eval is the truth — a policy can show
+  a great training curve yet argmax to garbage if undertrained (we caught exactly this).
+
 ## 📈 Expected evolution
 
 ![evolution](assets/evolution.png)
@@ -206,7 +246,7 @@ writer/      LLM, notes, minimap, charts, analysis, compare, process_run, memory
 ## 🧪 Tests
 
 ```bash
-python3 -m pytest -q     # 61 tests, no ViZDoom/Ollama needed (synthetic info)
+python3 -m pytest -q     # 97 tests (env tests boot ViZDoom when present), no ViZDoom/Ollama needed (synthetic info)
 ```
 
 ## 📜 License

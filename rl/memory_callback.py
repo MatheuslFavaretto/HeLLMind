@@ -41,6 +41,7 @@ class MemoryRecorderCallback(BaseCallback):
                     "length": int(ep["l"]),
                     "health": round(health),       # health just before the episode ended
                     "ammo": round(float(levels.get("ammo2", 0.0))),
+                    "coverage": int(doom.get("coverage_cells", 0)),  # distinct cells seen
                 })
             except Exception:
                 pass  # memory never crashes training

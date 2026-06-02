@@ -6,12 +6,15 @@ from writer.suggest import ENV_VAR
 
 def test_reward_weights_dict_has_all_knobs():
     w = Config().reward_weights()
-    assert set(w) == {"hit_reward", "miss_penalty", "damage_taken_penalty", "death_penalty"}
+    assert {"hit_reward", "miss_penalty", "damage_taken_penalty", "death_penalty",
+            "move_reward", "living_reward"} <= set(w)
     assert all(isinstance(v, float) for v in w.values())
 
 
-def test_env_var_mapping_matches_knobs():
-    assert set(ENV_VAR) == set(Config().reward_weights())
+def test_env_var_mapping_is_the_tunable_subset():
+    # the LLM only suggests these 4; they must be a subset of the env's reward weights
+    assert set(ENV_VAR) == {"hit_reward", "miss_penalty", "damage_taken_penalty", "death_penalty"}
+    assert set(ENV_VAR) <= set(Config().reward_weights())
     assert ENV_VAR["hit_reward"] == "HIT_REWARD"
 
 

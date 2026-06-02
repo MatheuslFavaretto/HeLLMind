@@ -63,6 +63,14 @@ def process_run(
     except Exception as e:
         print(f"[process_run] curve failed (ignoring): {e}")
 
+    # Level map embedded in the run note (not only the per-checkpoint notes).
+    try:
+        mm = writer.write_run_minimap(snaps)
+        if mm:
+            print(f"[process_run] run map: attachments/{mm}")
+    except Exception as e:
+        print(f"[process_run] run map failed (ignoring): {e}")
+
     # (A) Narrative synthesis of the whole run.
     try:
         story = writer.write_run_story(snaps)
@@ -88,6 +96,27 @@ def process_run(
             suggest(cfg)
         except Exception as e:
             print(f"[process_run] suggestions failed (ignoring): {e}")
+
+    # (World model) Factual bestiary of the monsters met (from ViZDoom telemetry).
+    if cfg.memory_enabled:
+        try:
+            from writer.bestiary import write_bestiary
+
+            p = write_bestiary(cfg)
+            if p:
+                print(f"[process_run] bestiary: {os.path.relpath(p, cfg.vault_path)}")
+        except Exception as e:
+            print(f"[process_run] bestiary failed (ignoring): {e}")
+
+    # Knowledge-graph IMAGE (the wikilink structure, for the README / a static companion).
+    try:
+        from writer.graph_image import render_graph
+
+        gp = os.path.join(cfg.vault_path, cfg.dir_attachments, "knowledge-graph.png")
+        if render_graph(cfg.vault_path, gp):
+            print(f"[process_run] graph image: {os.path.relpath(gp, cfg.vault_path)}")
+    except Exception as e:
+        print(f"[process_run] graph image failed (ignoring): {e}")
 
     # (Phase 2) Knowledge-graph hub connecting runs/maps/concepts/lessons.
     try:

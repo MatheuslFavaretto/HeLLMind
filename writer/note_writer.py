@@ -136,6 +136,37 @@ class NoteWriter:
             f.write(f"\n## Learning curve\n\n![[{img_name}]]\n")
         return img_name
 
+    def write_run_minimap(self, snapshots: List[dict]) -> Optional[str]:
+        """Embed the level map (walls + path) right in the run note, so the run's main
+        page shows WHERE it played — not only the per-checkpoint notes. Uses the last
+        snapshot that has a path, plus the cross-run exploration memory for the map."""
+        snap = next((s for s in reversed(snapshots) if s.get("path_cells")), None)
+        if snap is None:
+            return None
+        walls = snap.get("map_walls") or self._last_walls
+        memory_cells = None
+        if self.cfg.campaign and snap.get("map"):
+            try:
+                from writer.coverage_store import CoverageStore
+                memory_cells = CoverageStore(self.cfg.memory_dir).load_cells(snap["map"])
+            except Exception:
+                memory_cells = None
+        img_name = f"{self.cfg.run_name}-map.png"
+        try:
+            ok = render_minimap(snap["path_cells"], os.path.join(self.dir_attach, img_name),
+                                walls=walls, polyline=snap.get("path_polyline"),
+                                memory_cells=memory_cells)
+        except Exception:
+            ok = False
+        if not ok:
+            return None
+        path = os.path.join(self.dir_runs, f"{self.cfg.run_name}.md")
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(f"\n## Level map (where it played)\n\n![[{img_name}]]\n"
+                    "\n_Real walls; hotter = more time; blue line = one episode "
+                    "(🟢→🔴); dim teal = explored across runs._\n")
+        return img_name
+
     def write_run_story(self, snapshots: List[dict]) -> Optional[str]:
         """(A) Narrative synthesis of the whole run; linked from the run note."""
         if not snapshots:
@@ -535,16 +566,34 @@ class NoteWriter:
             self._last_walls = snapshot["map_walls"]
         if path_cells:
             img_name = f"{stem}.png"
+            # Cross-run exploration memory for THIS map (faint background layer): what the
+            # agent has explored over every past run, so the minimap shows accumulated
+            # knowledge, not just this window. Campaign only (maps have stable geometry).
+            memory_cells = None
+            if self.cfg.campaign and snapshot.get("map"):
+                try:
+                    from writer.coverage_store import CoverageStore
+                    memory_cells = CoverageStore(self.cfg.memory_dir).load_cells(
+                        snapshot["map"])
+                except Exception:
+                    memory_cells = None
             try:
                 if render_minimap(
                     path_cells,
                     os.path.join(self.dir_attach, img_name),
                     walls=self._last_walls,
+                    polyline=snapshot.get("path_polyline"),
+                    memory_cells=memory_cells,
                 ):
+                    mem_note = (
+                        " Dim teal = explored in past runs (persistent memory)."
+                        if memory_cells else ""
+                    )
                     minimap_md = (
                         "## Level minimap (path taken)\n\n"
                         f"![[{img_name}]]\n\n"
-                        "_Real level walls; hotter = where the agent spent more time._\n\n"
+                        "_Real level walls; hotter = more time spent. The blue line is one "
+                        f"episode's route (🟢 start → 🔴 end).{mem_note}_\n\n"
                     )
             except Exception:
                 minimap_md = ""  # image is optional; never crash the note
