@@ -192,6 +192,8 @@ def build_vec_env(cfg: Config):
                 window_visible=cfg.render,
                 rewards=rewards,
                 spatial_memory=cfg.spatial_memory,
+                memory_dir=cfg.memory_dir if cfg.memory_enabled else None,
+                depth_perception=cfg.depth_perception,
             )
             for rank in range(cfg.n_envs)
         ]
@@ -246,10 +248,11 @@ def main() -> None:
     # Include the action count so resume never loads an incompatible brain
     # (e.g., a 7-button campaign checkpoint into an 8-button one).
     task = "campaign" if cfg.campaign else cfg.scenario
-    # Tag the policy family (`_lstm`) so a recurrent brain never cross-loads with a
-    # feed-forward one (same guard idea as the action-count `a{N}`).
-    from rl.algo import algo_class, describe, policy_name, policy_tag
-    name_prefix = f"ppo_{task}_a{meta['num_actions']}{policy_tag(cfg.use_lstm)}"
+    # Tag the brain family (`_lstm`, `_sp`) so a recurrent or spatial-memory brain never
+    # cross-loads with an incompatible one (same guard idea as the action-count `a{N}`).
+    from rl.algo import algo_class, brain_prefix, describe, policy_name
+    name_prefix = brain_prefix(task, meta["num_actions"], cfg.use_lstm,
+                               cfg.spatial_memory, cfg.depth_perception)
     AlgoClass = algo_class(cfg.use_lstm)
 
     # By DEFAULT, reuse this vault's brain (don't restart from scratch).

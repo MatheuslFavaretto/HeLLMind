@@ -59,6 +59,41 @@ def test_propose_stays_within_bounds_and_targets_weakness():
     assert "COVERAGE_REWARD" in reason             # targeted the weakest (exploration)
 
 
+def test_score_caps_kills_so_camper_loses_to_explorer():
+    # Regression: kills/ep is unbounded, so an un-normalised 0.5*kills once let a
+    # spawn-camper (many kills, no exploration) outscore a real explorer.
+    camper = {"exit_rate": 0.0, "explored_fraction": 0.03,
+              "kills_per_episode": 4.0, "shooting_accuracy": 0.0}
+    explorer = {"exit_rate": 0.0, "explored_fraction": 0.40,
+                "kills_per_episode": 0.5, "shooting_accuracy": 0.0}
+    assert score(explorer) > score(camper)
+
+
+def test_score_kills_contribution_is_capped():
+    # 5 vs 50 kills must score the same (cap at 5) — kills is a tiebreaker, not the goal.
+    base = {"exit_rate": 0.0, "explored_fraction": 0.0, "shooting_accuracy": 0.0}
+    assert score({**base, "kills_per_episode": 5.0}) == score({**base, "kills_per_episode": 50.0})
+
+
+def test_propose_extends_timeout_when_episodes_time_out():
+    # > 80% timeouts + low exploration => the episode is too short, raise EPISODE_TIMEOUT.
+    env = {"EPISODE_TIMEOUT": "2100", "COVERAGE_REWARD": "1.5", "FRONTIER_REWARD": "0.05"}
+    new, reason = propose(env, {"timeout_rate": 0.9, "explored_fraction": 0.05,
+                                "exit_rate": 0.0, "kills_per_episode": 1.0,
+                                "shooting_accuracy": 0.0})
+    assert float(new["EPISODE_TIMEOUT"]) > 2100.0
+    assert "EPISODE_TIMEOUT" in reason
+
+
+def test_propose_no_timeout_extension_when_exploring():
+    # Timeouts but decent exploration => DON'T extend; the agent is using its time.
+    env = {"EPISODE_TIMEOUT": "2100", "COVERAGE_REWARD": "1.5", "FRONTIER_REWARD": "0.05"}
+    new, reason = propose(env, {"timeout_rate": 0.9, "explored_fraction": 0.40,
+                                "exit_rate": 0.0, "kills_per_episode": 1.0,
+                                "shooting_accuracy": 0.0})
+    assert float(new["EPISODE_TIMEOUT"]) == 2100.0
+
+
 # --------------------------- LLM-driven proposer ---------------------------
 def _fake_llm(monkeypatch, tweaks, summary="combat looks off"):
     """Wire writer.suggest's pieces so llm_propose runs without Ollama/memory."""

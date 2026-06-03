@@ -51,6 +51,17 @@ def combined_map_weights(events: List[dict], maps: List[str]) -> Dict[str, float
     return {m: raw[m] / mean for m in maps}
 
 
+def smart_curriculum_weights(events: List[dict], maps: List[str]) -> Dict[str, float]:
+    """Phase 4 curriculum: difficulty score (deaths + timeouts + coverage + kills) ×
+    forgetting boost (maps showing skill regression get extra budget for rehearsal).
+    Falls back to combined_map_weights if rl.curriculum is unavailable."""
+    try:
+        from rl.curriculum import smart_weights
+        return smart_weights(events, maps)
+    except ImportError:
+        return combined_map_weights(events, maps)
+
+
 class MapCurriculumCallback(BaseCallback):
     def __init__(
         self,

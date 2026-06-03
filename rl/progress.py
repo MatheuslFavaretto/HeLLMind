@@ -12,7 +12,7 @@ import re
 from config import Config
 from doom.campaign import campaign_metadata
 from doom.env import probe_env_metadata
-from rl.algo import policy_tag
+from rl.algo import brain_prefix
 from rl.eval import evaluate
 
 _STEP = re.compile(r"_(\d+)_steps\.zip$")
@@ -39,10 +39,12 @@ def main() -> None:
     cfg.memory_enabled = False
     if cfg.campaign:
         meta = campaign_metadata(cfg.wad_path, cfg.maps[0])
-        name_prefix = f"ppo_campaign_a{meta['num_actions']}{policy_tag(cfg.use_lstm)}"
+        name_prefix = brain_prefix("campaign", meta["num_actions"], cfg.use_lstm,
+                                   cfg.spatial_memory, cfg.depth_perception)
     else:
         meta = probe_env_metadata(cfg.scenario, cfg.frame_skip, cfg.resolution)
-        name_prefix = f"ppo_{cfg.scenario}_a{meta['num_actions']}{policy_tag(cfg.use_lstm)}"
+        name_prefix = brain_prefix(cfg.scenario, meta["num_actions"], cfg.use_lstm,
+                                   cfg.spatial_memory, cfg.depth_perception)
 
     ckpts = _checkpoints(cfg, name_prefix)
     if len(ckpts) < 2:

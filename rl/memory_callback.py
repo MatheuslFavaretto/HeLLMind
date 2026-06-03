@@ -33,15 +33,20 @@ class MemoryRecorderCallback(BaseCallback):
             else:
                 etype = "death" if health <= 0 else "timeout"
             try:
+                px, py = doom.get("final_pos", [0, 0])
+                region = f"{round(px / 512)}x{round(py / 512)}"
                 self.memory.record_event({
                     "type": etype,
                     "timesteps": int(self.num_timesteps),
                     "map": info.get("map", ""),
                     "reward": round(float(ep["r"]), 2),
                     "length": int(ep["l"]),
-                    "health": round(health),       # health just before the episode ended
+                    "health": round(health),
                     "ammo": round(float(levels.get("ammo2", 0.0))),
-                    "coverage": int(doom.get("coverage_cells", 0)),  # distinct cells seen
+                    "coverage": int(doom.get("coverage_cells", 0)),
+                    "weapon": int(levels.get("selected_weapon", 0.0)),
+                    "region": region,
+                    "nearest_enemy": doom.get("nearest_enemy", ""),
                 })
             except Exception:
                 pass  # memory never crashes training

@@ -9,7 +9,7 @@ from PIL import Image
 
 from config import Config
 from doom.campaign import campaign_metadata
-from rl.algo import algo_class, policy_tag
+from rl.algo import algo_class, brain_prefix
 from rl.train import _latest_checkpoint, build_vec_env
 
 UP = 4  # upscale factor for the tiny 84x84 view
@@ -49,7 +49,8 @@ def main() -> None:
     cfg.docs_enabled = False
     cfg.memory_enabled = False
     meta = campaign_metadata(cfg.wad_path, cfg.maps[0])
-    name_prefix = f"ppo_campaign_a{meta['num_actions']}{policy_tag(cfg.use_lstm)}"
+    name_prefix = brain_prefix("campaign", meta["num_actions"], cfg.use_lstm,
+                               cfg.spatial_memory, cfg.depth_perception)
     path = args.path or _latest_checkpoint(cfg, name_prefix)
     print(f"[gif] brain: {path} | spatial={cfg.spatial_memory}")
 

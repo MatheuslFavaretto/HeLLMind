@@ -66,7 +66,12 @@ class Config:
     # Grid cell size (map units) for both the coverage reward and the spatial memory.
     coverage_cell: float = float(os.getenv("COVERAGE_CELL", "96.0"))
     # Big bonus for actually reaching the level EXIT (episode ends, not dead, pre-timeout).
-    exit_reward: float = float(os.getenv("EXIT_REWARD", "200.0"))
+    # NOTE: keep this default in sync with .env (EXIT_REWARD=1000). A large sparse terminal
+    # reward is high-variance across seeds (it's only ever seen if the agent stumbles onto
+    # the exit) — exit_prox_scale mitigates that by shaping a dense gradient toward the
+    # exit AFTER the first success memorises its position (see campaign.py).
+    exit_reward: float = float(os.getenv("EXIT_REWARD", "1000.0"))
+    exit_prox_scale: float = float(os.getenv("EXIT_PROX_SCALE", "0.1"))
     # Count-based weapon variety: bonus the FIRST time the agent wields a NEW weapon slot
     # in an episode (campaign only). The campaign has SELECT_NEXT_WEAPON but, without this,
     # no reason to ever switch — so it never used the weapons it picks up.
@@ -78,6 +83,23 @@ class Config:
     # Spatial memory: feed the agent a 2nd obs channel of where it has already been
     # (so it can ACT on its own memory, not just be rewarded for it).
     spatial_memory: bool = os.getenv("SPATIAL_MEMORY", "0") in ("1", "true", "True")
+    # Depth perception: feed ViZDoom's depth buffer as an extra obs channel. Gives the CNN
+    # explicit 3D structure (how far each pixel is) — a strong, well-established navigation
+    # signal in 3D FPS agents (UNREAL/Arnold). Changes the obs shape, so it needs --fresh.
+    depth_perception: bool = os.getenv("DEPTH_PERCEPTION", "0") in ("1", "true", "True")
+    # Intrinsic curiosity (RND): spatial bonus that never saturates (unlike count-based
+    # coverage_reward which dries up once the starting room is covered). When enabled,
+    # adds a normalised prediction-error bonus for visiting unfamiliar positions.
+    # Use when exploration is stuck < 20% and coverage_reward alone isn't enough.
+    use_rnd: bool = os.getenv("USE_RND", "0") in ("1", "true", "True")
+    rnd_scale: float = float(os.getenv("RND_SCALE", "0.5"))
+    # Go-Explore "return, then explore": with prob goal_prob, an episode is handed a far,
+    # rarely-seen frontier cell (from the persisted archive) as a goal; a dense potential
+    # reward guides the agent BACK to it, then exploration takes over from that launch point.
+    # 0 = off. Use when the agent is stuck near spawn and never reaches the far map / exit.
+    goexplore_goal_prob: float = float(os.getenv("GOEXPLORE_GOAL_PROB", "0.0"))
+    goexplore_goal_scale: float = float(os.getenv("GOEXPLORE_GOAL_SCALE", "0.01"))
+    goexplore_reach_radius: float = float(os.getenv("GOEXPLORE_REACH_RADIUS", "96.0"))
     # Recurrent policy (LSTM): give the policy temporal memory across steps via
     # RecurrentPPO (sb3-contrib). Opt-in — it changes the saved brain's format, so an
     # LSTM brain and a feed-forward brain are NOT interchangeable (checkpoint is tagged).
@@ -128,7 +150,13 @@ class Config:
             "coverage_reward": self.coverage_reward,
             "coverage_cell": self.coverage_cell,
             "exit_reward": self.exit_reward,
+            "exit_prox_scale": self.exit_prox_scale,
             "weapon_variety_reward": self.weapon_variety_reward,
+            "use_rnd":  float(self.use_rnd),
+            "rnd_scale": self.rnd_scale,
+            "goexplore_goal_prob": self.goexplore_goal_prob,
+            "goexplore_goal_scale": self.goexplore_goal_scale,
+            "goexplore_reach_radius": self.goexplore_reach_radius,
         }
     # Feedback loop: training re-reads 00-index/control.md every N steps and adapts
     # (stop_training, novelty_threshold, write_every_steps) without restarting.

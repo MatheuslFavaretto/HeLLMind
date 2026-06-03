@@ -19,6 +19,9 @@ import sys
 from datetime import datetime, timezone
 from typing import Optional
 
+# Force line-by-line flush so iter summaries appear immediately when backgrounded.
+sys.stdout.reconfigure(line_buffering=True)
+
 from config import Config
 
 PY = sys.executable
@@ -26,22 +29,33 @@ PY = sys.executable
 
 # ---- the GOAL, as one number: explore the whole map, finish it, and survive/fight ----
 def score(m: dict) -> float:
-    return (
-        4.0 * m.get("exit_rate", 0.0)            # finishing the map matters most
-        + 3.0 * m.get("explored_fraction", 0.0)  # then covering it
-        + 0.5 * m.get("kills_per_episode", 0.0)  # then fighting
-        + 1.0 * m.get("shooting_accuracy", 0.0)
-    )
+    """Composite goal score. Priority order (the weights): finishing > covering > aim >
+    fighting.
+
+    Every term is normalised to ~[0,1] FIRST, so the weights alone set priority. This
+    matters: kills/ep is unbounded (0–5+), so the old `0.5 * kills` let a spawn-camping
+    brain that farms ~4 kills score +2.0 — dwarfing a real explorer (explored=0.1 →
+    +0.3). That scale bug literally told the agent "camp and kill > explore", the exact
+    local optimum we kept hitting. Capping kills at 5 (diminishing past that) and scaling
+    to [0,1] restores the intended ordering: max contributions become exit 4.0, explore
+    3.0, aim 1.0, kills 0.5 — kills is now a tiebreaker, not the objective."""
+    exit_r   = m.get("exit_rate", 0.0)                       # [0,1]
+    explored = m.get("explored_fraction", 0.0)              # [0,1]
+    kills    = min(m.get("kills_per_episode", 0.0), 5.0) / 5.0  # [0,1] (capped)
+    accuracy = m.get("shooting_accuracy", 0.0)             # [0,1]
+    return 4.0 * exit_r + 3.0 * explored + 1.0 * accuracy + 0.5 * kills
 
 
 # Reward knobs the supervisor is allowed to move, with hard bounds (the guardrails).
 BOUNDS = {
-    "COVERAGE_REWARD": (0.0, 3.0),
-    "EXIT_REWARD": (0.0, 500.0),
-    "HIT_REWARD": (0.5, 5.0),
-    "MISS_PENALTY": (0.0, 0.3),
-    "DAMAGE_TAKEN_PENALTY": (0.0, 0.5),
-    "DEATH_PENALTY": (1.0, 20.0),
+    "COVERAGE_REWARD":       (0.0, 4.0),
+    "EXIT_REWARD":           (0.0, 500.0),
+    "HIT_REWARD":            (0.5, 5.0),
+    "MISS_PENALTY":          (0.0, 0.3),
+    "DAMAGE_TAKEN_PENALTY":  (0.0, 0.5),
+    "DEATH_PENALTY":         (1.0, 20.0),
+    "FRONTIER_REWARD":       (0.0, 0.2),  # anti-circle/exploration lever
+    "EPISODE_TIMEOUT":       (1050, 8400),  # ticks — 30s to 240s at 35fps
 }
 
 # writer.suggest speaks in lowercase knobs; map them onto the supervisor's env vars.
@@ -65,9 +79,26 @@ def propose(env: dict, m: dict) -> tuple[dict, str]:
         v = v * factor if factor is not None else v + add
         new[key] = round(max(lo, min(hi, v)), 4)
 
-    if m.get("explored_fraction", 0.0) < 0.5:
-        bump("COVERAGE_REWARD", factor=1.5)
-        return new, f"explored only {m.get('explored_fraction',0):.0%} -> raise COVERAGE_REWARD to {new['COVERAGE_REWARD']}"
+    timeout_rate = m.get("timeout_rate", 0.0)
+    explored = m.get("explored_fraction", 0.0)
+
+    # Timeout diagnosis: if > 80% of episodes time out AND exploration is low, the
+    # episode is too short to let the agent find anything interesting — extend it.
+    if timeout_rate > 0.80 and explored < 0.15:
+        bump("EPISODE_TIMEOUT", factor=1.5)
+        return new, (f"timeout_rate={timeout_rate:.0%}, explored={explored:.0%} → "
+                     f"episode too short — raise EPISODE_TIMEOUT to {int(new['EPISODE_TIMEOUT'])}")
+
+    if explored < 0.10:
+        # Very low exploration: raise both coverage and frontier (push agent away from spawn).
+        bump("COVERAGE_REWARD", factor=1.4)
+        bump("FRONTIER_REWARD", factor=1.5)
+        return new, (f"explored only {explored:.0%} -> raise "
+                     f"COVERAGE_REWARD to {new['COVERAGE_REWARD']}, "
+                     f"FRONTIER_REWARD to {new['FRONTIER_REWARD']}")
+    if explored < 0.5:
+        bump("COVERAGE_REWARD", factor=1.3)
+        return new, f"explored only {explored:.0%} -> raise COVERAGE_REWARD to {new['COVERAGE_REWARD']}"
     if m.get("exit_rate", 0.0) == 0.0:
         bump("EXIT_REWARD", factor=1.3)
         bump("COVERAGE_REWARD", factor=1.2)  # exploring helps find the exit
@@ -163,8 +194,26 @@ def eval_brain(env: dict, episodes: int) -> dict:
     raise RuntimeError("eval produced no METRICS_JSON")
 
 
+def load_history(cfg: Config) -> list:
+    """Restore a prior auto session's trail from autonomy.jsonl (for --resume). Returns []
+    if nothing is stored yet."""
+    path = os.path.join(cfg.memory_dir, "autonomy.jsonl")
+    if not os.path.exists(path):
+        return []
+    history = []
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                try:
+                    history.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+    return history
+
+
 def write_log(cfg: Config, history: list) -> None:
-    """Persist the self-improvement trail: JSONL (machine) + Obsidian note (human)."""
+    """Persist the self-improvement trail: JSONL (machine) + live Obsidian log (human)."""
     os.makedirs(cfg.memory_dir, exist_ok=True)
     with open(os.path.join(cfg.memory_dir, "autonomy.jsonl"), "w", encoding="utf-8") as f:
         for h in history:
@@ -173,35 +222,274 @@ def write_log(cfg: Config, history: list) -> None:
     note = os.path.join(cfg.vault_path, cfg.dir_index, "Autonomy Log.md")
     os.makedirs(os.path.dirname(note), exist_ok=True)
     best = max(history, key=lambda h: h["score"])
+    ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+    # Score trajectory (sparkline text)
+    scores = [round(h["score"], 2) for h in history]
+    score_trend = " → ".join(
+        f"{'**' if s == max(scores) else ''}{s}{'**' if s == max(scores) else ''}"
+        for s in scores
+    )
+
     lines = [
         "---", "type: autonomy-log",
-        f"updated: {datetime.now(timezone.utc).isoformat(timespec='seconds')}",
+        f"updated: {ts}",
+        f"iterations: {len(history)}",
+        f"best_score: {best['score']:.3f}",
         "tags: [autonomy, doom-rl]", "---", "",
-        "# Autonomy log — the agent improving itself",
+        "# Autonomy Log — agent improving itself",
         "",
-        "Each row: the supervisor trained a chunk, evaluated, scored against the goal "
-        "(explore + complete + fight), then adjusted the reward and kept it only if the "
-        "score held or improved.",
+        "> Each iteration: train → eval → score → propose reward delta → keep if improved.",
+        "> Score = 4×exit_rate + 3×exploration + 0.5×kills + 1×accuracy",
         "",
-        "| Iter | Explored | Exit% | Kills/ep | Acc | Score | Kept? | Decision |",
-        "|---|---|---|---|---|---|---|---|",
+        f"**Score trajectory:** {score_trend}",
+        "",
+        "## Iteration table",
+        "",
+        "| Iter | Explored | Exit% | Kills/ep | Acc | Score | Δ | Kept? | Decision |",
+        "|---|---|---|---|---|---|---|---|---|",
     ]
+    prev_score = None
     for h in history:
         m = h["metrics"]
+        delta = f"{h['score'] - prev_score:+.2f}" if prev_score is not None else "—"
+        prev_score = h["score"]
+        kept_icon = "✅" if h["kept"] else "↩ reverted"
         lines.append(
-            f"| {h['iter']} | {m['explored_fraction']:.0%} | {m['exit_rate']:.0%} | "
-            f"{m['kills_per_episode']:.2f} | {m['shooting_accuracy']:.0%} | "
-            f"{h['score']:.2f} | {'✅' if h['kept'] else '↩︎ reverted'} | {h['reason']} |"
+            f"| {h['iter']} "
+            f"| {m['explored_fraction']:.0%} "
+            f"| {m['exit_rate']:.0%} "
+            f"| {m['kills_per_episode']:.2f} "
+            f"| {m['shooting_accuracy']:.0%} "
+            f"| **{h['score']:.2f}** "
+            f"| {delta} "
+            f"| {kept_icon} "
+            f"| {h['reason']} |"
         )
+
+    # Reward deltas — what actually changed per iteration
+    lines += ["", "## Reward changes applied", ""]
+    for h in history[1:]:
+        prev_env = history[h["iter"] - 1]["env"]
+        curr_env = h["env"]
+        changed = {k: (prev_env.get(k), curr_env.get(k))
+                   for k in set(prev_env) | set(curr_env)
+                   if prev_env.get(k) != curr_env.get(k) and k in BOUNDS}
+        if changed:
+            changes_str = "  ".join(f"`{k}`: {old}→{new}"
+                                    for k, (old, new) in changed.items())
+            kept = "✅" if h["kept"] else "↩"
+            lines.append(f"- Iter {h['iter']} {kept}: {changes_str}")
+
     lines += [
-        "", f"## Best so far (iter {best['iter']}, score {best['score']:.2f})", "",
-        "Apply these to `.env` to lock in the agent's own best configuration:", "",
+        "",
+        f"## Best configuration (iter {best['iter']}, score **{best['score']:.2f}**)",
+        "",
+        "Apply to `.env` to lock in the agent's self-discovered best setup:",
+        "",
         "```bash",
         *[f"{k}={best['env'][k]}" for k in BOUNDS if k in best["env"]],
-        "```", "",
+        "```",
+        "",
+        "---",
+        f"_Updated at {ts} · [[Knowledge Graph]]_",
     ]
     with open(note, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
+
+
+def write_final_report(
+    cfg: Config,
+    history: list,
+    doom_map: str,
+    use_llm: bool = False,
+) -> str:
+    """Write a comprehensive final report to 30-runs/ after all iterations complete.
+
+    Covers: session narrative, before/after performance, what was tried,
+    what worked, best config, behavior flags, and (if --llm) an LLM synthesis.
+    Returns the path of the note written.
+    """
+    from writer.memory_store import MemoryStore
+    from writer.behavior import detect, write_behavior_note
+    from writer.snapshot_log import SnapshotLog, log_path_for
+
+    ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    best = max(history, key=lambda h: h["score"])
+    first = history[0]
+    last = history[-1]
+    improved = [h for h in history if h["kept"] and h["iter"] > 0
+                and h["score"] > history[h["iter"] - 1]["score"]]
+    reverted = [h for h in history if not h["kept"]]
+
+    m0 = first["metrics"]
+    mb = best["metrics"]
+
+    # Behavior flags from the vault memory
+    events = MemoryStore.read_events(cfg.memory_dir)
+    snap_path = log_path_for(cfg.pending_dir, cfg.run_name)
+    snaps = SnapshotLog.read_all(snap_path)
+    flags = detect(events, snaps)
+    if flags:
+        write_behavior_note(cfg, flags)
+
+    # LLM narrative (optional)
+    llm_narrative = ""
+    if use_llm and events:
+        try:
+            from writer.llm_client import LLMWriter
+            from writer.reflect import aggregate_events
+            stats = aggregate_events(events)
+            llm = LLMWriter(model=cfg.llm_model, host=cfg.ollama_host,
+                            num_ctx=cfg.llm_num_ctx, num_predict=cfg.llm_num_predict,
+                            keep_alive=cfg.llm_keep_alive)
+            # Build a prompt from the autonomy session
+            session_summary = (
+                f"Autonomy session on {doom_map}: {len(history)} iterations, "
+                f"{len(improved)} improvements, {len(reverted)} reverted. "
+                f"Score {first['score']:.2f} → {best['score']:.2f} "
+                f"(+{best['score'] - first['score']:.2f}). "
+                f"Exploration {m0['explored_fraction']:.0%} → {mb['explored_fraction']:.0%}. "
+                f"Kills {m0['kills_per_episode']:.1f} → {mb['kills_per_episode']:.1f}/ep. "
+                f"Exit rate {m0['exit_rate']:.0%} → {mb['exit_rate']:.0%}."
+            )
+            note_obj = llm.generate_lessons({
+                **stats,
+                "session": session_summary,
+                "total": max(stats["total"], 1),
+            })
+            if note_obj and note_obj.lessons:
+                llm_narrative = "\n".join(
+                    f"### {l.title}\n\n{l.insight}\n\n_Evidence: {l.evidence}_\n"
+                    for l in note_obj.lessons
+                )
+        except Exception as e:
+            llm_narrative = f"_(LLM synthesis failed: {e})_"
+
+    # Build the report
+    run_name = cfg.run_name or f"auto-{doom_map}"
+    out_dir = os.path.join(cfg.vault_path, cfg.dir_runs)
+    os.makedirs(out_dir, exist_ok=True)
+    path = os.path.join(out_dir, f"Auto Session — {doom_map} — {ts[:10]}.md")
+
+    score_improvement = best["score"] - first["score"]
+    sign = "+" if score_improvement >= 0 else ""
+
+    lines = [
+        "---",
+        "type: auto-session-report",
+        f"created: {ts}",
+        f"map: {doom_map}",
+        f"iterations: {len(history)}",
+        f"score_start: {first['score']:.3f}",
+        f"score_best: {best['score']:.3f}",
+        f"score_delta: {score_improvement:.3f}",
+        "tags: [autonomy, session-report, doom-rl]",
+        "---",
+        "",
+        f"# Auto Session — {doom_map} — {ts[:10]}",
+        "",
+        f"> **{len(history)} iterations** · Score {first['score']:.2f} → **{best['score']:.2f}** "
+        f"({sign}{score_improvement:.2f}) · "
+        f"{len(improved)} improvement(s) · {len(reverted)} revert(s)",
+        "",
+        "## Performance: before → after",
+        "",
+        "| Metric | Start (iter 0) | Best (iter {}) | Delta |".format(best["iter"]),
+        "|--------|----------------|----------------|-------|",
+        f"| Exploration | {m0['explored_fraction']:.0%} | **{mb['explored_fraction']:.0%}** "
+        f"| {mb['explored_fraction'] - m0['explored_fraction']:+.0%} |",
+        f"| Exit rate   | {m0['exit_rate']:.0%} | **{mb['exit_rate']:.0%}** "
+        f"| {mb['exit_rate'] - m0['exit_rate']:+.0%} |",
+        f"| Kills/ep    | {m0['kills_per_episode']:.2f} | **{mb['kills_per_episode']:.2f}** "
+        f"| {mb['kills_per_episode'] - m0['kills_per_episode']:+.2f} |",
+        f"| Accuracy    | {m0['shooting_accuracy']:.0%} | **{mb['shooting_accuracy']:.0%}** "
+        f"| {mb['shooting_accuracy'] - m0['shooting_accuracy']:+.0%} |",
+        f"| Score       | {first['score']:.2f} | **{best['score']:.2f}** "
+        f"| {sign}{score_improvement:.2f} |",
+        "",
+        "## Iteration-by-iteration",
+        "",
+        "| # | Score | Δ | Decision | Kept? |",
+        "|---|-------|---|----------|-------|",
+    ]
+    prev = None
+    for h in history:
+        delta = f"{h['score'] - prev:+.2f}" if prev is not None else "baseline"
+        prev = h["score"]
+        lines.append(
+            f"| {h['iter']} | {h['score']:.2f} | {delta} | {h['reason']} "
+            f"| {'✅' if h['kept'] else '↩ reverted'} |"
+        )
+
+    # What actually changed
+    lines += ["", "## Reward adjustments tried", ""]
+    any_change = False
+    for h in history[1:]:
+        prev_env = history[h["iter"] - 1]["env"]
+        curr_env = h["env"]
+        changed = {k: (prev_env.get(k), curr_env.get(k))
+                   for k in BOUNDS
+                   if prev_env.get(k) != curr_env.get(k)}
+        if changed:
+            any_change = True
+            kept = "✅ kept" if h["kept"] else "↩ reverted"
+            lines.append(f"**Iter {h['iter']} ({kept}):**")
+            for k, (old, new) in changed.items():
+                lines.append(f"- `{k}`: {old} → {new}")
+            lines.append("")
+    if not any_change:
+        lines.append("_No reward changes were tried (all iterations used the same config)._")
+        lines.append("")
+
+    # Best config
+    lines += [
+        "## Best config to apply",
+        "",
+        "_Copy these into `.env` and run `doom-cli train --map {doom_map} --resume`:_".format(
+            doom_map=doom_map),
+        "",
+        "```bash",
+        *[f"{k}={best['env'][k]}" for k in BOUNDS if k in best["env"]],
+        "```",
+        "",
+    ]
+
+    # Behavior flags
+    if flags:
+        lines += ["## Behavior flags detected", ""]
+        for f in sorted(flags, key=lambda x: -x.confidence):
+            icon = "🔴" if f.confidence >= 0.7 else "🟡"
+            lines.append(f"- {icon} **{f.name}** ({f.confidence:.0%}): {f.description}")
+            lines.append(f"  → {f.recommendation}")
+        lines.append("")
+    else:
+        lines += ["## Behavior flags", "", "_No flags detected._", ""]
+
+    # LLM narrative
+    if llm_narrative:
+        lines += ["## LLM synthesis", "", llm_narrative]
+    elif use_llm:
+        lines += ["## LLM synthesis", "", "_(LLM not available or no events yet.)_", ""]
+
+    # Links
+    lines += [
+        "---",
+        "",
+        "## Links",
+        "",
+        f"- [[Autonomy Log]] (live iteration log)",
+        f"- [[Map - {doom_map}]]",
+        f"- [[Knowledge Graph]]",
+    ]
+    if flags:
+        lines.append("- [[Behavior]] (80-recommendations)")
+
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines))
+
+    print(f"[autonomous] final report → {path}")
+    return path
 
 
 def main() -> None:
@@ -211,37 +499,107 @@ def main() -> None:
     p.add_argument("--map", default=None, help="Map to train on (default: cfg.maps[0]).")
     p.add_argument("--episodes", type=int, default=10, help="Eval episodes per iteration.")
     p.add_argument("--fresh", action="store_true", help="Start the first iter from zero.")
+    p.add_argument("--spatial", action="store_true",
+                   help="Enable spatial memory (2nd obs channel). Forces --fresh (obs shape changes).")
+    p.add_argument("--rnd", action="store_true",
+                   help="Enable RND intrinsic curiosity (position-based novelty bonus).")
+    p.add_argument("--goexplore", action="store_true",
+                   help="Enable Go-Explore frontier-goal resets (return-then-explore).")
+    p.add_argument("--depth", action="store_true",
+                   help="Enable depth-perception obs channel (ViZDoom depth buffer). Forces --fresh.")
     p.add_argument("--llm", action="store_true",
                    help="Let the offline reward-suggestions LLM refine the combat knobs "
                         "(needs Ollama + enough events); falls back to the heuristic.")
+    p.add_argument("--resume", action="store_true",
+                   help="Continue a prior auto session from autonomy.jsonl (picks up the "
+                        "iteration count, best score, and evolved reward config).")
     args = p.parse_args()
 
     cfg = Config()
     doom_map = args.map or cfg.maps[0]
+
+    spatial = args.spatial or cfg.spatial_memory
+    use_rnd  = args.rnd    or cfg.use_rnd
+    depth    = args.depth  or cfg.depth_perception
+
+    # --spatial/--depth force --fresh (they change the obs shape → old brain can't load).
+    if (spatial or depth) and not args.fresh:
+        print("[autonomous] spatial/depth enabled: forcing --fresh (obs shape change requires new brain)")
+        args.fresh = True
+
+    # Auto-fresh: if no brain exists in the vault, --resume would just start from scratch
+    # anyway — be explicit so the log is honest. Derive the exact brain family name (action
+    # count, lstm, spatial) instead of hardcoding `a11`, which silently breaks if the action
+    # set changes or spatial memory is on (the spatial brain is named `..._sp`).
+    if not args.fresh:
+        import glob as _glob
+        from doom.campaign import campaign_metadata
+        from rl.algo import brain_prefix
+        meta = campaign_metadata(cfg.wad_path, doom_map)
+        name_prefix = brain_prefix("campaign", meta["num_actions"], cfg.use_lstm, spatial, depth)
+        ckpt_dir = cfg.checkpoint_dir
+        has_brain = bool(
+            os.path.exists(os.path.join(ckpt_dir, f"{name_prefix}_final.zip"))
+            or _glob.glob(os.path.join(ckpt_dir, f"{name_prefix}_*_steps.zip"))
+        )
+        if not has_brain:
+            print("[autonomous] no brain found in vault — auto-switching to --fresh")
+            args.fresh = True
+
     # Seed the evolving reward env from the current config (campaign mode, no docs:
     # the supervisor is fast; documentation is a separate, final concern).
     env = {
         "CAMPAIGN": "1", "MAPS": doom_map, "DOCS_ENABLED": "0", "MEMORY_ENABLED": "1",
         "CONTROL_ENABLED": "0", "N_ENVS": str(cfg.n_envs),
-        "SPATIAL_MEMORY": "1" if cfg.spatial_memory else "0",
+        "SPATIAL_MEMORY": "1" if spatial else "0",
+        "DEPTH_PERCEPTION": "1" if depth else "0",
         "USE_LSTM": "1" if cfg.use_lstm else "0",
+        "USE_RND": "1" if use_rnd else "0",
+        "RND_SCALE": str(cfg.rnd_scale),
+        "GOEXPLORE_GOAL_PROB": str(cfg.goexplore_goal_prob if not args.goexplore else max(cfg.goexplore_goal_prob, 0.3)),
+        "GOEXPLORE_GOAL_SCALE": str(cfg.goexplore_goal_scale),
+        "GOEXPLORE_REACH_RADIUS": str(cfg.goexplore_reach_radius),
+        "FRONTIER_REWARD": str(cfg.frontier_reward),
+        "EPISODE_TIMEOUT": str(cfg.episode_timeout),
         "COVERAGE_REWARD": str(cfg.coverage_reward), "EXIT_REWARD": str(cfg.exit_reward),
         "HIT_REWARD": str(cfg.hit_reward), "MISS_PENALTY": str(cfg.miss_penalty),
         "DAMAGE_TAKEN_PENALTY": str(cfg.damage_taken_penalty),
         "DEATH_PENALTY": str(cfg.death_penalty), "MOVE_REWARD": str(cfg.move_reward),
-        "LIVING_REWARD": str(cfg.living_reward), "EPISODE_TIMEOUT": str(cfg.episode_timeout),
+        "LIVING_REWARD": str(cfg.living_reward),
     }
 
     history = []
     best_score = -1e9
+    start_iter = 0
+    # --resume: restore a prior session's trail so a long auto run survives a kill/restart.
+    if args.resume and not args.fresh:
+        history = load_history(cfg)
+        if history:
+            best_score = max(h["score"] for h in history)
+            env = history[-1].get("_next_env", env)  # the config queued for the next iter
+            start_iter = len(history)
+            print(f"[autonomous] --resume: restored {start_iter} prior iters "
+                  f"(best score {best_score:.2f}); continuing from iter {start_iter}.")
+
     print(f"[autonomous] {args.iterations} iterations × {args.steps} steps on {doom_map} "
           f"({'LLM-refined' if args.llm else 'heuristic'} reward proposals)")
-    for i in range(args.iterations):
+    for i in range(start_iter, args.iterations):
         fresh = args.fresh and i == 0
         reason = "baseline" if i == 0 else history[-1].get("_next_reason", "adjust")
         print(f"\n===== ITER {i} ({'fresh' if fresh else 'resume'}) — {reason} =====")
-        train_chunk(env, doom_map, args.steps, fresh)
-        m = eval_brain(env, args.episodes)
+        # A single iteration crash (ViZDoom hiccup, OOM, transient subprocess failure)
+        # must NOT abort the whole self-improvement run — that's the opposite of autonomy.
+        # Catch it, keep the best brain found so far, and continue / finish gracefully.
+        try:
+            train_chunk(env, doom_map, args.steps, fresh)
+            m = eval_brain(env, args.episodes)
+        except (subprocess.CalledProcessError, RuntimeError) as e:
+            print(f"[autonomous] iter {i} FAILED ({type(e).__name__}): {e}")
+            print("[autonomous] keeping best-so-far and continuing with the last good config.")
+            if history:
+                env = history[-1]["env"]  # fall back to the last config that ran
+            continue
+
         sc = score(m)
         kept = (i == 0) or (sc >= best_score - 0.05)  # guardrail: revert regressions
         print(f"[autonomous] iter {i}: score={sc:.2f} (best={best_score:.2f}) "
@@ -257,13 +615,24 @@ def main() -> None:
         history.append({
             "iter": i, "metrics": m, "score": sc, "kept": kept,
             "reason": reason, "env": dict(env), "_next_reason": nxt_reason,
+            "_next_env": dict(nxt),  # the config to apply next — needed to --resume cleanly
         })
         env = nxt  # apply the proposed tweak for the next iteration
         write_log(cfg, history)  # update the log every iter (resumable, observable)
 
+    if not history:
+        print("[autonomous] no iteration completed — nothing to report.")
+        return
+
     best = max(history, key=lambda h: h["score"])
-    print(f"\n[autonomous] DONE. Best iter {best['iter']} score {best['score']:.2f}. "
-          f"See {cfg.vault_path}/00-index/Autonomy Log.md")
+    print(f"\n[autonomous] DONE ({len(history)}/{args.iterations} iters ok). "
+          f"Best iter {best['iter']} score {best['score']:.2f}.")
+
+    # Final comprehensive report in 30-runs/ — always written if any iteration ran.
+    report_path = write_final_report(cfg, history, doom_map, use_llm=args.llm)
+    print(f"[autonomous] See:\n"
+          f"  Live log    → {cfg.vault_path}/00-index/Autonomy Log.md\n"
+          f"  Full report → {report_path}")
 
 
 if __name__ == "__main__":

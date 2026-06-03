@@ -82,14 +82,15 @@ def main() -> None:
     if args.render:
         cfg.render = True
 
-    from rl.algo import policy_tag
-    tag = policy_tag(cfg.use_lstm)
+    from rl.algo import brain_prefix
     if cfg.campaign:
         meta = campaign_metadata(cfg.wad_path, cfg.maps[0])
-        name_prefix = f"ppo_campaign_a{meta['num_actions']}{tag}"
+        name_prefix = brain_prefix("campaign", meta["num_actions"], cfg.use_lstm,
+                                   cfg.spatial_memory, cfg.depth_perception)
     else:
         meta = probe_env_metadata(cfg.scenario, cfg.frame_skip, cfg.resolution)
-        name_prefix = f"ppo_{cfg.scenario}_a{meta['num_actions']}{tag}"
+        name_prefix = brain_prefix(cfg.scenario, meta["num_actions"], cfg.use_lstm,
+                                   cfg.spatial_memory, cfg.depth_perception)
     button_names = meta["button_names"]
 
     path = args.path or _latest_checkpoint(cfg, name_prefix)
@@ -119,11 +120,15 @@ def main() -> None:
     if args.json:
         import json
         cov = s.get("map_coverage", {}) or {}
+        n_eps = max(s.get("episodes", 1), 1)
+        terminals = s.get("terminals", {})
         metrics = {
             "kills_per_episode": float(s["kills_per_episode"]),
             "shooting_accuracy": float(s["shooting_accuracy"]),
             "success_rate": float(s["success_rate"]),
             "exit_rate": float(s.get("exit_rate", 0.0)),
+            "timeout_rate": float(terminals.get("timeout", 0)) / n_eps,
+            "death_rate": float(terminals.get("death", 0)) / n_eps,
             "explored_fraction": float(cov.get("explored_fraction", 0.0)),
             "cells_visited": float(cov.get("cells_visited", 0.0)),
             "mean_base_reward": float(s["mean_base_reward"]),

@@ -15,7 +15,7 @@ from PIL import Image
 
 from config import Config
 from doom.campaign import CAMPAIGN_ACTIONS, CAMPAIGN_BUTTONS, default_wad
-from rl.algo import algo_class, policy_tag
+from rl.algo import algo_class, brain_prefix
 from rl.train import _latest_checkpoint
 
 
@@ -28,7 +28,8 @@ def main() -> None:
     args = p.parse_args()
 
     cfg = Config()
-    name_prefix = f"ppo_campaign_a{len(CAMPAIGN_ACTIONS)}{policy_tag(cfg.use_lstm)}"
+    name_prefix = brain_prefix("campaign", len(CAMPAIGN_ACTIONS), cfg.use_lstm,
+                               cfg.spatial_memory, cfg.depth_perception)
     path = args.path or _latest_checkpoint(cfg, name_prefix)
     model = algo_class(cfg.use_lstm).load(path)
     print(f"[demo] brain: {path}")
