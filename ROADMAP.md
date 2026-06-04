@@ -12,10 +12,8 @@ Watching the bot: it ignores enemies, doesn't shoot, bangs on closed doors. Root
 
 - [x] **`watch` shows the FROZEN argmax** ✅ DONE — `watch` now defaults to tempered T=0.5 so
   you see the real learned policy (`--temperature 0` for raw argmax).
-- [ ] **Doors have no reward signal.** USE exists only as the `FWD+USE` action (1 of 11), and
-  nothing rewards opening a door → no gradient to learn it. **Fix options:** (a) auto-press USE
-  every frame, (b) reward area-progress through a door, (c) add USE to more action combos.
-  *(next wave — the remaining P0 gameplay fix)*
+- [x] **Doors** ✅ DONE — `AUTO_USE` holds USE every frame so doors open / switches fire on
+  contact (no longer a dead end). On by default.
 - [x] **Decouple combat & exploration** 🟡 DONE (reward-level) — gated by enemy visibility:
   combat focus when enemies on screen, exploration focus when clear. Per-mode telemetry
   (`combat_engagement`) lets the coach tune each regime separately. ❌ Still ONE network —
@@ -44,10 +42,10 @@ Watching the bot: it ignores enemies, doesn't shoot, bangs on closed doors. Root
 ## 🟡 P2 — Exploration
 
 - [x] **Behavioral cloning** ✅ — `record_demo` → `bc` → `auto` (Phase 2 script ready).
-- [ ] **Frontier intelligence** 🟡 — Go-Explore exists; add frontier **scoring + aging +
-  prioritization** so it stops returning to useless areas.
-- [ ] **Automatic goal discovery** ❌ — detect new doors/corridors/rooms/keys/switches and reward
-  discovery (progress-guided exploration). Use the ViZDoom labels/objects buffers we already read.
+- [x] **Frontier intelligence** ✅ DONE — goal sampling now weights distance/visits × edge-bonus
+  (boundary of explored region) × aging-decay; stale frontiers are pruned.
+- [x] **Automatic goal discovery** ✅ DONE — `DISCOVERY_REWARD` pays the first sighting of each
+  new object (keys/weapons/powerups/new monsters) per episode via the labels buffer.
 
 ---
 
@@ -112,12 +110,15 @@ Watching the bot: it ignores enemies, doesn't shoot, bangs on closed doors. Root
   Obsidian Autonomy Log shows the combat regime · fixed 4 blocking bugs (EPISODE_TIMEOUT
   float, gif, db help, doom-cli maps) + tech debt.
 
-## ▶️ Next waves
+## ✅ Wave 2 — DONE (this pass)
 
-- **Wave 2 (P0+P2):** door reward (the gameplay fix) · frontier intelligence
-  (scoring/aging/prioritization) · automatic goal discovery (doors/keys/switches).
+- AUTO_USE (doors open on contact — the gameplay fix) · frontier intelligence (aging + edge
+  prioritization + pruning) · automatic goal discovery (reward first sighting of keys/weapons/
+  powerups/new monsters via the labels buffer).
+
+## ▶️ Next waves
 - **Wave 3 (P4+P3):** auto-chain hypothesize→experiment inside `auto` · long-term knowledge
   tiers (facts/hypotheses/validated).
-- **Wave 4 (P6+P7):** ablation report polish + plots · `doom-cli report` (HTML) ·
-  GIFs (initial vs trained) · `docs/research/` paper · assisted mode.
+- **Wave 4 (P6+P7):** ablation report plots · `doom-cli report` (HTML) · GIFs (initial vs
+  trained) · `docs/research/` paper · assisted mode (your live-feedback loop).
 - **Always-on:** long `auto`/Colab runs for the compute gap (the real exit-rate lever).
