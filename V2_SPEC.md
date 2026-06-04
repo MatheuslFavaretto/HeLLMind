@@ -101,7 +101,7 @@ discrete Doom), and **prototype DreamerV3** as the high-ceiling research track.
 | **this repo (V1)** | the cognition scaffolding: memory, rollback, knowledge tiers, honest tempered eval, multi-seed benchmark — **keep all of it** |
 | **cleanrl** | single-file readability to LEARN from (DQN/C51/PPO) — *not importable* (copy patterns, don't depend on it) |
 | **stable-baselines3 / sb3-contrib** | the actual base we build on: DQN / QR-DQN + VecEnv + tested training (PyTorch, fits our stack) |
-| **ViZDoom** | the buffers we under-use: labels (bbox), depth, automap (minimap), objects (HUD) → §8 overlays |
+| **ViZDoom** | (1) its **`my_way_home` / `deadly_corridor` scenarios** = a ready-made exit-finding curriculum we never used (Phase 2); (2) buffers we under-use: labels (bbox), depth, automap (minimap), objects (HUD), **audio** (unused) → §8 overlays; (3) **async mode + time-scaling** for throughput; (4) it does **~7000 FPS sync single-threaded** — our ~880/s is OUR pipeline cost (all buffers + frame_skip), not the engine |
 | **Voyager** ⭐ | borrow the **concept** (auto curriculum + a library of reusable, *self-verified* behaviors), NOT the mechanism — Voyager stores skills as executable Minecraft *code* + GPT-4 prompting; that doesn't map 1:1 to a pixel-based RL policy. Our version: a curriculum + a library of validated reward/skill configs the coach composes |
 | **dreamerv3** ⭐ | world model + replay + train-in-imagination = the sample-efficiency answer. **But it's JAX** — a research spike, not a drop-in (we're PyTorch) |
 | **ray / rllib** | distributed rollout workers + central trainer (the §7 scaling, when we outgrow one machine) |
@@ -176,8 +176,11 @@ demos *and* debugging "why didn't it shoot that enemy").
   truth; enable MPS + default N_ENVS to cores. *No new ML — just make V1 coherent.*
 - **Phase 1 — RL core (2 wk):** cleanrl-style Rainbow DQN with a real replay buffer +
   continuous updates; PPO kept as the benchmark baseline; run `doom-cli benchmark`.
-- **Phase 2 — Death-rate first (1 wk):** the measured killer is dying (80%). Reward + curriculum
-  focused on *survival* before *exit*. Target: death-rate < 40%.
+- **Phase 2 — Curriculum + death-rate (1 wk):** ⭐ **the biggest miss in V1: we trained directly
+  on full freedoom2 maps (hard).** ViZDoom ships a **`my_way_home`** scenario that is literally
+  "reach the exit" on a tiny map. Learn exit-finding there FIRST (→ exit-rate > 0 fast), then
+  `deadly_corridor`, then full maps. Also attack the 80% death-rate (survival before exit).
+  Target: exit-rate > 0 on `my_way_home`, death-rate < 40%.
 - **Phase 3 — Overlays + vector DB (1 wk):** §8 + §9.
 - **Phase 4 — Coach as a graph (2 wk):** LangGraph coach + a Voyager-style skill library.
 - **Phase 5 — DreamerV3 track (research):** world model, train-in-imagination.
@@ -207,5 +210,9 @@ These were read live (Jun 2026) to ground §4–§5, and corrected the plan:
   from, don't depend on. **No off-the-shelf Rainbow.**
 - **Ray/RLlib** (github.com/ray-project/ray) — tasks/actors/objects for distributed workers →
   the §7 scaling path when one machine isn't enough.
-- Not yet fetched (referenced from prior knowledge): ViZDoom, doom-pytorch, procgen, SB3,
-  langgraph, AlphaZero (1712.01815). Flag me to verify any before we commit to it.
+- **ViZDoom** (github.com/mwydmuch/ViZDoom) — ~7000 FPS sync single-threaded; depth/labels/
+  automap/**audio** buffers; objects+map geometry; async + time-scaling; official Gymnasium
+  wrapper; **built-in scenarios** (`my_way_home`, `deadly_corridor`, `health_gathering`) →
+  the exit-finding curriculum we missed (Phase 2).
+- Not yet fetched (referenced from prior knowledge): doom-pytorch, procgen, SB3, langgraph,
+  AlphaZero (1712.01815). Flag me to verify any before we commit to it.
