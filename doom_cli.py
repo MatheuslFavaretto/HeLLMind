@@ -57,7 +57,11 @@ COMMANDS = [
      "Runs 10 eval episodes, detects behavior patterns (circling/passive/low-exploration) "
      "from telemetry, and prints the exact next test to run. Start here every session.",
      "doom-cli diagnose"),
-    ("▶ Run", "train", "Train the agent (auto-resumes this vault's brain)",
+    ("▶ Run", "dqn", "Train with QR-DQN — off-policy, replay buffer (V2 engine)",
+     "Sample-efficient alternative to PPO: a replay buffer lets the agent learn from past "
+     "experiences, not just fresh rollouts. Much faster to reach non-zero exit-rate.",
+     "doom-cli dqn --map MAP01 --steps 500000"),
+    ("▶ Run", "train", "Train the agent with PPO (auto-resumes this vault's brain)",
      "Runs PPO on ViZDoom. By default it RESUMES the brain stored in the vault "
      "(same vault = keeps learning). Use --fresh to start over, --spatial for the "
      "memory channel, --lstm for a RecurrentPPO/LSTM policy, --no-docs to skip notes.",
@@ -624,6 +628,18 @@ def cmd_diagnose(a) -> int:
     return 0
 
 
+def cmd_dqn(a) -> int:
+    """Train with QR-DQN (off-policy, replay buffer — V2 sample-efficient engine)."""
+    cmd = [PY, "-m", "rl.train_dqn",
+           "--timesteps", str(a.steps), "--n-envs", str(a.n_envs)]
+    if a.map:
+        cmd += ["--map", a.map]
+    if getattr(a, "fresh", False):
+        cmd.append("--fresh")
+    label = f"🧠 QR-DQN · {a.steps:,} steps · map {a.map or 'default'}"
+    return run(cmd, title=label)
+
+
 def cmd_train(a) -> int:
     env = {"DOCS_ENABLED": "0" if a.no_docs else "1"}
     if a.envs:
@@ -1009,7 +1025,10 @@ def cmd_benchmark(a) -> int:
            "--seeds", a.seeds, "--episodes", str(a.episodes), "--n-envs", str(a.n_envs)]
     if a.configs:
         cmd += ["--configs", a.configs]
-    return run(cmd, title="📊 Ablation benchmark: does each layer add value?")
+    if getattr(a, "algo", "ppo") != "ppo":
+        cmd += ["--algo", a.algo]
+    algo_label = "QR-DQN" if getattr(a, "algo", "ppo") == "dqn" else "PPO"
+    return run(cmd, title=f"📊 Ablation benchmark [{algo_label}]: does each layer add value?")
 
 
 def cmd_timeline(a) -> int:
@@ -1273,6 +1292,13 @@ def build_parser() -> argparse.ArgumentParser:
     t.add_argument("--rnd", action="store_true", help="Enable RND intrinsic curiosity (USE_RND=1).")
     t.set_defaults(fn=cmd_train)
 
+    dqn_p = sub.add_parser("dqn", help="Train with QR-DQN (off-policy, replay buffer — V2 engine)")
+    dqn_p.add_argument("--map", default=None)
+    dqn_p.add_argument("--steps", type=int, default=500_000)
+    dqn_p.add_argument("--n-envs", dest="n_envs", type=int, default=1)
+    dqn_p.add_argument("--fresh", action="store_true")
+    dqn_p.set_defaults(fn=cmd_dqn)
+
     w = sub.add_parser("watch"); w.add_argument("--episodes", type=int, default=3)
     w.add_argument("--path"); w.add_argument("--lstm", action="store_true")
     w.add_argument("--temperature", type=float, default=0.5,
@@ -1346,6 +1372,8 @@ def build_parser() -> argparse.ArgumentParser:
     bm.add_argument("--seeds", default="42,123"); bm.add_argument("--episodes", type=int, default=20)
     bm.add_argument("--n-envs", dest="n_envs", type=int, default=4)
     bm.add_argument("--configs", default=None)
+    bm.add_argument("--algo", default="ppo", choices=["ppo", "dqn"],
+                    help="Algorithm to benchmark (ppo=default, dqn=QR-DQN V2 engine).")
     bm.set_defaults(fn=cmd_benchmark)
 
     bc_p = sub.add_parser("bc", help="Behavioral cloning from human SPECTATOR demos")

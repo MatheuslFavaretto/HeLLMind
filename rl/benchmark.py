@@ -44,15 +44,19 @@ METRIC_KEYS = ["exit_rate", "exit_progress", "explored_fraction", "kills_per_epi
 
 
 def _run_one(config: dict, seed: int, doom_map: str, steps: int, episodes: int,
-             n_envs: int, ck_dir: str) -> dict:
-    """Train one (config, seed) fresh, then eval it. Returns the parsed metrics dict."""
+             n_envs: int, ck_dir: str, algo: str = "ppo") -> dict:
+    """Train one (config, seed) fresh, then eval it. Returns the parsed metrics dict.
+    algo='ppo' uses rl.train (PPO); algo='dqn' uses rl.train_dqn (QR-DQN)."""
     env = {**os.environ, **_BASE_OFF, **config,
            "CAMPAIGN": "1", "MAPS": doom_map, "SEED": str(seed),
            "N_ENVS": str(n_envs), "CHECKPOINT_DIR": ck_dir, "DOCS_ENABLED": "0",
            "MEMORY_ENABLED": config.get("MEMORY_ENABLED", "0")}
-    subprocess.run([PY, "-m", "rl.train", "--fresh", "--maps", doom_map,
-                    "--n-envs", str(n_envs), "--timesteps", str(steps)],
-                   cwd=ROOT, env=env, check=True)
+    train_module = "rl.train_dqn" if algo == "dqn" else "rl.train"
+    train_args = (["--fresh", "--maps", doom_map, "--n-envs", str(n_envs),
+                   "--timesteps", str(steps)] if algo == "ppo"
+                  else ["--fresh", "--map", doom_map, "--n-envs", str(n_envs),
+                        "--timesteps", str(steps)])
+    subprocess.run([PY, "-m", train_module, *train_args], cwd=ROOT, env=env, check=True)
     out = subprocess.run([PY, "-m", "rl.eval", "--episodes", str(episodes),
                           "--json", "--temperature", "0.5"],
                          cwd=ROOT, env=env, capture_output=True, text=True)
@@ -63,7 +67,7 @@ def _run_one(config: dict, seed: int, doom_map: str, steps: int, episodes: int,
 
 
 def run(doom_map="MAP01", steps=50000, seeds=(42, 123), episodes=20, n_envs=4,
-        configs=None, out_dir=None) -> dict:
+        configs=None, out_dir=None, algo="ppo") -> dict:
     """Run the full matrix and write results/. Returns the aggregated results dict."""
     configs = configs or list(CONFIGS.keys())
     out_dir = out_dir or os.path.join(ROOT, "results")
@@ -84,7 +88,7 @@ def run(doom_map="MAP01", steps=50000, seeds=(42, 123), episodes=20, n_envs=4,
             os.makedirs(ck, exist_ok=True)
             print(f"\n===== [{done + 1}/{total}] {name} | seed {seed} | {steps:,} steps =====")
             r_start = time.time()
-            per_seed.append(_run_one(CONFIGS[name], seed, doom_map, steps, episodes, n_envs, ck))
+            per_seed.append(_run_one(CONFIGS[name], seed, doom_map, steps, episodes, n_envs, ck, algo))
             done += 1
             elapsed = time.time() - t0
             per_run = elapsed / done
@@ -235,11 +239,13 @@ def main() -> None:
     p.add_argument("--n-envs", type=int, default=4)
     p.add_argument("--configs", default=None,
                    help="Comma-separated subset (default: all: baseline,rnd,memory,full).")
+    p.add_argument("--algo", default="ppo", choices=["ppo", "dqn"],
+                   help="Algorithm: ppo (default/PPO) or dqn (QR-DQN, V2 engine).")
     args = p.parse_args()
     seeds = tuple(int(s) for s in args.seeds.split(","))
     configs = args.configs.split(",") if args.configs else None
     run(doom_map=args.map, steps=args.steps, seeds=seeds, episodes=args.episodes,
-        n_envs=args.n_envs, configs=configs)
+        n_envs=args.n_envs, configs=configs, algo=args.algo)
 
 
 if __name__ == "__main__":
