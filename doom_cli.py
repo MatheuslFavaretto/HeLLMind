@@ -119,6 +119,10 @@ COMMANDS = [
      "Reads the runs table (explored/exit/kills/score per iteration) and prints the trend — "
      "the honest 'is it actually improving?' view over time.",
      "doom-cli timeline"),
+    ("🔬 Research", "benchmark", "Ablation: prove each layer (RND/memory/full) adds value",
+     "Trains baseline/rnd/memory/full across seeds with the SAME budget, evaluates honestly, "
+     "and writes results/ (csv+json+md) with mean±std so wins aren't luck.",
+     "doom-cli benchmark"),
     ("🧠 Cognition", "curriculum", "Show map difficulty scores and forgetting alerts",
      "Computes per-map difficulty (deaths + timeouts + coverage + kills) and detects "
      "skill regression vs historical peak. Writes 40-maps/Curriculum.md.",
@@ -634,6 +638,14 @@ def cmd_learned(a) -> int:
     return 0
 
 
+def cmd_benchmark(a) -> int:
+    cmd = [PY, "-m", "rl.benchmark", "--map", a.map, "--steps", str(a.steps),
+           "--seeds", a.seeds, "--episodes", str(a.episodes), "--n-envs", str(a.n_envs)]
+    if a.configs:
+        cmd += ["--configs", a.configs]
+    return run(cmd, title="📊 Ablation benchmark: does each layer add value?")
+
+
 def cmd_timeline(a) -> int:
     """Evolution report: explored / exit-rate / kills / score per auto-loop iteration.
     Reads the SQLite `runs` table (mirrored from autonomy.jsonl) so you can SEE whether
@@ -954,6 +966,12 @@ def build_parser() -> argparse.ArgumentParser:
     tl = sub.add_parser("timeline", help="Evolution report: explored/exit/kills/score per auto iteration")
     tl.add_argument("--limit", type=int, default=50)
     tl.set_defaults(fn=cmd_timeline)
+    bm = sub.add_parser("benchmark", help="Ablation: train baseline/rnd/memory/full × seeds, prove each layer adds value")
+    bm.add_argument("--map", default="MAP01"); bm.add_argument("--steps", type=int, default=50000)
+    bm.add_argument("--seeds", default="42,123"); bm.add_argument("--episodes", type=int, default=20)
+    bm.add_argument("--n-envs", dest="n_envs", type=int, default=4)
+    bm.add_argument("--configs", default=None)
+    bm.set_defaults(fn=cmd_benchmark)
 
     bc_p = sub.add_parser("bc", help="Behavioral cloning from human SPECTATOR demos")
     bc_p.add_argument("--demos", default=None, help="Demos dir (default: <memory>/demos)")
