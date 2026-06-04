@@ -119,6 +119,10 @@ COMMANDS = [
      "Reads the runs table (explored/exit/kills/score per iteration) and prints the trend — "
      "the honest 'is it actually improving?' view over time.",
      "doom-cli timeline"),
+    ("🧠 Cognition", "knowledge", "Long-term knowledge in 3 tiers (facts/hypotheses/validated)",
+     "Aggregates the bestiary (facts), open hypotheses, and proven experiments/learned_config "
+     "(validated) into the three certainty tiers — what the agent KNOWS vs suspects vs proved.",
+     "doom-cli knowledge"),
     ("🔬 Research", "benchmark", "Ablation: prove each layer (RND/memory/full) adds value",
      "Trains baseline/rnd/memory/full across seeds with the SAME budget, evaluates honestly, "
      "and writes results/ (csv+json+md) with mean±std so wins aren't luck.",
@@ -638,6 +642,36 @@ def cmd_learned(a) -> int:
     return 0
 
 
+def cmd_knowledge(a) -> int:
+    """Show the agent's long-term knowledge in 3 tiers: facts / hypotheses / validated."""
+    from config import Config
+    from writer.knowledge import knowledge_tiers
+    cfg = Config()
+    tiers = knowledge_tiers(cfg.memory_dir)
+    titles = {"facts": ("📚 FACTS (measured)", EMBER[1]),
+              "hypotheses": ("❓ HYPOTHESES (open)", EMBER[2]),
+              "validated": ("✅ VALIDATED (proven)", EMBER[0])}
+    any_shown = False
+    for key in ("facts", "validated", "hypotheses"):
+        items = tiers.get(key, [])
+        title, color = titles[key]
+        body = []
+        for it in items[:20]:
+            line = f"• {it['text']}"
+            if it.get("evidence"):
+                line += f"  [dim]({it['evidence']})[/dim]"
+            body.append(line)
+        if not body:
+            body = ["[dim](nothing yet — train + run experiments to populate this tier)[/dim]"]
+        else:
+            any_shown = True
+        console.print(Panel("\n".join(body), title=f"{title}  ·  {len(items)}",
+                            border_style=color))
+    if not any_shown:
+        console.print("[dim]Tip: `doom-cli auto` fills facts; `doom-cli experiment` validates.[/dim]")
+    return 0
+
+
 def cmd_benchmark(a) -> int:
     cmd = [PY, "-m", "rl.benchmark", "--map", a.map, "--steps", str(a.steps),
            "--seeds", a.seeds, "--episodes", str(a.episodes), "--n-envs", str(a.n_envs)]
@@ -966,6 +1000,7 @@ def build_parser() -> argparse.ArgumentParser:
     tl = sub.add_parser("timeline", help="Evolution report: explored/exit/kills/score per auto iteration")
     tl.add_argument("--limit", type=int, default=50)
     tl.set_defaults(fn=cmd_timeline)
+    sub.add_parser("knowledge", help="Long-term knowledge in 3 tiers: facts / hypotheses / validated").set_defaults(fn=cmd_knowledge)
     bm = sub.add_parser("benchmark", help="Ablation: train baseline/rnd/memory/full × seeds, prove each layer adds value")
     bm.add_argument("--map", default="MAP01"); bm.add_argument("--steps", type=int, default=50000)
     bm.add_argument("--seeds", default="42,123"); bm.add_argument("--episodes", type=int, default=20)
