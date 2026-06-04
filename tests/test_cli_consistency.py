@@ -25,6 +25,12 @@ def test_no_help_card_points_to_a_missing_command():
     assert not orphan_cards, f"help cards with no command: {sorted(orphan_cards)}"
 
 
+def test_every_card_group_renders_in_the_menu():
+    # A card whose group isn't in GROUP_ORDER is invisible in the help menu (silent bug).
+    bad = {c[1]: c[0] for c in doom_cli.COMMANDS if c[0] not in doom_cli.GROUP_ORDER}
+    assert not bad, f"commands in non-rendering groups: {bad}"
+
+
 def test_help_cards_are_well_formed():
     # Each card is (group, name, short, long, example) and the example must invoke the command.
     for card in doom_cli.COMMANDS:

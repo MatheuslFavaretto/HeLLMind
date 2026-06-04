@@ -127,11 +127,11 @@ COMMANDS = [
      "Aggregates the bestiary (facts), open hypotheses, and proven experiments/learned_config "
      "(validated) into the three certainty tiers — what the agent KNOWS vs suspects vs proved.",
      "doom-cli knowledge"),
-    ("📈 Measure", "intel", "Intelligence report: NN architecture, params, training, memory, disk",
+    ("📊 Measure", "intel", "Intelligence report: NN architecture, params, training, memory, disk",
      "Proves a real neural network exists: layer-by-layer architecture, parameter count, depth, "
      "best run, key metrics, and disk usage — the 'is this real?' dashboard.",
      "doom-cli intel"),
-    ("📈 Measure", "audit", "Is it REALLY learning? (entropy, KL, value loss, grad norm)",
+    ("📊 Measure", "audit", "Is it REALLY learning? (entropy, KL, value loss, grad norm)",
      "Reads the training logs and reports the learning signals — entropy (exploration), "
      "approx-KL (update size), value loss, explained variance — to confirm real learning.",
      "doom-cli audit"),
@@ -139,11 +139,11 @@ COMMANDS = [
      "Shows the validated reward changes in learned_config — knobs an experiment proved help, "
      "re-applied on every train/auto boot so wins accumulate across runs.",
      "doom-cli learned"),
-    ("🏃 Run", "bc", "Behavioral cloning from your recorded human demos",
+    ("▶ Run", "bc", "Behavioral cloning from your recorded human demos",
      "Trains the policy to imitate your recorded play (record_demo → bc) as a starting point "
      "for RL — the strongest lever for reaching the exit.",
      "doom-cli bc --epochs 10"),
-    ("🏃 Run", "eureka", "LLM evolves the reward design across generations",
+    ("▶ Run", "eureka", "LLM evolves the reward design across generations",
      "Runs the Eureka loop: the LLM proposes reward functions, they're evaluated, and the best "
      "survive — automated reward design instead of hand-tuning.",
      "doom-cli eureka"),
@@ -180,7 +180,7 @@ COMMANDS = [
      "doom-cli clean"),
 ]
 
-GROUP_ORDER = ["▶ Run", "📊 Measure", "🧠 Cognition", "🛠 Tools"]
+GROUP_ORDER = ["▶ Run", "📊 Measure", "🔬 Research", "🧠 Cognition", "🛠 Tools"]
 
 
 def banner() -> None:
@@ -194,20 +194,42 @@ def banner() -> None:
     console.print()
 
 
+# One-line "what this group is for", shown under each section header.
+GROUP_TAGLINES = {
+    "▶ Run": "train the agent, watch it play, learn from your own demos",
+    "📊 Measure": "honest metrics, the neural-net proof, learning signals",
+    "🔬 Research": "prove each layer adds value (reproducible ablation)",
+    "🧠 Cognition": "memory, hypotheses, experiments, knowledge & rollback",
+    "🛠 Tools": "gifs, tensorboard, tests, housekeeping",
+}
+
+
 def menu(full: bool = False) -> None:
     """Pretty help. full=True (from -h) also prints the longer explanation per command."""
+    from rich import box
     banner()
     for group in GROUP_ORDER:
         rows = [c for c in COMMANDS if c[0] == group]
-        t = Table(show_header=True, header_style="bold #ff5a00",
-                  border_style="#7a0a00", expand=True, title=f"[bold #ffd000]{group}[/bold #ffd000]",
-                  title_justify="left")
+        if not rows:
+            continue
+        tagline = GROUP_TAGLINES.get(group, "")
+        title = f"[bold #ffd000]{group}[/bold #ffd000]"
+        if tagline:
+            title += f"   [italic #ff9500]— {tagline}[/italic #ff9500]"
+        t = Table(show_header=True, header_style="bold #ff5a00", box=box.SIMPLE_HEAVY,
+                  border_style="#7a0a00", expand=True, title=title, title_justify="left",
+                  padding=(0, 1))
         t.add_column("command", style="bold #ffd000", no_wrap=True)
         t.add_column("what it does", style="white")
         t.add_column("example", style="dim italic", no_wrap=True)
         for _, name, short, long, ex in rows:
             t.add_row(name, (short + ("\n[dim]" + long + "[/dim]" if full else "")), ex)
         console.print(t)
+        console.print()  # breathing room between sections
+    console.print(Align.center(Text.from_markup(
+        "[#ffd000]▶ quick start:[/#ffd000]  [bold]doom-cli auto[/bold]  "
+        "[dim]→ train + self-improve  ·[/dim]  [bold]doom-cli watch[/bold]  "
+        "[dim]→ see it play  ·[/dim]  [bold]doom-cli intel[/bold]  [dim]→ the proof[/dim]")))
     console.print(Align.center(Text(
         "doom-cli <command> -h   for that command's options    ·    "
         "-h / --help   for this screen", style="dim")))
