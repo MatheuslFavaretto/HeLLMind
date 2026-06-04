@@ -131,6 +131,48 @@ doom-cli auto --map MAP01 --iterations 8 --steps 100000                         
 
 ---
 
+## 🧠 The knowledge loop (how it learns about its own learning)
+
+HeLLMind is **two interlocking loops**. A **fast loop** tunes the agent (play → eval →
+propose → keep/revert). A **slow loop** accumulates knowledge (events → lessons → an Obsidian
+graph). The bridge is the *propose* step: it consults the accumulated memory, so the more the
+slow loop turns, the smarter the fast loop's decisions get.
+
+```mermaid
+flowchart TD
+    P["① PLAY · train a chunk"]
+    R["② RECORD · events → JSONL (append-only truth)"]
+    V["③ VIEW · db build → SQLite"]
+    E["④ EVALUATE · tempered eval (T=0.5)"]
+    A["⑤ ANALYSE · death patterns, circling, passivity"]
+    PR["⑥ PROPOSE · heuristic + memory + LLM → reward delta"]
+    D{"⑦ improved?"}
+    PERS["⑧ PERSIST · learned_config · frontier · exit (ratchets)"]
+    DOC["⑨ DOCUMENT · LLM → Obsidian graph (batch, never blocks RL)"]
+
+    P --> R --> V --> E --> A --> PR --> D
+    D -- kept --> PERS
+    D -- regressed --> REV["revert the delta"]
+    PERS --> P
+    REV --> P
+    V -. feeds .-> DOC
+    DOC -. lessons inform .-> PR
+    PERS -. applied on boot .-> P
+```
+
+**Three rules keep it honest:**
+1. **JSONL writes, SQLite only reads** — documentation never corrupts the source of truth.
+2. **The LLM is decoupled & batch** — if the local model is down, RL keeps training.
+3. **Knowledge is adopted only if PROVEN** — a lesson or knob enters `learned_config` only if
+   it survives tempered eval. This gate is what stops the agent from "learning" noise (you can
+   watch rejected iterations in `doom-cli timeline`).
+
+Knowledge lives in four layers: **JSONL** (raw truth) → **SQLite** (queryable view) →
+**Obsidian** (human-readable graph) → **learned_config + stores** (machine-applied). Full
+diagram in [`vault/00-index/Knowledge Loop.md`](vault/00-index/Knowledge%20Loop.md).
+
+---
+
 ## 🚀 Quick start (local)
 
 ```bash
