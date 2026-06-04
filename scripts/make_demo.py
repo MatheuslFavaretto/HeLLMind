@@ -6,12 +6,15 @@ the same 84x84 grayscale 4-frame stack it trained on; we just capture the pretty
 """
 import argparse
 import os
+import sys
 from collections import deque
 
 import cv2
 import numpy as np
 import vizdoom as vzd
 from PIL import Image
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from config import Config
 from doom.campaign import CAMPAIGN_ACTIONS, CAMPAIGN_BUTTONS, default_wad

@@ -1,7 +1,11 @@
 """Probe a single campaign map for combat density: boot, spam attack+turn, count
 hits/kills over a short window. Run one map per process so a hanging map can be
 killed by an external watchdog without taking the others down."""
+import os
 import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from doom.campaign import CampaignDoomEnv, default_wad
 
 doom_map = sys.argv[1]
