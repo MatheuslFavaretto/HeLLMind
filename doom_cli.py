@@ -30,6 +30,27 @@ BANNER = r"""
  ╚═╝  ╚═╝╚══════╝╚══════╝╚══════╝╚═╝     ╚═╝╚═╝╚═╝  ╚═══╝╚═════╝
 """
 
+# Doomguy — the marine's HUD face (STFST), the backdrop of the interactive shell. For the
+# REAL in-game face, drop a PNG at assets/doomguy.png and it renders inline on iTerm2.
+DOOMGUY = r"""
+        ▄▄▄█████████▄▄▄
+      ▟███████████████████▙
+     ████▀▀▀       ▀▀▀████
+    ███▀  ▀▄▄▄   ▄▄▄▀  ▀███
+   ███░░░░░░░░░░░░░░░░░░░███
+   ██░░░░▄▄▄▄░░░░░▄▄▄▄░░░░██
+   ██░░░▟████▙░░░▟████▙░░░██
+   ██░░░▜█▰▰█▛░░░▜█▰▰█▛░░░██
+   ██░░░░▀▀▀▀░░▟▙░▀▀▀▀░░░░██
+   ██░░░░░░░░▟████▙░░░░░░░██
+   ▜█░░░░▗▟██████████▙▖░░█▛
+    ██░░░████▘▘▘▘▘▘████░░██
+    ▜██▄░░▀▀▀▀▀▀▀▀▀▀░░▄██▛
+     ▜████▄▄▄▄▄▄▄▄▄▄████▛
+       ▀▀▀██████████▀▀▀
+"""
+DOOMGUY_IMG = "assets/doomguy.png"  # drop the real face here for inline rendering
+
 # (group, name, one-liner, longer explanation, example)
 COMMANDS = [
     ("▶ Run", "diagnose", "Full diagnostic: eval + behavior flags + next step recommendation",
@@ -109,15 +130,48 @@ COMMANDS = [
      "doom-cli hypothesize"),
     ("🧠 Cognition", "experiment", "Run a hypothesis-driven A/B experiment",
      "Takes a hypothesis ID, trains control+experimental branches (multi-seed), "
-     "judges the result honestly, and records it. Use --list to see open hypotheses.",
-     "doom-cli experiment --list / doom-cli experiment --hypothesis 1 --steps 200000"),
+     "judges the result honestly, and records it. Run 'experiment --list' first to see IDs.",
+     "doom-cli experiment --hypothesis 1 --steps 200000"),
     ("🧠 Cognition", "db", "Build/query the SQLite cognitive memory",
-     "Rebuilds hellmind.db from the JSONL stores or queries events/lessons/experiments/runs.",
-     "doom-cli db build / doom-cli db query MAP01 / doom-cli db query --runs"),
+     "Rebuilds hellmind.db, or queries it. Run each as a SEPARATE command: "
+     "'db build', then 'db query MAP01', or 'db query --runs'.",
+     "doom-cli db query --runs"),
     ("🧠 Cognition", "timeline", "Show the agent's evolution across auto iterations",
      "Reads the runs table (explored/exit/kills/score per iteration) and prints the trend — "
      "the honest 'is it actually improving?' view over time.",
      "doom-cli timeline"),
+    ("🧠 Cognition", "rollback", "Structured rollback audit trail (never degrade permanently)",
+     "Every auto adjustment is logged as before/change/after/result + kept|reverted — the "
+     "safety net that rolls back any regression. `doom-cli rollback` shows the trail.",
+     "doom-cli rollback"),
+    ("🧠 Cognition", "knowledge", "Long-term knowledge in 3 tiers (facts/hypotheses/validated)",
+     "Aggregates the bestiary (facts), open hypotheses, and proven experiments/learned_config "
+     "(validated) into the three certainty tiers — what the agent KNOWS vs suspects vs proved.",
+     "doom-cli knowledge"),
+    ("📊 Measure", "intel", "Intelligence report: NN architecture, params, training, memory, disk",
+     "Proves a real neural network exists: layer-by-layer architecture, parameter count, depth, "
+     "best run, key metrics, and disk usage — the 'is this real?' dashboard.",
+     "doom-cli intel"),
+    ("📊 Measure", "audit", "Is it REALLY learning? (entropy, KL, value loss, grad norm)",
+     "Reads the training logs and reports the learning signals — entropy (exploration), "
+     "approx-KL (update size), value loss, explained variance — to confirm real learning.",
+     "doom-cli audit"),
+    ("🧠 Cognition", "learned", "Reward knobs the agent has PROVEN help (persisted)",
+     "Shows the validated reward changes in learned_config — knobs an experiment proved help, "
+     "re-applied on every train/auto boot so wins accumulate across runs.",
+     "doom-cli learned"),
+    ("▶ Run", "bc", "Behavioral cloning from your recorded human demos",
+     "Trains the policy to imitate your recorded play (record_demo → bc) as a starting point "
+     "for RL — the strongest lever for reaching the exit.",
+     "doom-cli bc --epochs 10"),
+    ("▶ Run", "eureka", "LLM evolves the reward design across generations",
+     "Runs the Eureka loop: the LLM proposes reward functions, they're evaluated, and the best "
+     "survive — automated reward design instead of hand-tuning.",
+     "doom-cli eureka"),
+    ("🔬 Research", "benchmark", "Ablation: prove each layer (RND/memory/full) adds value",
+     "Trains baseline/rnd/memory/full across seeds with the SAME budget, evaluates honestly, "
+     "and writes results/ (csv+json+md) with mean±std so wins aren't luck.",
+     "doom-cli benchmark"),
     ("🧠 Cognition", "curriculum", "Show map difficulty scores and forgetting alerts",
      "Computes per-map difficulty (deaths + timeouts + coverage + kills) and detects "
      "skill regression vs historical peak. Writes 40-maps/Curriculum.md.",
@@ -131,6 +185,10 @@ COMMANDS = [
      "Creates 20-concepts/Concept - Agent Perception.md explaining how the agent sees "
      "the world: pixels, game vars, objects_info, what it does/doesn't know.",
      "doom-cli perception"),
+    ("▶ Run", "shell", "Interactive chat-style REPL with the Doomguy backdrop",
+     "Starts a chat-like prompt: type /command to run it, /help for the menu, /exit to leave. "
+     "Unknown commands get suggestions. The whole CLI, one slash away.",
+     "doom-cli shell"),
     ("🛠 Tools", "gif", "Render a gameplay GIF + screenshots from the brain",
      "Builds an animated GIF straight from the observation tensor (agent view + spatial "
      "memory, no screen recording) plus a few PNG stills for the README.",
@@ -147,7 +205,7 @@ COMMANDS = [
      "doom-cli clean"),
 ]
 
-GROUP_ORDER = ["▶ Run", "📊 Measure", "🧠 Cognition", "🛠 Tools"]
+GROUP_ORDER = ["▶ Run", "📊 Measure", "🔬 Research", "🧠 Cognition", "🛠 Tools"]
 
 
 def banner() -> None:
@@ -161,23 +219,214 @@ def banner() -> None:
     console.print()
 
 
+# One-line "what this group is for", shown under each section header.
+GROUP_TAGLINES = {
+    "▶ Run": "train the agent, watch it play, learn from your own demos",
+    "📊 Measure": "honest metrics, the neural-net proof, learning signals",
+    "🔬 Research": "prove each layer adds value (reproducible ablation)",
+    "🧠 Cognition": "memory, hypotheses, experiments, knowledge & rollback",
+    "🛠 Tools": "gifs, tensorboard, tests, housekeeping",
+}
+
+
 def menu(full: bool = False) -> None:
     """Pretty help. full=True (from -h) also prints the longer explanation per command."""
+    from rich import box
     banner()
     for group in GROUP_ORDER:
         rows = [c for c in COMMANDS if c[0] == group]
-        t = Table(show_header=True, header_style="bold #ff5a00",
-                  border_style="#7a0a00", expand=True, title=f"[bold #ffd000]{group}[/bold #ffd000]",
-                  title_justify="left")
+        if not rows:
+            continue
+        tagline = GROUP_TAGLINES.get(group, "")
+        title = f"[bold #ffd000]{group}[/bold #ffd000]"
+        if tagline:
+            title += f"   [italic #ff9500]— {tagline}[/italic #ff9500]"
+        t = Table(show_header=True, header_style="bold #ff5a00", box=box.SIMPLE_HEAVY,
+                  border_style="#7a0a00", expand=True, title=title, title_justify="left",
+                  padding=(0, 1))
         t.add_column("command", style="bold #ffd000", no_wrap=True)
         t.add_column("what it does", style="white")
         t.add_column("example", style="dim italic", no_wrap=True)
         for _, name, short, long, ex in rows:
             t.add_row(name, (short + ("\n[dim]" + long + "[/dim]" if full else "")), ex)
         console.print(t)
+        console.print()  # breathing room between sections
+    console.print(Align.center(Text.from_markup(
+        "[#ffd000]▶ quick start:[/#ffd000]  [bold]doom-cli auto[/bold]  "
+        "[dim]→ train + self-improve  ·[/dim]  [bold]doom-cli watch[/bold]  "
+        "[dim]→ see it play  ·[/dim]  [bold]doom-cli intel[/bold]  [dim]→ the proof[/dim]")))
     console.print(Align.center(Text(
         "doom-cli <command> -h   for that command's options    ·    "
         "-h / --help   for this screen", style="dim")))
+
+
+def resolve_slash(token: str, known: set):
+    """Resolve a typed slash-command token. Returns (kind, payload):
+      ('builtin', name)  for shell built-ins (help/exit/clear/palette)
+      ('command', name)  for a real doom-cli command (exact OR unique prefix)
+      ('suggest', [..])  for an ambiguous/unknown token (candidates, possibly empty)
+    Matching order: builtins → exact → unique prefix (type less) → fuzzy. Pure + testable."""
+    import difflib
+    t = token.lstrip("/").strip().lower()
+    if t in ("help", "h", "?", "menu"):
+        return "builtin", "help"
+    if t in ("exit", "quit", "q"):
+        return "builtin", "exit"
+    if t in ("clear", "cls"):
+        return "builtin", "clear"
+    if t in ("", "commands", "ls"):
+        return "builtin", "palette"
+    if t in known:
+        return "command", t
+    prefix = sorted(c for c in known if c.startswith(t))
+    if len(prefix) == 1:
+        return "command", prefix[0]          # /bench -> benchmark
+    if len(prefix) > 1:
+        return "suggest", prefix[:5]          # ambiguous prefix -> show the options
+    return "suggest", difflib.get_close_matches(t, known, n=3)
+
+
+# Terminals that speak the iTerm2 inline-image protocol (so the real PNG can render).
+_IMG_TERMINALS = {"iTerm.app", "WarpTerminal", "WezTerm", "mintty"}
+
+
+def _render_iterm_image(path: str, height_rows: int = 16) -> bool:
+    """Render a real image inline using the iTerm2 image protocol. Returns True on success.
+    Lets the shell show the ACTUAL in-game Doomguy face when a PNG is provided + the terminal
+    supports it (iTerm2 / Warp / WezTerm). Other terminals fall back to the ASCII art."""
+    import base64
+    if (os.environ.get("TERM_PROGRAM") not in _IMG_TERMINALS
+            or not sys.stdout.isatty()           # don't dump base64 into pipes/logs
+            or not os.path.exists(path)):
+        return False
+    try:
+        with open(path, "rb") as f:
+            data = base64.b64encode(f.read()).decode("ascii")
+        # ESC ]1337;File=...:base64 BEL  — centred-ish via a leading indent.
+        sys.stdout.write(
+            f"\033]1337;File=inline=1;height={height_rows};preserveAspectRatio=1;size="
+            f"{len(data)}:{data}\a\n")
+        sys.stdout.flush()
+        return True
+    except OSError:
+        return False
+
+
+def _doom_backdrop() -> None:
+    """Render the Doomguy backdrop (real PNG inline on iTerm2, else ASCII) + the shell title."""
+    if not _render_iterm_image(os.path.join(ROOT, DOOMGUY_IMG)):
+        art = Text()
+        lines = DOOMGUY.strip("\n").splitlines()
+        for i, line in enumerate(lines):
+            art.append(line + "\n", style=f"bold {EMBER[min(i // 3, len(EMBER) - 1)]}")
+        console.print(Align.center(art))
+    console.print(Align.center(Text.from_markup(
+        "[bold #ffd000]HeLLMind[/bold #ffd000] [dim]interactive shell · "
+        "rip and tear through the commands[/dim]")))
+    console.print()
+
+
+def _shell_welcome() -> None:
+    """A Claude-Code-style welcome card: the Doomguy, a greeting, and the key tips."""
+    from rich import box
+    from config import Config
+    cfg = Config()
+    body = Text.from_markup(
+        "[bold #ff5a00]✻ Welcome to HeLLMind[/bold #ff5a00]\n\n"
+        "  [#ffd000]/help[/#ffd000] for all commands   ·   "
+        "[#ffd000]/status[/#ffd000] for your setup\n"
+        "  [#ffd000]/<command>[/#ffd000] to run one   ·   "
+        "[#ffd000]/exit[/#ffd000] to quit\n\n"
+        f"  [dim]vault:[/dim] {cfg.vault_path}   [dim]·[/dim]   "
+        f"[dim]maps:[/dim] {', '.join(cfg.maps[:3])}…")
+    console.print(Panel(body, box=box.ROUNDED, border_style="#ff5a00",
+                        padding=(1, 2), expand=True))
+    console.print()
+
+
+def _shell_palette() -> None:
+    """A compact command palette — every command, grouped, scannable in one glance."""
+    for group in GROUP_ORDER:
+        names = [c[1] for c in COMMANDS if c[0] == group and c[1] != "shell"]
+        if not names:
+            continue
+        chips = "  ".join(f"[#ffd000]/{n}[/#ffd000]" for n in names)
+        console.print(f"  [bold #ff9500]{group}[/bold #ff9500]")
+        console.print(f"    {chips}")
+    console.print("  [dim]tip: type the start of any name — [/dim]"
+                  "[#ffd000]/bench[/#ffd000][dim] runs [/dim][#ffd000]/benchmark[/#ffd000]\n")
+
+
+# Rotating one-liners shown under the input (a little personality, like Claude's tips).
+_SHELL_TIPS = [
+    "/watch shows the agent play (tempered — the real policy, not the frozen argmax)",
+    "/benchmark proves each layer adds value — it runs a finite matrix and stops",
+    "/auto --fast uses all your CPU cores without turning any perception off",
+    "/knowledge shows what the agent KNOWS in 3 tiers: facts / hypotheses / validated",
+    "/rollback is the safety net — every reward change + its keep/revert verdict",
+    "type just / to see the whole command palette",
+]
+
+
+def _shell_prompt(tip: str) -> str:
+    """A Claude-Code-style boxed input. Returns the stripped line (raises on EOF)."""
+    width = min(console.width, 100)
+    bar = "─" * (width - 2)
+    console.print(f"[#7a0a00]╭{bar}╮[/#7a0a00]")
+    line = console.input("[#7a0a00]│[/#7a0a00] [bold #ff2d00]❯[/bold #ff2d00] ")
+    console.print(f"[#7a0a00]╰{bar}╯[/#7a0a00]")
+    console.print(f"  [dim]💡 {tip}[/dim]")
+    return line.strip()
+
+
+def cmd_shell(a) -> int:
+    """A Claude-Code-style REPL: type /command to run it, /help for the menu, /exit to leave."""
+    import shlex
+    known = {c[1] for c in COMMANDS}
+    import itertools
+    known = known - {"shell"}  # you're already in it
+    console.clear()
+    _doom_backdrop()
+    _shell_welcome()
+    tips = itertools.cycle(_SHELL_TIPS)
+    while True:
+        try:
+            line = _shell_prompt(next(tips))
+        except (EOFError, KeyboardInterrupt):
+            console.print("\n[dim]rip and tear... until it is done. 👋[/dim]")
+            return 0
+        if not line:
+            continue
+        if not line.startswith("/"):
+            console.print("  [dim]commands start with [/dim][#ffd000]/[/#ffd000][dim] — try "
+                          "[/dim][#ffd000]/help[/#ffd000][dim] or just [/dim][#ffd000]/[/#ffd000]\n")
+            continue
+        try:
+            parts = shlex.split(line[1:])
+        except ValueError:
+            console.print("  [red]couldn't parse that line[/red]\n")
+            continue
+        cmd = parts[0] if parts else ""   # bare "/" -> palette
+        rest = parts[1:]
+        kind, payload = resolve_slash(cmd, known)
+        if kind == "builtin" and payload == "exit":
+            console.print("[dim]rip and tear... until it is done. 👋[/dim]")
+            return 0
+        if kind == "builtin" and payload == "help":
+            console.print(); menu(full=False); console.print(); continue
+        if kind == "builtin" and payload == "palette":
+            console.print(); _shell_palette(); continue
+        if kind == "builtin" and payload == "clear":
+            console.clear(); _doom_backdrop(); _shell_welcome(); continue
+        if kind == "suggest":
+            hint = (f"  did you mean: {', '.join('/' + n for n in payload)}?"
+                    if payload else "  — type /help to see them all")
+            console.print(f"  [red]unknown:[/red] [#ffd000]/{cmd}[/#ffd000]{hint}\n")
+            continue
+        # A real command: run it through the full CLI (subprocess = clean isolation).
+        console.rule(f"[bold #ff5a00]/{cmd}[/bold #ff5a00]", style="#7a0a00")
+        subprocess.run([PY, os.path.abspath(__file__), payload, *rest], cwd=ROOT)
+        console.print()
 
 
 # --------------------------------------------------------------------------- #
@@ -342,8 +591,14 @@ def cmd_watch(a) -> int:
     cmd = [PY, "-m", "rl.eval", "--render", "--episodes", str(a.episodes)]
     if a.path:
         cmd += ["--path", a.path]
+    # Default to tempered sampling: this agent's pure-argmax policy collapses to passive
+    # (it looks "dead" — ignores enemies, won't shoot). T=0.5 shows the REAL learned behavior.
+    # Pass --temperature 0 to watch the raw argmax.
+    if a.temperature and a.temperature > 0:
+        cmd += ["--temperature", str(a.temperature)]
     env = {"USE_LSTM": "1"} if a.lstm else None
-    return run(cmd, env, title=f"🎮 Watching the brain play · {a.episodes} episodes")
+    label = "argmax" if (a.temperature == 0) else f"tempered T={a.temperature}"
+    return run(cmd, env, title=f"🎮 Watching the brain play · {a.episodes} eps · {label}")
 
 
 def cmd_eval(a) -> int:
@@ -387,6 +642,8 @@ def cmd_auto(a) -> int:
     if getattr(a, "automap", False):
         cmd.append("--automap")
     # --resume is now the DEFAULT in rl.autonomous; no need to pass it.
+    if getattr(a, "fast", False):
+        cmd.append("--fast")
     if a.llm:
         cmd.append("--llm")
     env = {"USE_LSTM": "1"} if a.lstm else None
@@ -627,6 +884,68 @@ def cmd_learned(a) -> int:
     return 0
 
 
+def cmd_rollback(a) -> int:
+    """Show the structured rollback audit trail: every auto adjustment + its verdict."""
+    from config import Config
+    from writer.rollback import RollbackLog
+    hist = RollbackLog(Config().memory_dir).history()
+    if not hist:
+        console.print(Panel("No adjustments logged yet — run `doom-cli auto`.",
+                            title="↩ rollback log", border_style=EMBER[3]))
+        return 0
+    n_rev = sum(1 for r in hist if not r.get("kept", True))
+    table = Table(title=f"↩ Rollback log — {len(hist)} adjustments, {n_rev} reverted",
+                  title_style=f"bold {EMBER[1]}", border_style=EMBER[3])
+    table.add_column("iter"); table.add_column("change"); table.add_column("score", justify="right")
+    table.add_column("verdict", justify="center")
+    for r in hist[-30:]:
+        change = "; ".join(f"{k}: {v[0]}→{v[1]}" for k, v in r.get("change", {}).items())
+        verdict = "[green]kept[/green]" if r.get("kept") else "[red]↩ reverted[/red]"
+        score = r.get("result", {}).get("score", "")
+        table.add_row(str(r.get("iter")), change[:60], str(score), verdict)
+    console.print(table)
+    console.print("[dim]The safety net: any change that regressed was rolled back automatically.[/dim]")
+    return 0
+
+
+def cmd_knowledge(a) -> int:
+    """Show the agent's long-term knowledge in 3 tiers: facts / hypotheses / validated."""
+    from config import Config
+    from writer.knowledge import knowledge_tiers
+    cfg = Config()
+    tiers = knowledge_tiers(cfg.memory_dir)
+    titles = {"facts": ("📚 FACTS (measured)", EMBER[1]),
+              "hypotheses": ("❓ HYPOTHESES (open)", EMBER[2]),
+              "validated": ("✅ VALIDATED (proven)", EMBER[0])}
+    any_shown = False
+    for key in ("facts", "validated", "hypotheses"):
+        items = tiers.get(key, [])
+        title, color = titles[key]
+        body = []
+        for it in items[:20]:
+            line = f"• {it['text']}"
+            if it.get("evidence"):
+                line += f"  [dim]({it['evidence']})[/dim]"
+            body.append(line)
+        if not body:
+            body = ["[dim](nothing yet — train + run experiments to populate this tier)[/dim]"]
+        else:
+            any_shown = True
+        console.print(Panel("\n".join(body), title=f"{title}  ·  {len(items)}",
+                            border_style=color))
+    if not any_shown:
+        console.print("[dim]Tip: `doom-cli auto` fills facts; `doom-cli experiment` validates.[/dim]")
+    return 0
+
+
+def cmd_benchmark(a) -> int:
+    cmd = [PY, "-m", "rl.benchmark", "--map", a.map, "--steps", str(a.steps),
+           "--seeds", a.seeds, "--episodes", str(a.episodes), "--n-envs", str(a.n_envs)]
+    if a.configs:
+        cmd += ["--configs", a.configs]
+    return run(cmd, title="📊 Ablation benchmark: does each layer add value?")
+
+
 def cmd_timeline(a) -> int:
     """Evolution report: explored / exit-rate / kills / score per auto-loop iteration.
     Reads the SQLite `runs` table (mirrored from autonomy.jsonl) so you can SEE whether
@@ -651,6 +970,7 @@ def cmd_timeline(a) -> int:
         rows.append({
             "name": r["name"], "map": r["maps"] or "?",
             "explored": m.get("explored_fraction"), "exit": m.get("exit_rate"),
+            "exit_prog": m.get("exit_progress"),
             "kills": m.get("kills_per_episode"), "score": c.get("score"),
             "kept": c.get("kept"),
         })
@@ -663,6 +983,7 @@ def cmd_timeline(a) -> int:
                   title_style=f"bold {EMBER[1]}", border_style=EMBER[3])
     table.add_column("iter"); table.add_column("map")
     table.add_column("explored", justify="right"); table.add_column("exit%", justify="right")
+    table.add_column("→exit", justify="right")  # dense progress toward the exit
     table.add_column("kills", justify="right"); table.add_column("score", justify="right")
     table.add_column("kept", justify="center")
 
@@ -676,7 +997,8 @@ def cmd_timeline(a) -> int:
         star = " ⭐" if r["name"] == best["name"] else ""
         table.add_row(
             r["name"].replace("iter-", "#"), str(r["map"]),
-            pct(r["explored"]), pct(r["exit"]), num(r["kills"]), num(r["score"]) + star,
+            pct(r["explored"]), pct(r["exit"]), pct(r["exit_prog"]),
+            num(r["kills"]), num(r["score"]) + star,
             "[green]✓[/green]" if r["kept"] else "[dim]·[/dim]",
         )
     console.print(table)
@@ -887,6 +1209,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     w = sub.add_parser("watch"); w.add_argument("--episodes", type=int, default=3)
     w.add_argument("--path"); w.add_argument("--lstm", action="store_true")
+    w.add_argument("--temperature", type=float, default=0.5,
+                   help="Tempered sampling for watching (default 0.5). Use 0 for raw argmax.")
     w.set_defaults(fn=cmd_watch)
 
     e = sub.add_parser("eval"); e.add_argument("--episodes", type=int, default=10)
@@ -911,9 +1235,13 @@ def build_parser() -> argparse.ArgumentParser:
     au.add_argument("--game-vars", dest="game_vars", action="store_true", help="Feed HEALTH/AMMO into the policy.")
     au.add_argument("--automap", action="store_true", help="Native top-down automap channel (forces --fresh).")
     au.add_argument("--resume", action="store_true", help="(default now) Continue prior session.")
+    au.add_argument("--fast", action="store_true",
+                    help="Throughput: scale parallel envs to your CPU cores. Disables NOTHING.")
     au.add_argument("--llm", action="store_true", help="LLM-refined reward proposals.")
     au.add_argument("--lstm", action="store_true", help="RecurrentPPO/LSTM policy.")
     au.set_defaults(fn=cmd_auto)
+
+    sub.add_parser("shell", help="Interactive chat-style REPL (type /command to run)").set_defaults(fn=cmd_shell)
 
     n = sub.add_parser("notes"); n.add_argument("--run"); n.add_argument("--model")
     n.set_defaults(fn=cmd_notes)
@@ -945,6 +1273,14 @@ def build_parser() -> argparse.ArgumentParser:
     tl = sub.add_parser("timeline", help="Evolution report: explored/exit/kills/score per auto iteration")
     tl.add_argument("--limit", type=int, default=50)
     tl.set_defaults(fn=cmd_timeline)
+    sub.add_parser("knowledge", help="Long-term knowledge in 3 tiers: facts / hypotheses / validated").set_defaults(fn=cmd_knowledge)
+    sub.add_parser("rollback", help="Structured rollback audit trail (before/change/after/result per adjustment)").set_defaults(fn=cmd_rollback)
+    bm = sub.add_parser("benchmark", help="Ablation: train baseline/rnd/memory/full × seeds, prove each layer adds value")
+    bm.add_argument("--map", default="MAP01"); bm.add_argument("--steps", type=int, default=50000)
+    bm.add_argument("--seeds", default="42,123"); bm.add_argument("--episodes", type=int, default=20)
+    bm.add_argument("--n-envs", dest="n_envs", type=int, default=4)
+    bm.add_argument("--configs", default=None)
+    bm.set_defaults(fn=cmd_benchmark)
 
     bc_p = sub.add_parser("bc", help="Behavioral cloning from human SPECTATOR demos")
     bc_p.add_argument("--demos", default=None, help="Demos dir (default: <memory>/demos)")

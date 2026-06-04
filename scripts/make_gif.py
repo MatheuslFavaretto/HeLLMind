@@ -3,9 +3,12 @@ observation tensor (no screen recording needed). For the spatial-memory brain it
 side by side: what the agent SEES and the agent's MEMORY of where it has been."""
 import argparse
 import os
+import sys
 
 import numpy as np
 from PIL import Image
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from config import Config
 from doom.campaign import campaign_metadata

@@ -39,11 +39,15 @@ def score(m: dict) -> float:
     local optimum we kept hitting. Capping kills at 5 (diminishing past that) and scaling
     to [0,1] restores the intended ordering: max contributions become exit 4.0, explore
     3.0, aim 1.0, kills 0.5 — kills is now a tiebreaker, not the objective."""
-    exit_r   = m.get("exit_rate", 0.0)                       # [0,1]
+    exit_r   = m.get("exit_rate", 0.0)                       # [0,1] (binary: finished?)
+    # Partial credit for getting CLOSE to the exit (dense, fairer than the binary rate) — so
+    # the agent is rewarded for progress toward finishing even before it completes once.
+    exit_prog = m.get("exit_progress", 0.0)                 # [0,1]
     explored = m.get("explored_fraction", 0.0)              # [0,1]
     kills    = min(m.get("kills_per_episode", 0.0), 5.0) / 5.0  # [0,1] (capped)
     accuracy = m.get("shooting_accuracy", 0.0)             # [0,1]
-    return 4.0 * exit_r + 3.0 * explored + 1.0 * accuracy + 0.5 * kills
+    return (4.0 * exit_r + 1.5 * exit_prog + 3.0 * explored
+            + 1.0 * accuracy + 0.5 * kills)
 
 
 # Reward knobs the supervisor is allowed to move, with hard bounds (the guardrails).
@@ -56,6 +60,12 @@ BOUNDS = {
     "DEATH_PENALTY":         (1.0, 20.0),
     "FRONTIER_REWARD":       (0.0, 0.2),  # anti-circle/exploration lever
     "EPISODE_TIMEOUT":       (1050, 8400),  # ticks — 30s to 240s at 35fps
+    # Expanded levers so the loop can tune more failure modes (each still bounded):
+    "ENGAGEMENT_REWARD":     (0.0, 0.1),   # anti-passivity (face/approach enemies)
+    "ENT_COEF":              (0.005, 0.08),  # the argmax-collapse lever (un-freeze policy)
+    "RND_SCALE":             (0.0, 1.0),   # curiosity strength
+    "GOEXPLORE_GOAL_PROB":   (0.0, 0.8),   # how often to return-then-explore
+    "COMBAT_EXPLORE_FACTOR": (0.1, 1.0),   # how hard to damp the off-mode objective
 }
 
 # writer.suggest speaks in lowercase knobs; map them onto the supervisor's env vars.
@@ -90,23 +100,53 @@ def propose(env: dict, m: dict) -> tuple[dict, str]:
                      f"episode too short — raise EPISODE_TIMEOUT to {int(new['EPISODE_TIMEOUT'])}")
 
     if explored < 0.10:
-        # Very low exploration: raise both coverage and frontier (push agent away from spawn).
+        # Very low exploration: push on EVERY exploration lever — coverage, frontier, and the
+        # curiosity/return-then-explore knobs — to break out of the spawn room.
         bump("COVERAGE_REWARD", factor=1.4)
         bump("FRONTIER_REWARD", factor=1.5)
-        return new, (f"explored only {explored:.0%} -> raise "
-                     f"COVERAGE_REWARD to {new['COVERAGE_REWARD']}, "
-                     f"FRONTIER_REWARD to {new['FRONTIER_REWARD']}")
+        bump("RND_SCALE", factor=1.3)
+        bump("GOEXPLORE_GOAL_PROB", add=0.1)
+        return new, (f"explored only {explored:.0%} -> raise COVERAGE_REWARD to "
+                     f"{new['COVERAGE_REWARD']}, FRONTIER_REWARD to {new['FRONTIER_REWARD']}, "
+                     f"RND_SCALE to {new['RND_SCALE']}, GOEXPLORE_GOAL_PROB to "
+                     f"{new['GOEXPLORE_GOAL_PROB']}")
+    # Root-cause before paying it to explore: an agent that keeps DYING or whose policy is
+    # FROZEN can never reach the exit, so fix survival/aliveness first.
+    # High death rate: make damage + dying hurt more so it disengages at low HP (it now
+    # knows its HEALTH via game_vars).
+    if m.get("death_rate", 0.0) > 0.5:
+        bump("DAMAGE_TAKEN_PENALTY", factor=1.3)
+        bump("DEATH_PENALTY", factor=1.2)
+        return new, (f"death_rate {m.get('death_rate',0):.0%} -> raise DAMAGE_TAKEN_PENALTY "
+                     f"to {new['DAMAGE_TAKEN_PENALTY']}, DEATH_PENALTY to {new['DEATH_PENALTY']}")
+    # COMBAT regime diagnosis (separate from exploration): the agent SEES enemies but won't
+    # shoot (combat_engagement low) or barely kills -> the deterministic policy has frozen.
+    # Un-freeze it (entropy) and pay it to face enemies. Uses the per-mode telemetry when
+    # present (combat_fraction/engagement), else falls back to kills/ep.
+    kills = m.get("kills_per_episode", 0.0)
+    engagement = m.get("combat_engagement")
+    saw_enemies = m.get("combat_fraction", 0.0) > 0.05
+    combat_passive = (engagement is not None and saw_enemies and engagement < 0.3) \
+        or (kills < 0.5 and timeout_rate < 0.6)
+    if combat_passive:
+        bump("ENT_COEF", factor=1.3)
+        bump("ENGAGEMENT_REWARD", factor=1.5)
+        why = (f"combat_engagement={engagement:.0%} (sees enemies, won't shoot)"
+               if engagement is not None and saw_enemies else f"kills/ep={kills:.2f}")
+        return new, (f"passive in combat ({why}) -> un-freeze policy: ENT_COEF to "
+                     f"{new['ENT_COEF']}, ENGAGEMENT_REWARD to {new['ENGAGEMENT_REWARD']}")
     if explored < 0.5:
         bump("COVERAGE_REWARD", factor=1.3)
         return new, f"explored only {explored:.0%} -> raise COVERAGE_REWARD to {new['COVERAGE_REWARD']}"
-    if m.get("exit_rate", 0.0) == 0.0:
-        bump("EXIT_REWARD", factor=1.3)
-        bump("COVERAGE_REWARD", factor=1.2)  # exploring helps find the exit
-        return new, f"never reached the exit -> raise EXIT_REWARD to {new['EXIT_REWARD']}, COVERAGE to {new['COVERAGE_REWARD']}"
     if m.get("shooting_accuracy", 0.0) < 0.10:
         bump("MISS_PENALTY", add=0.05)
         bump("HIT_REWARD", factor=1.2)
         return new, f"accuracy {m.get('shooting_accuracy',0):.0%} -> MISS_PENALTY {new['MISS_PENALTY']}, HIT_REWARD {new['HIT_REWARD']}"
+    # Last resort once survival/exploration/aim are healthy: nudge the exit reward itself.
+    if m.get("exit_rate", 0.0) == 0.0:
+        bump("EXIT_REWARD", factor=1.3)
+        bump("COVERAGE_REWARD", factor=1.2)  # exploring helps find the exit
+        return new, f"never reached the exit -> raise EXIT_REWARD to {new['EXIT_REWARD']}, COVERAGE to {new['COVERAGE_REWARD']}"
     # Everything healthy: anneal exploration bonus to consolidate the policy.
     bump("COVERAGE_REWARD", factor=0.8)
     return new, f"metrics healthy -> anneal COVERAGE_REWARD to {new['COVERAGE_REWARD']}"
@@ -237,6 +277,34 @@ def _refresh_db(cfg: Config) -> None:
         print(f"[autonomous] db refresh skipped: {exc}")
 
 
+def _record_iteration(cfg: Config, i: int, prev_env: dict, eval_env: dict,
+                      kept: bool, sc: float) -> None:
+    """Auto-chain (P4): record this iteration's reward change into the experiment registry —
+    the full trail INCLUDING reversions. Uses result 'kept'/'reverted' (NOT 'improved') on
+    purpose: single-seed auto decisions populate the registry and rollback history, but are
+    NOT auto-adopted into learned_config (that stays the job of the multi-seed `experiment`
+    command) and don't pollute the 'validated' knowledge tier. Best-effort."""
+    if i == 0:
+        return
+    from writer.rollback import RollbackLog, diff_envs
+    before, change, after = diff_envs(prev_env, eval_env)
+    if not change:
+        return
+    try:
+        # Structured rollback log (the audit trail: before/change/after/result/kept).
+        RollbackLog(cfg.memory_dir).record(i, before, change, after,
+                                           {"score": round(float(sc), 4)}, kept)
+        # Mirror into the SQLite experiment registry (queryable view). 'kept'/'reverted'
+        # NOT 'improved' -> single-seed auto decisions are logged but never auto-adopted.
+        from writer.db import insert_experiment
+        desc = "; ".join(f"{k} {o}→{n}" for k, (o, n) in change.items())
+        insert_experiment(cfg.memory_dir, param=f"auto iter {i}: {desc}",
+                          old_val="", new_val="", result="kept" if kept else "reverted",
+                          confidence=0.3, notes=f"score={sc:.3f}")
+    except Exception as exc:  # pragma: no cover - defensive
+        print(f"[autonomous] rollback/registry log skipped: {exc}")
+
+
 def write_log(cfg: Config, history: list) -> None:
     """Persist the self-improvement trail: JSONL (machine) + live Obsidian log (human)."""
     os.makedirs(cfg.memory_dir, exist_ok=True)
@@ -271,8 +339,12 @@ def write_log(cfg: Config, history: list) -> None:
         "",
         "## Iteration table",
         "",
-        "| Iter | Explored | Exit% | Kills/ep | Acc | Score | Δ | Kept? | Decision |",
-        "|---|---|---|---|---|---|---|---|---|",
+        "> **Combat** = of the time it SEES an enemy, how often it actually shoots "
+        "(low = passive). **Explored/Exit** = the exploration regime. The two are tuned "
+        "separately by the coach.",
+        "",
+        "| Iter | Explored | Exit% | Kills/ep | Acc | Combat | Score | Δ | Kept? | Decision |",
+        "|---|---|---|---|---|---|---|---|---|---|",
     ]
     prev_score = None
     for h in history:
@@ -280,12 +352,16 @@ def write_log(cfg: Config, history: list) -> None:
         delta = f"{h['score'] - prev_score:+.2f}" if prev_score is not None else "—"
         prev_score = h["score"]
         kept_icon = "✅" if h["kept"] else "↩ reverted"
+        # Combat regime (per-mode telemetry): blank for older records that predate it.
+        combat = (f"{m['combat_engagement']:.0%}" if m.get("combat_engagement") is not None
+                  and m.get("combat_fraction", 0.0) > 0.0 else "—")
         lines.append(
             f"| {h['iter']} "
             f"| {m['explored_fraction']:.0%} "
             f"| {m['exit_rate']:.0%} "
             f"| {m['kills_per_episode']:.2f} "
             f"| {m['shooting_accuracy']:.0%} "
+            f"| {combat} "
             f"| **{h['score']:.2f}** "
             f"| {delta} "
             f"| {kept_icon} "
@@ -550,10 +626,24 @@ def main() -> None:
                         "(needs Ollama + enough events); falls back to the heuristic.")
     p.add_argument("--resume", action="store_true",
                    help="(default behaviour — kept for back-compat) Continue the prior session.")
+    p.add_argument("--fast", action="store_true",
+                   help="Throughput mode WITHOUT disabling any perception: scale the parallel "
+                        "envs to your CPU cores (ViZDoom is CPU-bound, so this is the free "
+                        "speedup). Everything the agent sees stays on.")
     args = p.parse_args()
 
     cfg = Config()
     doom_map = args.map or cfg.maps[0]
+
+    # --fast: use the machine's cores for more parallel envs (pure throughput, nothing turned
+    # off). Cap at 8 to stay within ~16GB RAM with all perception channels on; leave 2 cores
+    # for the OS / the policy update. Honest about what it changed.
+    if args.fast:
+        import os as _os
+        cores = _os.cpu_count() or 4
+        cfg.n_envs = max(cfg.n_envs, min(8, max(2, cores - 2)))
+        print(f"[autonomous] --fast: {cores} cores detected -> N_ENVS={cfg.n_envs} "
+              f"(all perception channels stay ON).")
 
     # --fresh/--clear means a true restart: wipe the prior session trail so it doesn't get
     # resumed. (The brain itself is overwritten by the first --fresh training chunk.)
@@ -623,6 +713,10 @@ def main() -> None:
         "DAMAGE_TAKEN_PENALTY": str(cfg.damage_taken_penalty),
         "DEATH_PENALTY": str(cfg.death_penalty), "MOVE_REWARD": str(cfg.move_reward),
         "LIVING_REWARD": str(cfg.living_reward),
+        "COMBAT_EXPLORE_SPLIT": "1" if cfg.combat_explore_split else "0",
+        "COMBAT_EXPLORE_FACTOR": str(cfg.combat_explore_factor),
+        "AUTO_USE": "1" if cfg.auto_use else "0",
+        "DISCOVERY_REWARD": str(cfg.discovery_reward),
     }
 
     # Accumulate across sessions: overlay reward knobs the agent has PROVEN help (validated
@@ -682,9 +776,13 @@ def main() -> None:
 
         sc = score(m)
         kept = (i == 0) or (sc >= best_score - 0.05)  # guardrail: revert regressions
+        eval_env = dict(env)  # the config ACTUALLY evaluated this iter (before any rollback)
         print(f"[autonomous] iter {i}: score={sc:.2f} (best={best_score:.2f}) "
               f"explored={m['explored_fraction']:.0%} exit={m['exit_rate']:.0%} "
               f"kills={m['kills_per_episode']:.2f} -> {'KEEP' if kept else 'REVERT'}")
+
+        # Auto-chain (P4): log this change + its verdict into the experiment registry.
+        _record_iteration(cfg, i, history[-1]["env"] if history else {}, eval_env, kept, sc)
 
         if not kept:
             env = history[-1]["env"]  # roll back to the last good reward config

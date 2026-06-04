@@ -8,6 +8,17 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
+def _int_env(name: str, default: str) -> int:
+    """Parse an int-typed env var, tolerating float-like strings ('2100.0').
+    The auto-loop / memory_policy can emit floats for int knobs (e.g. EPISODE_TIMEOUT);
+    int('2100.0') would crash, so route every int knob through float() first."""
+    raw = os.getenv(name, default)
+    try:
+        return int(float(raw))
+    except (TypeError, ValueError):
+        return int(float(default))
+
+
 @dataclass
 class Config:
     # ---------- Doom environment ----------
@@ -16,7 +27,7 @@ class Config:
     # Stacked frames (motion). Tunable because each extra obs channel (spatial/depth/automap)
     # multiplies by frame_stack — so with all perception channels on, drop to 2 to fit memory
     # (4 base channels × 2 = 8, same footprint as spatial-only × 4). Tagged in the brain name.
-    frame_stack: int = int(os.getenv("FRAME_STACK", "2"))
+    frame_stack: int = _int_env("FRAME_STACK", "2")
     resolution: Tuple[int, int] = (84, 84)  # (width, height)
 
     # ---------- CAMPAIGN mode (full WAD maps, in order) ----------
@@ -31,18 +42,18 @@ class Config:
     )
     steps_per_map: int = int(os.getenv("STEPS_PER_MAP", "200000"))
     loop_maps: bool = os.getenv("LOOP_MAPS", "0") in ("1", "true", "True")
-    kills_to_clear: int = int(os.getenv("KILLS_TO_CLEAR", "5"))
-    episode_timeout: int = int(os.getenv("EPISODE_TIMEOUT", "2800"))  # ticks
+    kills_to_clear: int = _int_env("KILLS_TO_CLEAR", "5")
+    episode_timeout: int = _int_env("EPISODE_TIMEOUT", "2800")  # ticks
 
     # ---------- PPO training ----------
     total_timesteps: int = int(os.getenv("TOTAL_TIMESTEPS", "2000000"))
-    n_envs: int = int(os.getenv("N_ENVS", "8"))
+    n_envs: int = _int_env("N_ENVS", "8")
     # Rollout length per env. CRITICAL vs episode length: if n_steps ≈ episode length, each
     # rollout holds ~1 (often truncated) episode → poor GAE advantage estimates and slow
     # learning. Keep n_steps a few× SHORTER than the episode so several episodes fit per
     # rollout. Smaller n_steps also shrinks the obs rollout buffer (the memory hog with
     # spatial 8-channel obs), which is what lets more envs fit on a 16GB machine.
-    n_steps: int = int(os.getenv("N_STEPS", "1024"))
+    n_steps: int = _int_env("N_STEPS", "1024")
     batch_size: int = int(os.getenv("BATCH_SIZE", "256"))
     n_epochs: int = 4
     gamma: float = 0.99
@@ -52,6 +63,14 @@ class Config:
     # DETERMINISTIC (argmax) policy freezes — the exact gap measured on this agent.
     ent_coef: float = float(os.getenv("ENT_COEF", "0.03"))
     learning_rate: float = 2.5e-4
+    # Linearly decay the learning rate to 0 over each training call (a standard PPO practice
+    # that stabilises late training). On the chunked auto loop it's a per-chunk warm-restart
+    # decay. 1 = on.
+    lr_schedule: bool = os.getenv("LR_SCHEDULE", "1") in ("1", "true", "True")
+    # Normalise the (heavily shaped) reward with a running return std during training — helps
+    # PPO's value function when shaping terms have very different scales. Obs are NOT
+    # normalised (images stay raw). 1 = on.
+    normalize_reward: bool = os.getenv("NORMALIZE_REWARD", "1") in ("1", "true", "True")
     # Temperature the auto loop uses to SCORE the policy (not pure argmax). This agent's
     # argmax collapses to passive while its learned distribution explores+fights, so scoring
     # argmax would optimise a frozen policy. 0 = score argmax; 0.5 = tempered (recommended).
@@ -95,6 +114,22 @@ class Config:
     # CENTRED in view (in the crosshair). Encourages facing/approaching enemies instead of
     # wandering past them — complements hit/miss. Keep small so it can't replace killing. 0=off.
     engagement_reward: float = float(os.getenv("ENGAGEMENT_REWARD", "0.01"))
+    # Combat/exploration decoupling (Arnold/ViZDoom-champion style): pursue ONE objective at a
+    # time, gated by ground-truth enemy visibility (USE_LABELS). Enemy on screen -> COMBAT
+    # focus (damp exploration pulls so it doesn't wander off mid-fight); screen clear ->
+    # EXPLORE focus (damp the miss penalty so blind shots while navigating aren't punished).
+    # factor = how hard to damp the off-mode rewards (0.25 = keep 25%). Needs USE_LABELS.
+    combat_explore_split: bool = os.getenv("COMBAT_EXPLORE_SPLIT", "1") in ("1", "true", "True")
+    combat_explore_factor: float = float(os.getenv("COMBAT_EXPLORE_FACTOR", "0.25"))
+    # Auto-USE: press the USE button every frame so DOORS open on contact (and switches
+    # activate). Without this the agent must learn the rare FWD+USE action with no reward
+    # signal -> it gets stuck banging on closed doors (observed). On by default; the agent
+    # still chooses where to GO, this just stops doors from being a dead end.
+    auto_use: bool = os.getenv("AUTO_USE", "1") in ("1", "true", "True")
+    # Automatic goal/discovery reward (needs USE_LABELS): bonus the FIRST time each episode the
+    # agent SEES a new notable object (key, switch-adjacent item, weapon, powerup, a new monster
+    # type) — progress-guided exploration toward objectives, not blind wandering. 0 = off.
+    discovery_reward: float = float(os.getenv("DISCOVERY_REWARD", "0.5"))
     # Closed loop (bestiary -> reward): scale the kill bonus by what the agent LEARNED about
     # each monster — killing a deadlier type (higher death-rate-when-present) pays more. Uses
     # the persisted bestiary; needs one prior run to have data. Opt-in (changes the reward).
@@ -185,6 +220,10 @@ class Config:
             "exit_reward": self.exit_reward,
             "exit_prox_scale": self.exit_prox_scale,
             "engagement_reward": self.engagement_reward,
+            "combat_explore_split": float(self.combat_explore_split),
+            "combat_explore_factor": self.combat_explore_factor,
+            "auto_use": float(self.auto_use),
+            "discovery_reward": self.discovery_reward,
             "weapon_variety_reward": self.weapon_variety_reward,
             "use_rnd":  float(self.use_rnd),
             "rnd_scale": self.rnd_scale,

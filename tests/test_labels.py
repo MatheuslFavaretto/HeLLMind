@@ -56,3 +56,24 @@ def test_accepts_dict_labels():
     m = _a_monster()
     out = visible_enemies([{"object_name": m, "x": 40, "width": 4}], screen_width=84.0)
     assert out["count"] == 1 and out["nearest_centered"] == 0.0
+
+
+# --------------------------- discovery (visible_object_names) ---------------------------
+def test_visible_object_names_collects_items():
+    from doom.entities import visible_object_names
+    labs = [{"object_name": "RedCard"}, {"object_name": "Shotgun"},
+            {"object_name": "DoomImp"}]
+    assert visible_object_names(labs) == {"RedCard", "Shotgun", "DoomImp"}
+
+
+def test_visible_object_names_excludes_player_and_decor():
+    from doom.entities import visible_object_names
+    labs = [{"object_name": "DoomPlayer"}, {"object_name": "BulletPuff"},
+            {"object_name": "Blood"}, {"object_name": "BlueSkull"}]
+    assert visible_object_names(labs) == {"BlueSkull"}
+
+
+def test_visible_object_names_empty():
+    from doom.entities import visible_object_names
+    assert visible_object_names(None) == set()
+    assert visible_object_names([]) == set()

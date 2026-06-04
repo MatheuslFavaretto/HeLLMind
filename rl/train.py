@@ -19,6 +19,7 @@ from stable_baselines3.common.vec_env import (
     SubprocVecEnv,
     VecFrameStack,
     VecMonitor,
+    VecNormalize,
 )
 
 from config import Config
@@ -155,6 +156,12 @@ def _latest_checkpoint(cfg: Config, name_prefix: str) -> Optional[str]:
     return max(candidates, key=os.path.getmtime)
 
 
+def _latest_vecnorm(cfg: Config, name_prefix: str) -> Optional[str]:
+    """The most recent saved VecNormalize stats (`{name_prefix}_vecnormalize_*.pkl`)."""
+    cands = glob.glob(os.path.join(cfg.checkpoint_dir, f"{name_prefix}_vecnormalize_*.pkl"))
+    return max(cands, key=os.path.getmtime) if cands else None
+
+
 def _resolve_resume(cfg: Config, args: argparse.Namespace, name_prefix: str) -> Optional[str]:
     """By DEFAULT reuse the vault's brain. --fresh starts from zero; --resume PATH
     uses a specific file."""
@@ -166,7 +173,16 @@ def _resolve_resume(cfg: Config, args: argparse.Namespace, name_prefix: str) -> 
     return _latest_checkpoint(cfg, name_prefix)  # default: continue where it stopped
 
 
-def build_vec_env(cfg: Config):
+def _lr_setting(cfg: Config):
+    """Learning-rate value or a linear-decay-to-0 schedule (a float `base` is captured, not
+    the cfg, so it stays picklable for SB3 save/load)."""
+    base = float(cfg.learning_rate)
+    if not getattr(cfg, "lr_schedule", False):
+        return base
+    return lambda progress_remaining: base * progress_remaining  # 1.0→0.0 over the call
+
+
+def build_vec_env(cfg: Config, normalize: bool = False):
     rewards = cfg.reward_weights()
     # Closed loop: scale kill rewards by the learned per-monster threat (bestiary -> reward).
     if cfg.campaign and getattr(cfg, "bestiary_reward", False):
@@ -213,6 +229,12 @@ def build_vec_env(cfg: Config):
     venv = DummyVecEnv(env_fns) if use_dummy else SubprocVecEnv(env_fns)
     venv = VecMonitor(venv)  # aggregated episode stats
     venv = VecFrameStack(venv, n_stack=cfg.frame_stack)  # stack frames (motion)
+    if normalize:
+        # Normalise the REWARD only (norm_obs=False — images stay raw uint8, matching eval).
+        # A running return std keeps the heavily-shaped reward in a stable range for the value
+        # function. clip_reward guards against shaping spikes. gamma must match PPO's.
+        venv = VecNormalize(venv, norm_obs=False, norm_reward=True,
+                            clip_reward=10.0, gamma=cfg.gamma)
     return venv
 
 
@@ -243,7 +265,7 @@ def main() -> None:
         button_names = meta["button_names"]
         print(f"Scenario: {cfg.scenario} | actions: {meta['num_actions']} {button_names}")
 
-    venv = build_vec_env(cfg)
+    venv = build_vec_env(cfg, normalize=cfg.normalize_reward)
     # Include the action count so resume never loads an incompatible brain
     # (e.g., a 7-button campaign checkpoint into an 8-button one).
     task = "campaign" if cfg.campaign else cfg.scenario
@@ -260,6 +282,19 @@ def main() -> None:
         print(f"[brain] reusing this vault's learning: {resume_path}")
         model = AlgoClass.load(resume_path, env=venv, tensorboard_log=cfg.tensorboard_log)
         reset_timesteps = False
+        # Restore the reward-normalization running stats so the reward scale is continuous
+        # across resumes (otherwise each chunk re-warms the return std from scratch).
+        if cfg.normalize_reward and isinstance(venv, VecNormalize):
+            vn = _latest_vecnorm(cfg, name_prefix)
+            if vn:
+                try:
+                    import pickle
+                    with open(vn, "rb") as f:
+                        saved = pickle.load(f)
+                    venv.ret_rms = saved.ret_rms
+                    print(f"[norm] restored reward-normalization stats from {os.path.basename(vn)}")
+                except Exception as exc:
+                    print(f"[norm] couldn't restore norm stats ({exc}); re-warming fresh.")
     else:
         if args.fresh:
             print("[brain] --fresh: starting from ZERO (overwrites this vault's brain).")
@@ -277,7 +312,7 @@ def main() -> None:
             gamma=cfg.gamma,
             gae_lambda=cfg.gae_lambda,
             ent_coef=cfg.ent_coef,
-            learning_rate=cfg.learning_rate,
+            learning_rate=_lr_setting(cfg),
             clip_range=cfg.clip_range,
             seed=cfg.seed,
             tensorboard_log=cfg.tensorboard_log,
@@ -372,6 +407,7 @@ def main() -> None:
             save_freq=max(cfg.write_every_steps // cfg.n_envs, 1),
             save_path=cfg.checkpoint_dir,
             name_prefix=name_prefix,
+            save_vecnormalize=cfg.normalize_reward,  # persist reward-norm stats with the brain
         )
     )
 
