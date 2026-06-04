@@ -448,6 +448,8 @@ def cmd_auto(a) -> int:
     if getattr(a, "automap", False):
         cmd.append("--automap")
     # --resume is now the DEFAULT in rl.autonomous; no need to pass it.
+    if getattr(a, "fast", False):
+        cmd.append("--fast")
     if a.llm:
         cmd.append("--llm")
     env = {"USE_LSTM": "1"} if a.lstm else None
@@ -1036,6 +1038,8 @@ def build_parser() -> argparse.ArgumentParser:
     au.add_argument("--game-vars", dest="game_vars", action="store_true", help="Feed HEALTH/AMMO into the policy.")
     au.add_argument("--automap", action="store_true", help="Native top-down automap channel (forces --fresh).")
     au.add_argument("--resume", action="store_true", help="(default now) Continue prior session.")
+    au.add_argument("--fast", action="store_true",
+                    help="Throughput: scale parallel envs to your CPU cores. Disables NOTHING.")
     au.add_argument("--llm", action="store_true", help="LLM-refined reward proposals.")
     au.add_argument("--lstm", action="store_true", help="RecurrentPPO/LSTM policy.")
     au.set_defaults(fn=cmd_auto)

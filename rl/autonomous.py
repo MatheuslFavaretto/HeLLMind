@@ -622,10 +622,24 @@ def main() -> None:
                         "(needs Ollama + enough events); falls back to the heuristic.")
     p.add_argument("--resume", action="store_true",
                    help="(default behaviour — kept for back-compat) Continue the prior session.")
+    p.add_argument("--fast", action="store_true",
+                   help="Throughput mode WITHOUT disabling any perception: scale the parallel "
+                        "envs to your CPU cores (ViZDoom is CPU-bound, so this is the free "
+                        "speedup). Everything the agent sees stays on.")
     args = p.parse_args()
 
     cfg = Config()
     doom_map = args.map or cfg.maps[0]
+
+    # --fast: use the machine's cores for more parallel envs (pure throughput, nothing turned
+    # off). Cap at 8 to stay within ~16GB RAM with all perception channels on; leave 2 cores
+    # for the OS / the policy update. Honest about what it changed.
+    if args.fast:
+        import os as _os
+        cores = _os.cpu_count() or 4
+        cfg.n_envs = max(cfg.n_envs, min(8, max(2, cores - 2)))
+        print(f"[autonomous] --fast: {cores} cores detected -> N_ENVS={cfg.n_envs} "
+              f"(all perception channels stay ON).")
 
     # --fresh/--clear means a true restart: wipe the prior session trail so it doesn't get
     # resumed. (The brain itself is overwritten by the first --fresh training chunk.)
