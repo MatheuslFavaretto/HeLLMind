@@ -226,3 +226,34 @@ def test_write_log_handles_non_contiguous_iters(tmp_path):
     ]
     write_log(cfg, hist)  # must not raise IndexError
     assert os.path.exists(os.path.join(str(tmp_path), cfg.dir_index, "Autonomy Log.md"))
+
+
+# --------------------------- auto-chain: experiment registry (P4) ---------------------------
+def test_record_iteration_logs_kept_and_reverted(tmp_path):
+    from rl.autonomous import _record_iteration
+    from writer.db import query_experiments
+
+    class C:
+        memory_dir = str(tmp_path)
+
+    _record_iteration(C, 0, {}, {"COVERAGE_REWARD": "1.0"}, True, 0.5)   # baseline: skipped
+    _record_iteration(C, 1, {"COVERAGE_REWARD": "1.0"}, {"COVERAGE_REWARD": "1.4"}, True, 0.55)
+    _record_iteration(C, 2, {"COVERAGE_REWARD": "1.4"}, {"COVERAGE_REWARD": "1.8"}, False, 0.30)
+    rows = query_experiments(str(tmp_path))
+    results = {r["result"] for r in rows}
+    assert results == {"kept", "reverted"}           # baseline (iter 0) not recorded
+    assert len(rows) == 2
+
+
+def test_record_iteration_not_auto_adopted(tmp_path):
+    # Single-seed auto decisions must NOT leak into learned_config (only multi-seed validates).
+    from rl.autonomous import _record_iteration
+    from writer.learned_config import LearnedConfig
+    from writer.memory_policy import adopt_improved_experiments
+
+    class C:
+        memory_dir = str(tmp_path)
+
+    _record_iteration(C, 1, {"HIT_REWARD": "2.0"}, {"HIT_REWARD": "3.0"}, True, 0.6)
+    adopt_improved_experiments(str(tmp_path))
+    assert LearnedConfig(str(tmp_path)).values() == {}

@@ -273,6 +273,29 @@ def _refresh_db(cfg: Config) -> None:
         print(f"[autonomous] db refresh skipped: {exc}")
 
 
+def _record_iteration(cfg: Config, i: int, prev_env: dict, eval_env: dict,
+                      kept: bool, sc: float) -> None:
+    """Auto-chain (P4): record this iteration's reward change into the experiment registry —
+    the full trail INCLUDING reversions. Uses result 'kept'/'reverted' (NOT 'improved') on
+    purpose: single-seed auto decisions populate the registry and rollback history, but are
+    NOT auto-adopted into learned_config (that stays the job of the multi-seed `experiment`
+    command) and don't pollute the 'validated' knowledge tier. Best-effort."""
+    if i == 0:
+        return
+    changed = {k: (prev_env.get(k), eval_env.get(k)) for k in eval_env
+               if str(prev_env.get(k)) != str(eval_env.get(k))}
+    if not changed:
+        return
+    try:
+        from writer.db import insert_experiment
+        desc = "; ".join(f"{k} {o}→{n}" for k, (o, n) in changed.items())
+        insert_experiment(cfg.memory_dir, param=f"auto iter {i}: {desc}",
+                          old_val="", new_val="", result="kept" if kept else "reverted",
+                          confidence=0.3, notes=f"score={sc:.3f}")
+    except Exception as exc:  # pragma: no cover - defensive
+        print(f"[autonomous] experiment registry skipped: {exc}")
+
+
 def write_log(cfg: Config, history: list) -> None:
     """Persist the self-improvement trail: JSONL (machine) + live Obsidian log (human)."""
     os.makedirs(cfg.memory_dir, exist_ok=True)
@@ -730,9 +753,13 @@ def main() -> None:
 
         sc = score(m)
         kept = (i == 0) or (sc >= best_score - 0.05)  # guardrail: revert regressions
+        eval_env = dict(env)  # the config ACTUALLY evaluated this iter (before any rollback)
         print(f"[autonomous] iter {i}: score={sc:.2f} (best={best_score:.2f}) "
               f"explored={m['explored_fraction']:.0%} exit={m['exit_rate']:.0%} "
               f"kills={m['kills_per_episode']:.2f} -> {'KEEP' if kept else 'REVERT'}")
+
+        # Auto-chain (P4): log this change + its verdict into the experiment registry.
+        _record_iteration(cfg, i, history[-1]["env"] if history else {}, eval_env, kept, sc)
 
         if not kept:
             env = history[-1]["env"]  # roll back to the last good reward config
