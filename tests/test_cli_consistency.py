@@ -1,0 +1,33 @@
+"""Guard: every doom-cli command registered in the parser must have a help card (and vice
+versa), so the CLI help never drifts out of sync with what the CLI actually accepts."""
+import re
+from pathlib import Path
+
+import doom_cli
+
+
+def _parser_commands() -> set:
+    src = Path(doom_cli.__file__).read_text(encoding="utf-8")
+    return set(re.findall(r'add_parser\(\s*"([a-z_]+)"', src))
+
+
+def test_every_command_has_a_help_card():
+    parser_cmds = _parser_commands()
+    card_cmds = {c[1] for c in doom_cli.COMMANDS}
+    missing_card = parser_cmds - card_cmds
+    assert not missing_card, f"commands without a help card: {sorted(missing_card)}"
+
+
+def test_no_help_card_points_to_a_missing_command():
+    parser_cmds = _parser_commands()
+    card_cmds = {c[1] for c in doom_cli.COMMANDS}
+    orphan_cards = card_cmds - parser_cmds
+    assert not orphan_cards, f"help cards with no command: {sorted(orphan_cards)}"
+
+
+def test_help_cards_are_well_formed():
+    # Each card is (group, name, short, long, example) and the example must invoke the command.
+    for card in doom_cli.COMMANDS:
+        assert len(card) == 5, f"malformed card: {card}"
+        group, name, short, long, example = card
+        assert name in example, f"{name}: example '{example}' doesn't run the command"

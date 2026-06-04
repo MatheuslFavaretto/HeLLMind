@@ -127,6 +127,26 @@ COMMANDS = [
      "Aggregates the bestiary (facts), open hypotheses, and proven experiments/learned_config "
      "(validated) into the three certainty tiers — what the agent KNOWS vs suspects vs proved.",
      "doom-cli knowledge"),
+    ("📈 Measure", "intel", "Intelligence report: NN architecture, params, training, memory, disk",
+     "Proves a real neural network exists: layer-by-layer architecture, parameter count, depth, "
+     "best run, key metrics, and disk usage — the 'is this real?' dashboard.",
+     "doom-cli intel"),
+    ("📈 Measure", "audit", "Is it REALLY learning? (entropy, KL, value loss, grad norm)",
+     "Reads the training logs and reports the learning signals — entropy (exploration), "
+     "approx-KL (update size), value loss, explained variance — to confirm real learning.",
+     "doom-cli audit"),
+    ("🧠 Cognition", "learned", "Reward knobs the agent has PROVEN help (persisted)",
+     "Shows the validated reward changes in learned_config — knobs an experiment proved help, "
+     "re-applied on every train/auto boot so wins accumulate across runs.",
+     "doom-cli learned"),
+    ("🏃 Run", "bc", "Behavioral cloning from your recorded human demos",
+     "Trains the policy to imitate your recorded play (record_demo → bc) as a starting point "
+     "for RL — the strongest lever for reaching the exit.",
+     "doom-cli bc --epochs 10"),
+    ("🏃 Run", "eureka", "LLM evolves the reward design across generations",
+     "Runs the Eureka loop: the LLM proposes reward functions, they're evaluated, and the best "
+     "survive — automated reward design instead of hand-tuning.",
+     "doom-cli eureka"),
     ("🔬 Research", "benchmark", "Ablation: prove each layer (RND/memory/full) adds value",
      "Trains baseline/rnd/memory/full across seeds with the SAME budget, evaluates honestly, "
      "and writes results/ (csv+json+md) with mean±std so wins aren't luck.",
