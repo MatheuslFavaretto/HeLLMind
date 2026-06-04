@@ -670,6 +670,7 @@ def main() -> None:
         "COMBAT_EXPLORE_SPLIT": "1" if cfg.combat_explore_split else "0",
         "COMBAT_EXPLORE_FACTOR": str(cfg.combat_explore_factor),
         "AUTO_USE": "1" if cfg.auto_use else "0",
+        "DISCOVERY_REWARD": str(cfg.discovery_reward),
     }
 
     # Accumulate across sessions: overlay reward knobs the agent has PROVEN help (validated

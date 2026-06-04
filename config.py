@@ -118,6 +118,10 @@ class Config:
     # signal -> it gets stuck banging on closed doors (observed). On by default; the agent
     # still chooses where to GO, this just stops doors from being a dead end.
     auto_use: bool = os.getenv("AUTO_USE", "1") in ("1", "true", "True")
+    # Automatic goal/discovery reward (needs USE_LABELS): bonus the FIRST time each episode the
+    # agent SEES a new notable object (key, switch-adjacent item, weapon, powerup, a new monster
+    # type) — progress-guided exploration toward objectives, not blind wandering. 0 = off.
+    discovery_reward: float = float(os.getenv("DISCOVERY_REWARD", "0.5"))
     # Closed loop (bestiary -> reward): scale the kill bonus by what the agent LEARNED about
     # each monster — killing a deadlier type (higher death-rate-when-present) pays more. Uses
     # the persisted bestiary; needs one prior run to have data. Opt-in (changes the reward).
@@ -211,6 +215,7 @@ class Config:
             "combat_explore_split": float(self.combat_explore_split),
             "combat_explore_factor": self.combat_explore_factor,
             "auto_use": float(self.auto_use),
+            "discovery_reward": self.discovery_reward,
             "weapon_variety_reward": self.weapon_variety_reward,
             "use_rnd":  float(self.use_rnd),
             "rnd_scale": self.rnd_scale,

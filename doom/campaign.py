@@ -143,6 +143,9 @@ class CampaignDoomEnv(gym.Env):
         # Auto-USE: open doors / hit switches on contact (see Config.auto_use).
         self._auto_use = bool(r.get("auto_use", 0.0))
         self._use_idx: Optional[int] = None  # set once the button layout is built
+        # Discovery reward: pay the first sighting of each new object per episode.
+        self._discovery_reward = float(r.get("discovery_reward", 0.0))
+        self._seen_objects: set = set()
         self._hit_reward = float(r.get("hit_reward", HIT_REWARD))
         self._miss_penalty = float(r.get("miss_penalty", MISS_PENALTY))
         self._damage_penalty = float(r.get("damage_taken_penalty", 0.1))
@@ -479,6 +482,7 @@ class CampaignDoomEnv(gym.Env):
         self._visited = set()
         # Seed with the spawn weapon so only switching to a DIFFERENT slot earns variety.
         self._weapons_seen = {int(self._last_vars.get("selected_weapon", 0.0))}
+        self._seen_objects = set()  # discovery reward: new objects seen THIS episode
         self._ep_enemies = {}
         self._mon_counts = {}
         self._nearest_enemy = None
@@ -532,6 +536,7 @@ class CampaignDoomEnv(gym.Env):
         weapon_bonus = 0.0  # reward the first time a NEW weapon slot is wielded
         frontier_bonus = 0.0  # reward NET outward progress (can't be farmed by circling)
         engage_bonus = 0.0  # reward keeping a visible enemy centred (labels buffer)
+        discovery_bonus = 0.0  # reward the first sighting of a new object this episode
         self._enemies_in_view = 0  # telemetry: how many enemies the agent can see now
         if not done:
             raw = self._read_raw_vars()
@@ -570,14 +575,21 @@ class CampaignDoomEnv(gym.Env):
                                 int(deltas.get("killcount", 0)))
             # Labels buffer: ground-truth on-screen enemy detection + engagement reward.
             if self._use_labels:
-                from doom.entities import visible_enemies
+                from doom.entities import visible_enemies, visible_object_names
                 st = self.game.get_state()
-                view = visible_enemies(getattr(st, "labels", None) if st else None,
-                                       screen_width=float(self.width))
+                labels = getattr(st, "labels", None) if st else None
+                view = visible_enemies(labels, screen_width=float(self.width))
                 self._enemies_in_view = view["count"]
                 if self._engagement_reward and view["nearest_centered"] is not None:
                     # 1.0 when an enemy is dead-centred, 0 at the screen edge.
                     engage_bonus = self._engagement_reward * (1.0 - view["nearest_centered"])
+                # Goal discovery: pay the FIRST sighting of each new object this episode
+                # (keys/weapons/powerups/new monster types) — guides exploration to objectives.
+                if self._discovery_reward:
+                    new_objs = visible_object_names(labels) - self._seen_objects
+                    if new_objs:
+                        self._seen_objects |= new_objs
+                        discovery_bonus = self._discovery_reward * len(new_objs)
             # Go-Explore: record reached position for the frontier archive (sampled cheaply).
             if self._frontier_store is not None and (self._ep_ticks % 8 == 0):
                 self._ep_positions.append((raw["position_x"], raw["position_y"]))
@@ -600,6 +612,7 @@ class CampaignDoomEnv(gym.Env):
         cov_bonus *= explore_scale
         weapon_bonus *= explore_scale
         frontier_bonus *= explore_scale
+        discovery_bonus *= explore_scale
 
         # Reward shaping: kills positive, damage taken negative, + aim, + movement,
         # + exploration (new cells).
@@ -611,6 +624,7 @@ class CampaignDoomEnv(gym.Env):
         shaped += weapon_bonus                            # reward using a new weapon
         shaped += frontier_bonus                          # reward NET outward progress (anti-circle)
         shaped += engage_bonus                            # reward keeping a visible enemy centred
+        shaped += discovery_bonus                         # reward discovering new objects (keys/items)
         shaped += self._step_threat_bonus                 # extra for deadlier monsters (bestiary)
         if self._rnd and not done:
             rnd_bonus = self._rnd.bonus(raw["position_x"], raw["position_y"])

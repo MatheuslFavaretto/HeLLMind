@@ -72,3 +72,22 @@ def visible_enemies(labels, screen_width: float = 84.0) -> dict:
         off = abs(center - half) / half          # 0 centred .. 1 at the edge
         best_off = off if best_off is None else min(best_off, off)
     return {"count": count, "nearest_centered": best_off}
+
+
+# Names that aren't "objectives" to discover: the player itself and walls/decor we don't
+# want to pay for. Monsters are handled by the kill/bestiary rewards, so they're excluded too.
+_NON_DISCOVERY = {"DoomPlayer", "Player", "BulletPuff", "Blood"}
+
+
+def visible_object_names(labels) -> set:
+    """The set of notable object names currently in view (keys, switches, weapons, items,
+    new monster types) — for the discovery reward. Excludes the player and pure decor.
+    Pure + side-effect free so it unit-tests without ViZDoom."""
+    names = set()
+    for lab in labels or []:
+        name = getattr(lab, "object_name", None)
+        if name is None and isinstance(lab, dict):
+            name = lab.get("object_name")
+        if name and name not in _NON_DISCOVERY:
+            names.add(name)
+    return names
