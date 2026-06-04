@@ -47,7 +47,10 @@ class Config:
 
     # ---------- PPO training ----------
     total_timesteps: int = int(os.getenv("TOTAL_TIMESTEPS", "2000000"))
-    n_envs: int = _int_env("N_ENVS", "8")
+    # Default: use (cpu_count - 2) parallel envs so all cores are used (ViZDoom is CPU-bound).
+    # Cap at 12 to stay within 16GB RAM with all perception channels on.
+    # Env var overrides the auto-detect (N_ENVS=4 for low-RAM machines, N_ENVS=1 for debug).
+    n_envs: int = _int_env("N_ENVS", str(max(2, min(12, (os.cpu_count() or 4) - 2))))
     # Rollout length per env. CRITICAL vs episode length: if n_steps ≈ episode length, each
     # rollout holds ~1 (often truncated) episode → poor GAE advantage estimates and slow
     # learning. Keep n_steps a few× SHORTER than the episode so several episodes fit per
