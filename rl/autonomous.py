@@ -307,8 +307,12 @@ def write_log(cfg: Config, history: list) -> None:
         "",
         "## Iteration table",
         "",
-        "| Iter | Explored | Exit% | Kills/ep | Acc | Score | Δ | Kept? | Decision |",
-        "|---|---|---|---|---|---|---|---|---|",
+        "> **Combat** = of the time it SEES an enemy, how often it actually shoots "
+        "(low = passive). **Explored/Exit** = the exploration regime. The two are tuned "
+        "separately by the coach.",
+        "",
+        "| Iter | Explored | Exit% | Kills/ep | Acc | Combat | Score | Δ | Kept? | Decision |",
+        "|---|---|---|---|---|---|---|---|---|---|",
     ]
     prev_score = None
     for h in history:
@@ -316,12 +320,16 @@ def write_log(cfg: Config, history: list) -> None:
         delta = f"{h['score'] - prev_score:+.2f}" if prev_score is not None else "—"
         prev_score = h["score"]
         kept_icon = "✅" if h["kept"] else "↩ reverted"
+        # Combat regime (per-mode telemetry): blank for older records that predate it.
+        combat = (f"{m['combat_engagement']:.0%}" if m.get("combat_engagement") is not None
+                  and m.get("combat_fraction", 0.0) > 0.0 else "—")
         lines.append(
             f"| {h['iter']} "
             f"| {m['explored_fraction']:.0%} "
             f"| {m['exit_rate']:.0%} "
             f"| {m['kills_per_episode']:.2f} "
             f"| {m['shooting_accuracy']:.0%} "
+            f"| {combat} "
             f"| **{h['score']:.2f}** "
             f"| {delta} "
             f"| {kept_icon} "
