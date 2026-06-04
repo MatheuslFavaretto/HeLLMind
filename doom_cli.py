@@ -343,8 +343,14 @@ def cmd_watch(a) -> int:
     cmd = [PY, "-m", "rl.eval", "--render", "--episodes", str(a.episodes)]
     if a.path:
         cmd += ["--path", a.path]
+    # Default to tempered sampling: this agent's pure-argmax policy collapses to passive
+    # (it looks "dead" — ignores enemies, won't shoot). T=0.5 shows the REAL learned behavior.
+    # Pass --temperature 0 to watch the raw argmax.
+    if a.temperature and a.temperature > 0:
+        cmd += ["--temperature", str(a.temperature)]
     env = {"USE_LSTM": "1"} if a.lstm else None
-    return run(cmd, env, title=f"🎮 Watching the brain play · {a.episodes} episodes")
+    label = "argmax" if (a.temperature == 0) else f"tempered T={a.temperature}"
+    return run(cmd, env, title=f"🎮 Watching the brain play · {a.episodes} eps · {label}")
 
 
 def cmd_eval(a) -> int:
@@ -888,6 +894,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     w = sub.add_parser("watch"); w.add_argument("--episodes", type=int, default=3)
     w.add_argument("--path"); w.add_argument("--lstm", action="store_true")
+    w.add_argument("--temperature", type=float, default=0.5,
+                   help="Tempered sampling for watching (default 0.5). Use 0 for raw argmax.")
     w.set_defaults(fn=cmd_watch)
 
     e = sub.add_parser("eval"); e.add_argument("--episodes", type=int, default=10)
