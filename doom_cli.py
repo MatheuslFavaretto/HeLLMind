@@ -288,7 +288,9 @@ def _render_iterm_image(path: str, height_rows: int = 16) -> bool:
     Lets the shell show the ACTUAL in-game Doomguy face when a PNG is provided + the terminal
     supports it (iTerm2 / Warp / WezTerm). Other terminals fall back to the ASCII art."""
     import base64
-    if os.environ.get("TERM_PROGRAM") not in _IMG_TERMINALS or not os.path.exists(path):
+    if (os.environ.get("TERM_PROGRAM") not in _IMG_TERMINALS
+            or not sys.stdout.isatty()           # don't dump base64 into pipes/logs
+            or not os.path.exists(path)):
         return False
     try:
         with open(path, "rb") as f:
@@ -317,31 +319,58 @@ def _doom_backdrop() -> None:
     console.print()
 
 
+def _shell_welcome() -> None:
+    """A Claude-Code-style welcome card: the Doomguy, a greeting, and the key tips."""
+    from rich import box
+    from config import Config
+    cfg = Config()
+    body = Text.from_markup(
+        "[bold #ff5a00]✻ Welcome to HeLLMind[/bold #ff5a00]\n\n"
+        "  [#ffd000]/help[/#ffd000] for all commands   ·   "
+        "[#ffd000]/status[/#ffd000] for your setup\n"
+        "  [#ffd000]/<command>[/#ffd000] to run one   ·   "
+        "[#ffd000]/exit[/#ffd000] to quit\n\n"
+        f"  [dim]vault:[/dim] {cfg.vault_path}   [dim]·[/dim]   "
+        f"[dim]maps:[/dim] {', '.join(cfg.maps[:3])}…")
+    console.print(Panel(body, box=box.ROUNDED, border_style="#ff5a00",
+                        padding=(1, 2), expand=True))
+    console.print()
+
+
+def _shell_prompt() -> str:
+    """A Claude-Code-style boxed input. Returns the stripped line (raises on EOF)."""
+    from rich import box
+    width = min(console.width, 100)
+    console.print("[#7a0a00]╭" + "─" * (width - 2) + "╮[/#7a0a00]")
+    line = console.input("[#7a0a00]│[/#7a0a00] [bold #ff2d00]❯[/bold #ff2d00] ")
+    console.print("[#7a0a00]╰" + "─" * (width - 2) + "╯[/#7a0a00]")
+    console.print("  [dim]/help for commands  ·  /exit to quit[/dim]")
+    return line.strip()
+
+
 def cmd_shell(a) -> int:
-    """A chat-style REPL: type /command to run it, /help for the menu, /exit to leave."""
+    """A Claude-Code-style REPL: type /command to run it, /help for the menu, /exit to leave."""
     import shlex
     known = {c[1] for c in COMMANDS}
     console.clear()
     _doom_backdrop()
-    console.print(Align.center(Text.from_markup(
-        "[dim]type [/dim][#ffd000]/help[/#ffd000][dim] · [/dim][#ffd000]/<command>[/#ffd000]"
-        "[dim] to run · [/dim][#ffd000]/exit[/#ffd000][dim] to quit[/dim]\n")))
+    _shell_welcome()
     while True:
         try:
-            line = console.input("[bold #ff2d00]🔥 doom[/bold #ff2d00] [#ffd000]❯[/#ffd000] ").strip()
+            line = _shell_prompt()
         except (EOFError, KeyboardInterrupt):
             console.print("\n[dim]rip and tear... until it is done. 👋[/dim]")
             return 0
         if not line:
             continue
         if not line.startswith("/"):
-            console.print("[dim]commands start with [/dim][#ffd000]/[/#ffd000][dim] — try "
-                          "[/dim][#ffd000]/help[/#ffd000]")
+            console.print("  [dim]commands start with [/dim][#ffd000]/[/#ffd000][dim] — try "
+                          "[/dim][#ffd000]/help[/#ffd000]\n")
             continue
         try:
             parts = shlex.split(line[1:])
         except ValueError:
-            console.print("[red]couldn't parse that line[/red]")
+            console.print("  [red]couldn't parse that line[/red]\n")
             continue
         if not parts:
             continue
@@ -351,14 +380,13 @@ def cmd_shell(a) -> int:
             console.print("[dim]rip and tear... until it is done. 👋[/dim]")
             return 0
         if kind == "builtin" and payload == "help":
-            menu(full=False)
-            continue
+            console.print(); menu(full=False); console.print(); continue
         if kind == "builtin" and payload == "clear":
-            console.clear(); _doom_backdrop(); continue
+            console.clear(); _doom_backdrop(); _shell_welcome(); continue
         if kind == "suggest":
             hint = (f"  did you mean: {', '.join('/' + n for n in payload)}?"
-                    if payload else "  type /help to see them all")
-            console.print(f"[red]unknown:[/red] [#ffd000]/{cmd}[/#ffd000]{hint}")
+                    if payload else "  — type /help to see them all")
+            console.print(f"  [red]unknown:[/red] [#ffd000]/{cmd}[/#ffd000]{hint}\n")
             continue
         # A real command: run it through the full CLI (subprocess = clean isolation).
         console.rule(f"[bold #ff5a00]/{cmd}[/bold #ff5a00]", style="#7a0a00")
