@@ -55,10 +55,17 @@ class FrontierStore:
         return out
 
     # ------------------------------------------------------------------
-    def merge(self, map_name: str, positions: List[Tuple[float, float]]) -> Dict:
-        """Fold this run's reached world positions into the archive (bucketed by cell)."""
+    def merge(self, map_name: str, positions: List[Tuple[float, float]],
+              max_age: int = 25) -> Dict:
+        """Fold this run's reached positions into the archive (bucketed by cell).
+
+        Frontier AGING: each merge bumps a generation counter and stamps every touched cell
+        with the current generation. Cells not revisited for `max_age` generations are pruned
+        — so frontiers that turned out to be dead ends fade instead of being chased forever.
+        """
         rec = self.load(map_name)
         cells = rec.get("cells", {})
+        gen = int(rec.get("gen", 0)) + 1
         for (x, y) in positions:
             gx = round(x / self.cell_size)
             gy = round(y / self.cell_size)
@@ -67,7 +74,12 @@ class FrontierStore:
                 cells[key]["visits"] = int(cells[key].get("visits", 0)) + 1
             else:
                 cells[key] = {"x": float(x), "y": float(y), "visits": 1}
+            cells[key]["last_gen"] = gen  # freshness stamp (aging)
+        # Prune stale cells (aged out) to keep the archive a live frontier, not a junk pile.
+        cells = {k: c for k, c in cells.items()
+                 if gen - int(c.get("last_gen", 0)) <= max_age}
         rec["cells"] = cells
+        rec["gen"] = gen
         os.makedirs(self.dir, exist_ok=True)
         tmp = self._path(map_name) + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
@@ -76,6 +88,8 @@ class FrontierStore:
         return rec
 
     # ------------------------------------------------------------------
+    _AGING_DECAY = 0.9  # per-generation weight decay for cells not seen recently
+
     def sample_goal(
         self,
         map_name: str,
@@ -83,18 +97,36 @@ class FrontierStore:
         rng: Optional[random.Random] = None,
         min_dist: float = 200.0,
     ) -> Optional[Tuple[float, float]]:
-        """Pick a frontier cell to return to. Weight ∝ distance_from_spawn / (1 + visits),
-        so the agent is sent toward FAR, RARELY-seen cells — the actual frontier, not the
-        well-trodden area around spawn. Returns None if the archive has nothing far yet."""
+        """Pick a frontier cell to return to, weighting three signals (Go-Explore + frontier
+        intelligence):
+          • distance / (1+visits)  — far + rarely-seen (the classic frontier score)
+          • EDGE bonus 1/(1+neighbours) — cells on the boundary of the explored region (few
+            archived neighbours) are TRUE frontiers; well-surrounded cells are interior.
+          • AGING decay 0.9^(gen-last_gen) — fade frontiers that haven't paid off lately.
+        Returns None if the archive has nothing far yet."""
         rng = rng or random
         sx, sy = spawn_xy
+        rec = self.load(map_name)
+        cells = rec.get("cells", {})
+        gen = int(rec.get("gen", 0))
+        keys = set(cells.keys())
         weighted: List[Tuple[float, Tuple[float, float]]] = []
-        for (x, y, visits) in self.cells(map_name):
+        for key, c in cells.items():
+            try:
+                x, y = float(c["x"]), float(c["y"])
+                visits = int(c.get("visits", 1))
+            except (KeyError, TypeError, ValueError):
+                continue
             d = ((x - sx) ** 2 + (y - sy) ** 2) ** 0.5
             if d < min_dist:
                 continue  # too close to spawn to be a useful "return" target
-            w = d / (1.0 + visits)
-            weighted.append((w, (x, y)))
+            neighbours = self._neighbour_count(key, keys)
+            edge = 1.0 / (1.0 + neighbours)                      # prioritise the boundary
+            age = gen - int(c.get("last_gen", gen))
+            decay = self._AGING_DECAY ** max(0, age)             # fade stale frontiers
+            w = (d / (1.0 + visits)) * edge * decay
+            if w > 0:
+                weighted.append((w, (x, y)))
         if not weighted:
             return None
         total = sum(w for w, _ in weighted)
@@ -107,3 +139,15 @@ class FrontierStore:
             if r <= acc:
                 return pos
         return weighted[-1][1]
+
+    @staticmethod
+    def _neighbour_count(key: str, keys: set) -> int:
+        """How many of the 8 surrounding cells are also archived (interior-ness)."""
+        try:
+            gx, gy = (int(v) for v in key.split(","))
+        except ValueError:
+            return 0
+        return sum(
+            1 for dx in (-1, 0, 1) for dy in (-1, 0, 1)
+            if (dx or dy) and f"{gx + dx},{gy + dy}" in keys
+        )
