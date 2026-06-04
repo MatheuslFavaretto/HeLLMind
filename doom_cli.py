@@ -392,6 +392,49 @@ def _shell_prompt(tip: str) -> str:
     return line.strip()
 
 
+def _make_slash_reader(tips):
+    """A live Claude-CLI-style input: pressing / pops a dropdown of commands that filters as
+    you type, each with its description. Returns a `read(tip)->str` callable, or None if
+    prompt_toolkit isn't available / there's no TTY (then the shell uses the boxed fallback)."""
+    if not sys.stdin.isatty():
+        return None
+    try:
+        from prompt_toolkit import PromptSession
+        from prompt_toolkit.completion import Completer, Completion
+        from prompt_toolkit.formatted_text import HTML
+        from prompt_toolkit.styles import Style
+    except ImportError:
+        return None
+
+    cmds = [(c[1], c[2]) for c in COMMANDS if c[1] != "shell"]
+
+    class SlashCompleter(Completer):
+        def get_completions(self, document, complete_event):
+            text = document.text_before_cursor
+            if not text.startswith("/") or " " in text:   # only complete the command token
+                return
+            word = text[1:]
+            for name, desc in cmds:
+                if name.startswith(word):
+                    yield Completion(name, start_position=-len(word),
+                                     display=HTML(f"<b>/{name}</b>"), display_meta=desc)
+
+    style = Style.from_dict({
+        "prompt": "#ff2d00 bold",
+        "completion-menu.completion": "bg:#2a1d10 #d8cbb8",
+        "completion-menu.completion.current": "bg:#ff5a00 #15110d bold",
+        "completion-menu.meta.completion": "bg:#1f150c #9b8e7e",
+        "completion-menu.meta.completion.current": "bg:#c41200 #ffffff",
+        "bottom-toolbar": "#9b8e7e bg:#1f150c",
+    })
+    session = PromptSession(completer=SlashCompleter(), complete_while_typing=True, style=style)
+
+    def read(tip: str) -> str:
+        return session.prompt([("class:prompt", "❯ ")],
+                              bottom_toolbar=HTML(f" 💡 {tip}  ·  / for commands  ·  /exit to quit"))
+    return read
+
+
 def cmd_shell(a) -> int:
     """A Claude-Code-style REPL: type /command to run it, /help for the menu, /exit to leave."""
     import shlex
@@ -402,9 +445,12 @@ def cmd_shell(a) -> int:
     _doom_backdrop()
     _shell_welcome()
     tips = itertools.cycle(_SHELL_TIPS)
+    reader = _make_slash_reader(tips)  # live dropdown (prompt_toolkit) or None -> boxed fallback
+    if reader is None:
+        console.print("  [dim](tip: `pip install prompt_toolkit` for the live / dropdown)[/dim]\n")
     while True:
         try:
-            line = _shell_prompt(next(tips))
+            line = (reader(next(tips)) if reader else _shell_prompt(next(tips))).strip()
         except (EOFError, KeyboardInterrupt):
             console.print("\n[dim]rip and tear... until it is done. 👋[/dim]")
             return 0

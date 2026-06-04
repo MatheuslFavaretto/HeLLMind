@@ -11,3 +11,4 @@ tensorboard>=2.14
 tqdm>=4.66
 rich>=13.0
 pytest>=8.0
+prompt_toolkit>=3.0
