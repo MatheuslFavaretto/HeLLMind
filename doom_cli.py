@@ -678,9 +678,12 @@ def cmd_watch(a) -> int:
     # Pass --temperature 0 to watch the raw argmax.
     if a.temperature and a.temperature > 0:
         cmd += ["--temperature", str(a.temperature)]
+    if getattr(a, "overlay", False):
+        cmd.append("--overlay")
     env = {"USE_LSTM": "1"} if a.lstm else None
     label = "argmax" if (a.temperature == 0) else f"tempered T={a.temperature}"
-    return run(cmd, env, title=f"🎮 Watching the brain play · {a.episodes} eps · {label}")
+    overlay_note = " + overlay" if getattr(a, "overlay", False) else ""
+    return run(cmd, env, title=f"🎮 Watching · {a.episodes} eps · {label}{overlay_note}")
 
 
 def cmd_eval(a) -> int:
@@ -1303,6 +1306,8 @@ def build_parser() -> argparse.ArgumentParser:
     w.add_argument("--path"); w.add_argument("--lstm", action="store_true")
     w.add_argument("--temperature", type=float, default=0.5,
                    help="Tempered sampling for watching (default 0.5). Use 0 for raw argmax.")
+    w.add_argument("--overlay", action="store_true",
+                   help="Show HUD (health/ammo bars) + minimap overlay (needs opencv-python).")
     w.set_defaults(fn=cmd_watch)
 
     e = sub.add_parser("eval"); e.add_argument("--episodes", type=int, default=10)
@@ -1392,11 +1397,16 @@ def build_parser() -> argparse.ArgumentParser:
     cl = sub.add_parser("clean"); cl.add_argument("--brain", action="store_true")
     cl.add_argument("--memory", action="store_true"); cl.set_defaults(fn=cmd_clean)
 
-    cur2 = sub.add_parser("curriculum2", help="Progressive curriculum: my_way_home → deadly_corridor → MAP01")
-    cur2.add_argument("--steps", type=int, default=150000); cur2.set_defaults(fn=lambda a: (
-        __import__("subprocess").run([__import__("sys").executable,
-            __import__("os").path.join(ROOT, "scripts/run_curriculum.sh"), str(a.steps)],
-            cwd=ROOT).returncode))
+    cur2 = sub.add_parser("curriculum2", help="Progressive curriculum: navigate → survive → full (V2 Phase 2)")
+    cur2.add_argument("--map", default="MAP01")
+    cur2.add_argument("--steps", type=int, default=150000, help="Steps per stage.")
+    cur2.add_argument("--algo", default="ppo", choices=["ppo", "dqn"])
+    cur2.add_argument("--stages", default="navigate,survive,full")
+    cur2.set_defaults(fn=lambda a: __import__("subprocess").run(
+        [__import__("sys").executable, "-m", "rl.progressive_curriculum",
+         "--map", a.map, "--steps-per-stage", str(a.steps),
+         "--algo", a.algo, "--stages", a.stages],
+        cwd=ROOT).returncode)
 
     m = sub.add_parser("maps"); m.add_argument("maps", nargs="+"); m.set_defaults(fn=cmd_maps)
 
