@@ -39,11 +39,15 @@ def score(m: dict) -> float:
     local optimum we kept hitting. Capping kills at 5 (diminishing past that) and scaling
     to [0,1] restores the intended ordering: max contributions become exit 4.0, explore
     3.0, aim 1.0, kills 0.5 — kills is now a tiebreaker, not the objective."""
-    exit_r   = m.get("exit_rate", 0.0)                       # [0,1]
+    exit_r   = m.get("exit_rate", 0.0)                       # [0,1] (binary: finished?)
+    # Partial credit for getting CLOSE to the exit (dense, fairer than the binary rate) — so
+    # the agent is rewarded for progress toward finishing even before it completes once.
+    exit_prog = m.get("exit_progress", 0.0)                 # [0,1]
     explored = m.get("explored_fraction", 0.0)              # [0,1]
     kills    = min(m.get("kills_per_episode", 0.0), 5.0) / 5.0  # [0,1] (capped)
     accuracy = m.get("shooting_accuracy", 0.0)             # [0,1]
-    return 4.0 * exit_r + 3.0 * explored + 1.0 * accuracy + 0.5 * kills
+    return (4.0 * exit_r + 1.5 * exit_prog + 3.0 * explored
+            + 1.0 * accuracy + 0.5 * kills)
 
 
 # Reward knobs the supervisor is allowed to move, with hard bounds (the guardrails).

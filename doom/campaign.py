@@ -187,6 +187,8 @@ class CampaignDoomEnv(gym.Env):
             self._exit_store = ExitStore(memory_dir)
         self._exit_pos: Optional[Tuple[float, float]] = None   # memorised once per map
         self._prev_exit_dist: Optional[float] = None           # distance at last step
+        self._spawn_exit_dist: Optional[float] = None          # spawn→exit dist (this episode)
+        self._closest_exit_dist: Optional[float] = None        # closest the agent got to it
         # Go-Explore "return, then explore": frontier-goal archive + goal-conditioned reward.
         self._goal_prob = float(r.get("goexplore_goal_prob", 0.0))
         self._goal_scale = float(r.get("goexplore_goal_scale", 0.01))
@@ -504,10 +506,15 @@ class CampaignDoomEnv(gym.Env):
         self._spawn_xy = (self._last_vars["position_x"], self._last_vars["position_y"])
         self._max_dist = 0.0
         self._prev_exit_dist = None
+        self._spawn_exit_dist = None
+        self._closest_exit_dist = None
         if self._exit_pos is not None and self._spawn_xy is not None:
             sx, sy = self._spawn_xy
             ex, ey = self._exit_pos
             self._prev_exit_dist = ((ex - sx) ** 2 + (ey - sy) ** 2) ** 0.5
+            # Baselines for the dense exit_progress metric (how close it gets to the exit).
+            self._spawn_exit_dist = self._prev_exit_dist
+            self._closest_exit_dist = self._prev_exit_dist
         # Go-Explore: archive the cells the LAST episode reached, then maybe pick a frontier
         # cell as this episode's "return" goal (dense reward guides the agent back to it).
         if self._frontier_store is not None:
@@ -654,6 +661,8 @@ class CampaignDoomEnv(gym.Env):
             if progress > 0:
                 shaped += self._exit_prox_scale * progress * 0.001  # tiny per-unit bonus
             self._prev_exit_dist = cur_dist
+            if self._closest_exit_dist is not None:
+                self._closest_exit_dist = min(self._closest_exit_dist, cur_dist)
         # Go-Explore goal shaping: dense reward for returning to this episode's frontier
         # goal. Once within reach_radius the goal is "achieved" — reward stops and the agent
         # explores OUTWARD from that far launch point (the "then explore" half).
@@ -712,6 +721,15 @@ class CampaignDoomEnv(gym.Env):
             doom["terminal"] = (
                 "death" if dead else ("exit" if reached_exit else "timeout")
             )
+            # Dense exit_progress (fairer than the binary exit_rate): how close, as a fraction
+            # of the spawn→exit distance, the agent got to the KNOWN exit this episode. 1.0 =
+            # reached it. Only defined once the exit has been found at least once on this map
+            # (so the position is known); None otherwise.
+            if reached_exit:
+                doom["exit_progress"] = 1.0
+            elif self._spawn_exit_dist and self._closest_exit_dist is not None:
+                frac = 1.0 - (self._closest_exit_dist / self._spawn_exit_dist)
+                doom["exit_progress"] = float(max(0.0, min(1.0, frac)))
             doom["base_return"] = self._ep_base  # native episode return (no shaping)
             doom["coverage_cells"] = len(self._visited)  # for frontier curriculum
             # The actual cells visited this episode -> persistent per-map heatmap memory.

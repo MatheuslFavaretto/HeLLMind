@@ -39,8 +39,8 @@ CONFIGS = {
                  "COMBAT_EXPLORE_SPLIT": "1"},                   # + combat/explore decoupling
 }
 
-METRIC_KEYS = ["exit_rate", "explored_fraction", "kills_per_episode", "death_rate",
-               "combat_engagement", "mean_base_reward"]
+METRIC_KEYS = ["exit_rate", "exit_progress", "explored_fraction", "kills_per_episode",
+               "death_rate", "combat_engagement", "mean_base_reward"]
 
 
 def _run_one(config: dict, seed: int, doom_map: str, steps: int, episodes: int,
@@ -144,7 +144,7 @@ def _write_csv(out_dir, results):
 
 def _write_md(out_dir, payload):
     results = payload["configs"]
-    pct = {"exit_rate", "explored_fraction", "combat_engagement", "death_rate"}
+    pct = {"exit_rate", "exit_progress", "explored_fraction", "combat_engagement", "death_rate"}
     lines = ["# 📊 HeLLMind ablation benchmark", "",
              f"_map {payload['map']} · {payload['steps']:,} steps · "
              f"{len(payload['seeds'])} seeds · eval {payload['episodes']} eps (tempered)_", "",

@@ -257,3 +257,14 @@ def test_record_iteration_not_auto_adopted(tmp_path):
     _record_iteration(C, 1, {"HIT_REWARD": "2.0"}, {"HIT_REWARD": "3.0"}, True, 0.6)
     adopt_improved_experiments(str(tmp_path))
     assert LearnedConfig(str(tmp_path)).values() == {}
+
+
+def test_score_gives_partial_credit_for_exit_progress():
+    # Getting CLOSE to the exit should beat not approaching it at all (fairer than binary).
+    base = {"exit_rate": 0.0, "explored_fraction": 0.2, "kills_per_episode": 1.0,
+            "shooting_accuracy": 0.02}
+    closer = {**base, "exit_progress": 0.7}
+    assert score(closer) > score(base)
+    # ...but actually finishing still beats merely getting close.
+    finished = {**base, "exit_rate": 1.0}
+    assert score(finished) > score(closer)

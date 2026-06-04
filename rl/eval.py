@@ -142,6 +142,9 @@ def main() -> None:
     print(f"  kills/episode:   {s['kills_per_episode']:.2f}")
     print(f"  success rate:    {s['success_rate']:.0%}")
     print(f"  exit rate:       {s.get('exit_rate', 0.0):.0%}   (reached the level end)")
+    if s.get("exit_progress", 0.0) > 0:
+        print(f"  exit progress:   {s.get('exit_progress', 0.0):.0%}   "
+              f"(how close it got to the known exit — fairer than the binary rate)")
     cov = s.get("map_coverage", {}) or {}
     print(f"  map explored:    {cov.get('explored_fraction', 0.0):.0%}   "
           f"({int(cov.get('cells_visited', 0))} cells)")
@@ -159,6 +162,7 @@ def main() -> None:
             "shooting_accuracy": float(s["shooting_accuracy"]),
             "success_rate": float(s["success_rate"]),
             "exit_rate": float(s.get("exit_rate", 0.0)),
+            "exit_progress": float(s.get("exit_progress", 0.0)),  # dense: how close to the exit
             "timeout_rate": float(terminals.get("timeout", 0)) / n_eps,
             "death_rate": float(terminals.get("death", 0)) / n_eps,
             "explored_fraction": float(cov.get("explored_fraction", 0.0)),

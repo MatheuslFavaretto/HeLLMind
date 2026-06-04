@@ -970,6 +970,7 @@ def cmd_timeline(a) -> int:
         rows.append({
             "name": r["name"], "map": r["maps"] or "?",
             "explored": m.get("explored_fraction"), "exit": m.get("exit_rate"),
+            "exit_prog": m.get("exit_progress"),
             "kills": m.get("kills_per_episode"), "score": c.get("score"),
             "kept": c.get("kept"),
         })
@@ -982,6 +983,7 @@ def cmd_timeline(a) -> int:
                   title_style=f"bold {EMBER[1]}", border_style=EMBER[3])
     table.add_column("iter"); table.add_column("map")
     table.add_column("explored", justify="right"); table.add_column("exit%", justify="right")
+    table.add_column("→exit", justify="right")  # dense progress toward the exit
     table.add_column("kills", justify="right"); table.add_column("score", justify="right")
     table.add_column("kept", justify="center")
 
@@ -995,7 +997,8 @@ def cmd_timeline(a) -> int:
         star = " ⭐" if r["name"] == best["name"] else ""
         table.add_row(
             r["name"].replace("iter-", "#"), str(r["map"]),
-            pct(r["explored"]), pct(r["exit"]), num(r["kills"]), num(r["score"]) + star,
+            pct(r["explored"]), pct(r["exit"]), pct(r["exit_prog"]),
+            num(r["kills"]), num(r["score"]) + star,
             "[green]✓[/green]" if r["kept"] else "[dim]·[/dim]",
         )
     console.print(table)

@@ -62,6 +62,7 @@ class StatsTracker:
         # How episodes ended (death / exit / timeout) — "exit" = reached the level end.
         self.terminals: Counter = Counter()
         self.coverage_cells_per_ep: List[int] = []  # distinct cells per episode
+        self.exit_progress_per_ep: List[float] = []  # how close to the exit (dense, fairer)
         # Ordered trajectory of ONE representative env (env 0) so the minimap can draw
         # the path as a CONNECTED LINE (visit order), not just an unordered heatmap.
         # The heatmap mixes all parallel envs; an ordered line only makes sense per env.
@@ -125,6 +126,8 @@ class StatsTracker:
                         self.terminals[doom["terminal"]] += 1
                     if "coverage_cells" in doom:
                         self.coverage_cells_per_ep.append(int(doom["coverage_cells"]))
+                    if "exit_progress" in doom:
+                        self.exit_progress_per_ep.append(float(doom["exit_progress"]))
                 # env 0 finished an episode: keep its (ordered) path as the one to draw,
                 # then start a fresh trajectory for the next episode.
                 if idx == 0 and len(self._env0_path) >= 2:
@@ -175,6 +178,9 @@ class StatsTracker:
                 else 0.0
             ),
             "terminals": dict(self.terminals),  # {death, exit, timeout} counts
+            # Dense "how close to the exit" (mean fraction, 1.0 = reached) — fairer than the
+            # binary exit_rate. Only populated once the exit position is known on the map.
+            "exit_progress": _mean(self.exit_progress_per_ep),
             "mean_reward": _mean(self.episode_rewards),
             "mean_base_reward": _mean(self.base_returns),  # native, shaping-independent
             "mean_episode_length": _mean(self.episode_lengths),
