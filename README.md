@@ -10,7 +10,7 @@ training loop. **100% local, no API key, no cost.**
 
 ![python](https://img.shields.io/badge/python-3.12-blue)
 ![license](https://img.shields.io/badge/license-MIT-green)
-![tests](https://img.shields.io/badge/tests-320%20passing-brightgreen)
+![tests](https://img.shields.io/badge/tests-355%20passing-brightgreen)
 ![local](https://img.shields.io/badge/100%25-local-orange)
 
 </div>
@@ -88,8 +88,10 @@ the exact architecture, parameter count, and depth — proof it's a real neural 
 | Signal | What it does |
 |--------|--------------|
 | **RND** (curiosity) | rewards visiting unfamiliar places — never saturates |
-| **Go-Explore** | sends the agent back to a far frontier cell, then explores from there |
+| **Go-Explore + frontier intelligence** | returns to a far frontier cell, then explores from there — frontiers are scored by distance × **edge** (boundary of the explored region) × **aging** (stale ones fade) |
 | **Frontier reward** | pays only *net outward* progress (spinning in circles can't farm it) |
+| **Discovery reward** | bonus the first time it *sees* a new object (key/weapon/powerup/new monster) — exploration guided toward objectives |
+| **Auto-USE (doors)** | holds USE every frame so **doors open / switches fire on contact** (no more banging on a closed door) |
 | **Exit proximity** | once the exit is found once, a dense gradient guides the agent back |
 | **Engagement reward** | small bonus for facing enemies (anti-passivity) |
 | **Bestiary reward** | deadlier monsters (the ones that actually kill it) are worth more |
@@ -116,8 +118,11 @@ Stored on disk (JSONL for safe writes, SQLite as the queryable view):
 ### 5. Coach — the self-improvement loop
 
 `doom-cli auto` trains a chunk, measures it honestly, and nudges one reward knob toward the
-weakest metric — **keeping the change only if it helped, undoing it if it hurt.** It resumes
-by default and accumulates, so you can just leave it running. The full cycle is the
+weakest metric — **keeping the change only if it helped, undoing it if it hurt.** It diagnoses
+combat and exploration **separately** (low `combat_engagement` → un-freeze the policy; low
+exploration → push the frontier levers) and every adjustment is written to a structured
+**rollback log** (`doom-cli rollback`) so a regression can never stick. It resumes by default
+and accumulates, so you can just leave it running. The full cycle is the
 [knowledge loop](#-the-knowledge-loop) below.
 
 ### Learning from YOU (behavioral cloning)
@@ -225,6 +230,8 @@ doom-cli diagnose     # eval + behavior flags + next-step suggestion
 doom-cli behavior     # detect circling / passive / low-exploration / shoot-spam
 doom-cli hypothesize  # turn behaviour into falsifiable hypotheses
 doom-cli experiment   # run a multi-seed A/B to validate a hypothesis
+doom-cli knowledge    # long-term knowledge in 3 tiers: facts / hypotheses / validated
+doom-cli rollback     # structured audit trail — every adjustment + keep/revert verdict
 doom-cli learned      # reward knobs the agent has PROVEN help
 doom-cli db query --runs   # per-iteration metrics straight from the SQLite view
 doom-cli recall       # query episodic memory (by keyword / enemy / region)
@@ -233,8 +240,8 @@ doom-cli curriculum   # map difficulty + forgetting alerts
 ```
 
 Toggle anything in `.env`. The heavy perception channels (`DEPTH_PERCEPTION`, `AUTOMAP`) are
-on by default for the richest agent — set them to `0` for ~3–4× faster training if you're
-compute-limited.
+on by default for the richest agent — set them to `0` for **~3–4× faster training** if you're
+compute-limited (ViZDoom is CPU-render-bound, so fewer channels = more frames/hour).
 
 ---
 
@@ -244,7 +251,7 @@ This is a research/learning project, and it says so plainly. The measured realit
 
 - ✅ **Passivity solved** — the agent went from freezing at spawn (90% timeouts) to actively
   fighting and exploring.
-- ✅ **The machinery works** — every feature above is wired, tested (335 tests), and the
+- ✅ **The machinery works** — every feature above is wired, tested (355 tests), and the
   self-improvement loop demonstrably tunes the agent and accumulates memory across runs.
 - 🔬 **Provable** — `doom-cli benchmark` runs the ablation (baseline → +RND → +memory → full)
   across seeds with mean ± std, so "each layer adds value" is a measured claim, not a vibe.
@@ -273,7 +280,7 @@ doom_cli.py      one unified CLI · config.py all settings (.env → dataclass)
 ## 🧪 Tests
 
 ```bash
-doom-cli tests        # 320 tests — no ViZDoom / Ollama needed (synthetic data)
+doom-cli tests        # 355 tests — no ViZDoom / Ollama needed (synthetic data)
 ```
 
 ## 📜 License
