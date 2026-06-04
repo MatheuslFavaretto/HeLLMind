@@ -56,6 +56,12 @@ BOUNDS = {
     "DEATH_PENALTY":         (1.0, 20.0),
     "FRONTIER_REWARD":       (0.0, 0.2),  # anti-circle/exploration lever
     "EPISODE_TIMEOUT":       (1050, 8400),  # ticks — 30s to 240s at 35fps
+    # Expanded levers so the loop can tune more failure modes (each still bounded):
+    "ENGAGEMENT_REWARD":     (0.0, 0.1),   # anti-passivity (face/approach enemies)
+    "ENT_COEF":              (0.005, 0.08),  # the argmax-collapse lever (un-freeze policy)
+    "RND_SCALE":             (0.0, 1.0),   # curiosity strength
+    "GOEXPLORE_GOAL_PROB":   (0.0, 0.8),   # how often to return-then-explore
+    "COMBAT_EXPLORE_FACTOR": (0.1, 1.0),   # how hard to damp the off-mode objective
 }
 
 # writer.suggest speaks in lowercase knobs; map them onto the supervisor's env vars.
@@ -90,23 +96,45 @@ def propose(env: dict, m: dict) -> tuple[dict, str]:
                      f"episode too short — raise EPISODE_TIMEOUT to {int(new['EPISODE_TIMEOUT'])}")
 
     if explored < 0.10:
-        # Very low exploration: raise both coverage and frontier (push agent away from spawn).
+        # Very low exploration: push on EVERY exploration lever — coverage, frontier, and the
+        # curiosity/return-then-explore knobs — to break out of the spawn room.
         bump("COVERAGE_REWARD", factor=1.4)
         bump("FRONTIER_REWARD", factor=1.5)
-        return new, (f"explored only {explored:.0%} -> raise "
-                     f"COVERAGE_REWARD to {new['COVERAGE_REWARD']}, "
-                     f"FRONTIER_REWARD to {new['FRONTIER_REWARD']}")
+        bump("RND_SCALE", factor=1.3)
+        bump("GOEXPLORE_GOAL_PROB", add=0.1)
+        return new, (f"explored only {explored:.0%} -> raise COVERAGE_REWARD to "
+                     f"{new['COVERAGE_REWARD']}, FRONTIER_REWARD to {new['FRONTIER_REWARD']}, "
+                     f"RND_SCALE to {new['RND_SCALE']}, GOEXPLORE_GOAL_PROB to "
+                     f"{new['GOEXPLORE_GOAL_PROB']}")
+    # Root-cause before paying it to explore: an agent that keeps DYING or whose policy is
+    # FROZEN can never reach the exit, so fix survival/aliveness first.
+    # High death rate: make damage + dying hurt more so it disengages at low HP (it now
+    # knows its HEALTH via game_vars).
+    if m.get("death_rate", 0.0) > 0.5:
+        bump("DAMAGE_TAKEN_PENALTY", factor=1.3)
+        bump("DEATH_PENALTY", factor=1.2)
+        return new, (f"death_rate {m.get('death_rate',0):.0%} -> raise DAMAGE_TAKEN_PENALTY "
+                     f"to {new['DAMAGE_TAKEN_PENALTY']}, DEATH_PENALTY to {new['DEATH_PENALTY']}")
+    # Passivity / argmax-collapse: barely kills despite not timing out -> the deterministic
+    # policy has frozen. Un-freeze it (entropy) and pay it to face enemies.
+    kills = m.get("kills_per_episode", 0.0)
+    if kills < 0.5 and timeout_rate < 0.6:
+        bump("ENT_COEF", factor=1.3)
+        bump("ENGAGEMENT_REWARD", factor=1.5)
+        return new, (f"passive (kills/ep={kills:.2f}) -> un-freeze policy: ENT_COEF to "
+                     f"{new['ENT_COEF']}, ENGAGEMENT_REWARD to {new['ENGAGEMENT_REWARD']}")
     if explored < 0.5:
         bump("COVERAGE_REWARD", factor=1.3)
         return new, f"explored only {explored:.0%} -> raise COVERAGE_REWARD to {new['COVERAGE_REWARD']}"
-    if m.get("exit_rate", 0.0) == 0.0:
-        bump("EXIT_REWARD", factor=1.3)
-        bump("COVERAGE_REWARD", factor=1.2)  # exploring helps find the exit
-        return new, f"never reached the exit -> raise EXIT_REWARD to {new['EXIT_REWARD']}, COVERAGE to {new['COVERAGE_REWARD']}"
     if m.get("shooting_accuracy", 0.0) < 0.10:
         bump("MISS_PENALTY", add=0.05)
         bump("HIT_REWARD", factor=1.2)
         return new, f"accuracy {m.get('shooting_accuracy',0):.0%} -> MISS_PENALTY {new['MISS_PENALTY']}, HIT_REWARD {new['HIT_REWARD']}"
+    # Last resort once survival/exploration/aim are healthy: nudge the exit reward itself.
+    if m.get("exit_rate", 0.0) == 0.0:
+        bump("EXIT_REWARD", factor=1.3)
+        bump("COVERAGE_REWARD", factor=1.2)  # exploring helps find the exit
+        return new, f"never reached the exit -> raise EXIT_REWARD to {new['EXIT_REWARD']}, COVERAGE to {new['COVERAGE_REWARD']}"
     # Everything healthy: anneal exploration bonus to consolidate the policy.
     bump("COVERAGE_REWARD", factor=0.8)
     return new, f"metrics healthy -> anneal COVERAGE_REWARD to {new['COVERAGE_REWARD']}"
@@ -623,6 +651,8 @@ def main() -> None:
         "DAMAGE_TAKEN_PENALTY": str(cfg.damage_taken_penalty),
         "DEATH_PENALTY": str(cfg.death_penalty), "MOVE_REWARD": str(cfg.move_reward),
         "LIVING_REWARD": str(cfg.living_reward),
+        "COMBAT_EXPLORE_SPLIT": "1" if cfg.combat_explore_split else "0",
+        "COMBAT_EXPLORE_FACTOR": str(cfg.combat_explore_factor),
     }
 
     # Accumulate across sessions: overlay reward knobs the agent has PROVEN help (validated

@@ -48,11 +48,29 @@ def test_score_rewards_the_goal():
 def test_propose_stays_within_bounds_and_targets_weakness():
     # Start near every ceiling so a bump would overflow -> must be clamped.
     env = {k: str(hi) for k, (lo, hi) in BOUNDS.items()}
-    new, reason = propose(env, {"explored_fraction": 0.1, "exit_rate": 0.0,
+    new, reason = propose(env, {"explored_fraction": 0.05, "exit_rate": 0.0,
                                 "kills_per_episode": 0.0, "shooting_accuracy": 0.0})
     for k, (lo, hi) in BOUNDS.items():
         assert lo <= float(new[k]) <= hi          # guardrails hold (clamped)
-    assert "COVERAGE_REWARD" in reason             # targeted the weakest (exploration)
+    assert "COVERAGE_REWARD" in reason             # severe under-exploration targeted first
+
+
+def test_propose_targets_death_rate():
+    # Dying a lot is the root cause -> raise damage/death penalties before anything else.
+    env = {"DAMAGE_TAKEN_PENALTY": "0.2", "DEATH_PENALTY": "4.0", "EPISODE_TIMEOUT": "2100"}
+    new, reason = propose(env, {"explored_fraction": 0.3, "death_rate": 0.8,
+                                "kills_per_episode": 1.0, "timeout_rate": 0.1})
+    assert float(new["DAMAGE_TAKEN_PENALTY"]) > 0.2
+    assert "death_rate" in reason
+
+
+def test_propose_targets_passivity_with_entropy():
+    # Barely kills but not timing out -> argmax collapse -> raise ENT_COEF + ENGAGEMENT.
+    env = {"ENT_COEF": "0.03", "ENGAGEMENT_REWARD": "0.01", "EPISODE_TIMEOUT": "2100"}
+    new, reason = propose(env, {"explored_fraction": 0.3, "death_rate": 0.1,
+                                "kills_per_episode": 0.2, "timeout_rate": 0.1})
+    assert float(new["ENT_COEF"]) > 0.03
+    assert "ENT_COEF" in reason
 
 
 def test_score_caps_kills_so_camper_loses_to_explorer():
