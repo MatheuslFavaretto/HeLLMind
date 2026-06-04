@@ -140,6 +140,9 @@ class CampaignDoomEnv(gym.Env):
         # ground-truth enemy visibility (needs labels). See Config.combat_explore_split.
         self._combat_explore_split = bool(r.get("combat_explore_split", 0.0))
         self._ce_factor = float(r.get("combat_explore_factor", 0.25))
+        # Auto-USE: open doors / hit switches on contact (see Config.auto_use).
+        self._auto_use = bool(r.get("auto_use", 0.0))
+        self._use_idx: Optional[int] = None  # set once the button layout is built
         self._hit_reward = float(r.get("hit_reward", HIT_REWARD))
         self._miss_penalty = float(r.get("miss_penalty", MISS_PENALTY))
         self._damage_penalty = float(r.get("damage_taken_penalty", 0.1))
@@ -261,6 +264,7 @@ class CampaignDoomEnv(gym.Env):
             self.actions.append(vec)
             self.button_names.append(label)
             self._action_attacks.append(bool(vec[bidx["ATTACK"]]))
+        self._use_idx = bidx.get("USE")  # for auto-USE (open doors on contact)
 
         self.action_space = spaces.Discrete(len(self.actions))
         channels = (1 + (1 if self._spatial else 0) + (1 if self._depth else 0)
@@ -514,6 +518,11 @@ class CampaignDoomEnv(gym.Env):
         self, action: int
     ) -> Tuple[np.ndarray, float, bool, bool, Dict[str, Any]]:
         buttons = self.actions[int(action)]
+        if self._auto_use and self._use_idx is not None and not buttons[self._use_idx]:
+            # Hold USE every frame so doors open / switches fire on contact, without changing
+            # the discrete action the policy chose (copy so the stored action vector is intact).
+            buttons = list(buttons)
+            buttons[self._use_idx] = 1
         base_reward = self.game.make_action(buttons, self.frame_skip)
         self._ep_base += base_reward
         self._ep_ticks += self.frame_skip

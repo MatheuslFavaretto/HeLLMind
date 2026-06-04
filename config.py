@@ -113,6 +113,11 @@ class Config:
     # factor = how hard to damp the off-mode rewards (0.25 = keep 25%). Needs USE_LABELS.
     combat_explore_split: bool = os.getenv("COMBAT_EXPLORE_SPLIT", "1") in ("1", "true", "True")
     combat_explore_factor: float = float(os.getenv("COMBAT_EXPLORE_FACTOR", "0.25"))
+    # Auto-USE: press the USE button every frame so DOORS open on contact (and switches
+    # activate). Without this the agent must learn the rare FWD+USE action with no reward
+    # signal -> it gets stuck banging on closed doors (observed). On by default; the agent
+    # still chooses where to GO, this just stops doors from being a dead end.
+    auto_use: bool = os.getenv("AUTO_USE", "1") in ("1", "true", "True")
     # Closed loop (bestiary -> reward): scale the kill bonus by what the agent LEARNED about
     # each monster — killing a deadlier type (higher death-rate-when-present) pays more. Uses
     # the persisted bestiary; needs one prior run to have data. Opt-in (changes the reward).
@@ -205,6 +210,7 @@ class Config:
             "engagement_reward": self.engagement_reward,
             "combat_explore_split": float(self.combat_explore_split),
             "combat_explore_factor": self.combat_explore_factor,
+            "auto_use": float(self.auto_use),
             "weapon_variety_reward": self.weapon_variety_reward,
             "use_rnd":  float(self.use_rnd),
             "rnd_scale": self.rnd_scale,
