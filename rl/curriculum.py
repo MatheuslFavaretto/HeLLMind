@@ -12,10 +12,9 @@ campaign_callbacks.py) with:
 from __future__ import annotations
 
 import os
-from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 # Regression threshold: metric fell by this fraction from its best window
 FORGETTING_THRESHOLD = 0.30

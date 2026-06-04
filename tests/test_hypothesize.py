@@ -2,7 +2,7 @@
 import pytest
 
 from writer.behavior import BehaviorFlag
-from writer.hypothesize import Hypothesis, generate, save_hypotheses, write_hypotheses_note
+from writer.hypothesize import generate, save_hypotheses, write_hypotheses_note
 
 
 def _flag(name: str, confidence: float = 0.8) -> BehaviorFlag:

@@ -196,9 +196,9 @@ def write_hypotheses_note(cfg, hypotheses: List[Hypothesis]) -> str:
             "",
             f"- **Metric:** `{h.metric}`  **Direction:** {h.direction}",
             f"- **Confidence:** {h.confidence:.0%}  (from `{h.source_flag}` flag)",
-            f"- **Config delta:** "
+            "- **Config delta:** "
             + "  ".join(f"`{k}={v}`" for k, v in h.config_delta.items()),
-            f"- **Status:** open — needs [[Experiment]]",
+            "- **Status:** open — needs [[Experiment]]",
             "",
             "> To test: apply the config delta, run for ≥ 200k steps, "
             "compare deterministic eval on `" + h.metric + "`.",

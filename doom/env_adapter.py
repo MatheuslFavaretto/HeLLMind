@@ -22,7 +22,7 @@ Doom for MuJoCo requires only a new adapter, not new cognition code.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
 import numpy as np
 
@@ -90,8 +90,11 @@ class DoomCampaignAdapter(EnvAdapter):
 
     def __init__(self, cfg) -> None:
         from doom.campaign import make_campaign_env
-        self._env = make_campaign_env(cfg)
+        # make_campaign_env is a FACTORY (returns an init thunk); call it to get the env.
+        self._env = make_campaign_env(cfg, cfg.maps[0], 0)()
         self._last_info: dict = {}
+        self._ep_kills = 0      # accumulated this episode (info carries per-step deltas only)
+        self._ep_len = 0
 
     @property
     def observation_space(self):
@@ -104,11 +107,16 @@ class DoomCampaignAdapter(EnvAdapter):
     def reset(self, **kwargs):
         obs, info = self._env.reset(**kwargs)
         self._last_info = info
+        self._ep_kills = 0
+        self._ep_len = 0
         return obs, info
 
     def step(self, action):
         obs, reward, terminated, truncated, info = self._env.step(action)
         self._last_info = info
+        self._ep_len += 1
+        doom = info.get("doom", {}) or {}
+        self._ep_kills += int((doom.get("deltas", {}) or {}).get("killcount", 0))
         return obs, reward, terminated, truncated, info
 
     def close(self) -> None:
@@ -118,15 +126,18 @@ class DoomCampaignAdapter(EnvAdapter):
         return getattr(self._env, "button_names", [])
 
     def telemetry(self) -> Dict[str, Any]:
-        info = self._last_info
+        # Read the REAL campaign info shape: {"map", "doom": {"terminal","levels",...}}.
+        info = self._last_info or {}
+        doom = info.get("doom", {}) or {}
+        levels = doom.get("levels", {}) or {}
         return {
-            "type":     info.get("terminal_reason", "timeout"),
+            "type":     doom.get("terminal", "timeout"),
             "map":      info.get("map", ""),
-            "kills":    int(info.get("kills", 0)),
-            "coverage": float(info.get("coverage_fraction", 0.0)),
-            "health":   float(info.get("health_fraction", 0.0)),
-            "length":   int(info.get("length", 0)),
-            "ammo":     float(info.get("ammo", 0.0)),
+            "kills":    int(self._ep_kills),
+            "coverage": int(doom.get("coverage_cells", 0)),
+            "health":   float(levels.get("health", 0.0)),
+            "length":   int(self._ep_len),
+            "ammo":     float(levels.get("ammo2", 0.0)),
         }
 
 

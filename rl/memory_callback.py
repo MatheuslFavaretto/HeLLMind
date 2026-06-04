@@ -5,7 +5,6 @@ On each episode end it appends one structured event (death/success/timeout + con
 to the MemoryStore. This is the only training-time touchpoint and it's cheap (one
 appended line per finished episode), so it stays within the ±2% FPS budget.
 """
-import numpy as np
 from stable_baselines3.common.callbacks import BaseCallback
 
 from writer.memory_store import MemoryStore

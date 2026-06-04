@@ -69,7 +69,8 @@ class StatsTracker:
                 for k, v in doom["deltas"].items():
                     self.delta_sums[k] = self.delta_sums.get(k, 0.0) + float(v)
                 for n in LEVELS:
-                    self.level_samples[n].append(doom["levels"][n])
+                    if n in doom["levels"]:  # tolerate vars a synthetic/old info omits
+                        self.level_samples[n].append(doom["levels"][n])
                 self.action_counts[int(doom["action"])] += 1
                 if "attacked" in doom:
                     self._has_attack_flag = True

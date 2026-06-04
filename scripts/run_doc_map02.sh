@@ -2,7 +2,7 @@
 # THE documented combat run: MAP02 (dense), 500k, into the vault, with Obsidian notes
 # + cognitive memory. Uses the fixed death_penalty and the timeout-safe Ollama client.
 set -e
-cd /Users/matheusfavaretto/Documents/labs/poc-doom-obisidyan
+cd "$(dirname "$0")/.."
 PY=.venv/bin/python
 
 export CAMPAIGN=1 MAPS=MAP02 DOCS_ENABLED=1 MEMORY_ENABLED=1 N_ENVS=4 SEED=42 \

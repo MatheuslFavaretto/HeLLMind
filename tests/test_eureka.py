@@ -65,8 +65,6 @@ def test_select_best_all_none_returns_none():
 
 def test_propose_candidates_falls_back_without_ollama(monkeypatch):
     # Force the LLM path to fail -> heuristic mutation must produce `n` clamped candidates.
-    import rl.eureka as eu
-
     class Boom:
         def __init__(self, *a, **k):
             raise RuntimeError("no ollama")

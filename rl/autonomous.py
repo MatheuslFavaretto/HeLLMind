@@ -159,8 +159,18 @@ def llm_propose(cfg: Config, env: dict, m: dict) -> Optional[tuple[dict, str]]:
 
 def propose_next(cfg: Config, env: dict, m: dict, use_llm: bool) -> tuple[dict, str]:
     """Pick the next reward config. The heuristic always runs (it owns exploration and
-    is the fallback); when --llm is on, the LLM refines the combat knobs on top of it."""
+    is the fallback); the persistent MEMORY refines combat on top (targets the real death
+    mode across all runs, and never repeats a change a past experiment disproved); when
+    --llm is on, the LLM refines combat too."""
     new, reason = propose(env, m)
+    # Memory-informed: draw on the whole persistent history, not just this iteration's eval.
+    try:
+        from writer.memory_policy import recall_proposal
+        mem_env, mem_reason = recall_proposal(cfg.memory_dir, new)
+        if mem_env is not None:
+            new, reason = mem_env, f"{reason}; {mem_reason}"
+    except Exception as e:
+        print(f"[autonomous] memory policy unavailable ({type(e).__name__}); skipping.")
     if use_llm:
         llm_res = llm_propose(cfg, new, m)
         if llm_res:
@@ -183,10 +193,15 @@ def train_chunk(env: dict, doom_map: str, steps: int, fresh: bool) -> None:
     subprocess.run(cmd, env=_subprocess_env(env), check=True)
 
 
-def eval_brain(env: dict, episodes: int) -> dict:
+def eval_brain(env: dict, episodes: int, temperature: Optional[float] = None) -> dict:
+    cmd = [PY, "-m", "rl.eval", "--episodes", str(episodes), "--json"]
+    # Score the TEMPERED policy, not the raw argmax: this agent's argmax collapses to a
+    # passive action while the learned distribution explores+fights. Scoring argmax would
+    # make the supervisor optimise a frozen policy. T (e.g. 0.5) measures real capability.
+    if temperature is not None:
+        cmd += ["--temperature", str(temperature)]
     out = subprocess.run(
-        [PY, "-m", "rl.eval", "--episodes", str(episodes), "--json"],
-        env=_subprocess_env(env), check=True, capture_output=True, text=True,
+        cmd, env=_subprocess_env(env), check=True, capture_output=True, text=True,
     ).stdout
     for line in out.splitlines():
         if line.startswith("METRICS_JSON "):
@@ -267,10 +282,13 @@ def write_log(cfg: Config, history: list) -> None:
             f"| {h['reason']} |"
         )
 
-    # Reward deltas — what actually changed per iteration
+    # Reward deltas — what actually changed per iteration. Index by LIST POSITION, not by
+    # h["iter"]: a failed iteration is skipped (not appended), so iter numbers can have gaps
+    # and `history[iter-1]` would index out of range (and compare the wrong pair).
     lines += ["", "## Reward changes applied", ""]
-    for h in history[1:]:
-        prev_env = history[h["iter"] - 1]["env"]
+    for idx in range(1, len(history)):
+        h = history[idx]
+        prev_env = history[idx - 1]["env"]
         curr_env = h["env"]
         changed = {k: (prev_env.get(k), curr_env.get(k))
                    for k in set(prev_env) | set(curr_env)
@@ -317,9 +335,10 @@ def write_final_report(
     ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
     best = max(history, key=lambda h: h["score"])
     first = history[0]
-    last = history[-1]
-    improved = [h for h in history if h["kept"] and h["iter"] > 0
-                and h["score"] > history[h["iter"] - 1]["score"]]
+    # Compare each entry to the PREVIOUS list element (not history[iter-1]) — failed
+    # iterations are skipped, so iter numbers have gaps that would misindex.
+    improved = [history[i] for i in range(1, len(history))
+                if history[i]["kept"] and history[i]["score"] > history[i - 1]["score"]]
     reverted = [h for h in history if not h["kept"]]
 
     m0 = first["metrics"]
@@ -367,7 +386,6 @@ def write_final_report(
             llm_narrative = f"_(LLM synthesis failed: {e})_"
 
     # Build the report
-    run_name = cfg.run_name or f"auto-{doom_map}"
     out_dir = os.path.join(cfg.vault_path, cfg.dir_runs)
     os.makedirs(out_dir, exist_ok=True)
     path = os.path.join(out_dir, f"Auto Session — {doom_map} — {ts[:10]}.md")
@@ -425,8 +443,9 @@ def write_final_report(
     # What actually changed
     lines += ["", "## Reward adjustments tried", ""]
     any_change = False
-    for h in history[1:]:
-        prev_env = history[h["iter"] - 1]["env"]
+    for idx in range(1, len(history)):
+        h = history[idx]
+        prev_env = history[idx - 1]["env"]
         curr_env = h["env"]
         changed = {k: (prev_env.get(k), curr_env.get(k))
                    for k in BOUNDS
@@ -478,9 +497,9 @@ def write_final_report(
         "",
         "## Links",
         "",
-        f"- [[Autonomy Log]] (live iteration log)",
+        "- [[Autonomy Log]] (live iteration log)",
         f"- [[Map - {doom_map}]]",
-        f"- [[Knowledge Graph]]",
+        "- [[Knowledge Graph]]",
     ]
     if flags:
         lines.append("- [[Behavior]] (80-recommendations)")
@@ -498,7 +517,10 @@ def main() -> None:
     p.add_argument("--steps", type=int, default=100000, help="Timesteps per iteration.")
     p.add_argument("--map", default=None, help="Map to train on (default: cfg.maps[0]).")
     p.add_argument("--episodes", type=int, default=10, help="Eval episodes per iteration.")
-    p.add_argument("--fresh", action="store_true", help="Start the first iter from zero.")
+    # Resume is the DEFAULT (continue the brain + prior session). --fresh/--clear restarts.
+    p.add_argument("--fresh", "--clear", dest="fresh", action="store_true",
+                   help="Start a brand-new session from zero (fresh brain + cleared history). "
+                        "Default behaviour (no flag) is to RESUME the existing brain.")
     p.add_argument("--spatial", action="store_true",
                    help="Enable spatial memory (2nd obs channel). Forces --fresh (obs shape changes).")
     p.add_argument("--rnd", action="store_true",
@@ -507,36 +529,53 @@ def main() -> None:
                    help="Enable Go-Explore frontier-goal resets (return-then-explore).")
     p.add_argument("--depth", action="store_true",
                    help="Enable depth-perception obs channel (ViZDoom depth buffer). Forces --fresh.")
+    p.add_argument("--strafe", action="store_true",
+                   help="Add strafe (sideways) actions. Changes the action count → forces --fresh.")
+    p.add_argument("--automap", action="store_true",
+                   help="Enable the native top-down automap obs channel. Forces --fresh.")
+    p.add_argument("--game-vars", dest="game_vars", action="store_true",
+                   help="Feed HEALTH/AMMO into the policy (the agent knows its own state).")
     p.add_argument("--llm", action="store_true",
                    help="Let the offline reward-suggestions LLM refine the combat knobs "
                         "(needs Ollama + enough events); falls back to the heuristic.")
     p.add_argument("--resume", action="store_true",
-                   help="Continue a prior auto session from autonomy.jsonl (picks up the "
-                        "iteration count, best score, and evolved reward config).")
+                   help="(default behaviour — kept for back-compat) Continue the prior session.")
     args = p.parse_args()
 
     cfg = Config()
     doom_map = args.map or cfg.maps[0]
 
+    # --fresh/--clear means a true restart: wipe the prior session trail so it doesn't get
+    # resumed. (The brain itself is overwritten by the first --fresh training chunk.)
+    if args.fresh:
+        _trail = os.path.join(cfg.memory_dir, "autonomy.jsonl")
+        if os.path.exists(_trail):
+            os.remove(_trail)
+            print("[autonomous] --fresh/--clear: cleared prior session history.")
+
     spatial = args.spatial or cfg.spatial_memory
     use_rnd  = args.rnd    or cfg.use_rnd
     depth    = args.depth  or cfg.depth_perception
+    strafe   = args.strafe or cfg.strafe
+    automap  = args.automap or cfg.automap
+    gamevars = args.game_vars or cfg.game_vars
+    cfg.game_vars = gamevars  # so brain_prefix / build_vec_env pick it up
 
-    # --spatial/--depth force --fresh (they change the obs shape → old brain can't load).
-    if (spatial or depth) and not args.fresh:
-        print("[autonomous] spatial/depth enabled: forcing --fresh (obs shape change requires new brain)")
-        args.fresh = True
+    # NOTE: perception/action flags change the obs shape / action count, but the brain NAME
+    # now ENCODES all of them (e.g. `..._a15_sp`), so the lookup below finds the exact
+    # compatible brain — no blanket force-fresh needed (an unconditional one was a bug that
+    # discarded a resumable brain). Resume is the DEFAULT; only --fresh/--clear starts over.
 
-    # Auto-fresh: if no brain exists in the vault, --resume would just start from scratch
-    # anyway — be explicit so the log is honest. Derive the exact brain family name (action
-    # count, lstm, spatial) instead of hardcoding `a11`, which silently breaks if the action
-    # set changes or spatial memory is on (the spatial brain is named `..._sp`).
+    # Auto-fresh ONLY when no compatible brain exists yet (a truly new family) — otherwise
+    # continue training the existing brain. Derives the exact brain family name from the
+    # current flags (action count, lstm, spatial/depth/automap, frame_stack).
     if not args.fresh:
         import glob as _glob
         from doom.campaign import campaign_metadata
         from rl.algo import brain_prefix
-        meta = campaign_metadata(cfg.wad_path, doom_map)
-        name_prefix = brain_prefix("campaign", meta["num_actions"], cfg.use_lstm, spatial, depth)
+        meta = campaign_metadata(cfg.wad_path, doom_map, strafe=strafe)
+        name_prefix = brain_prefix("campaign", meta["num_actions"], cfg.use_lstm,
+                                   spatial, depth, automap, cfg.frame_stack, cfg.game_vars)
         ckpt_dir = cfg.checkpoint_dir
         has_brain = bool(
             os.path.exists(os.path.join(ckpt_dir, f"{name_prefix}_final.zip"))
@@ -551,8 +590,16 @@ def main() -> None:
     env = {
         "CAMPAIGN": "1", "MAPS": doom_map, "DOCS_ENABLED": "0", "MEMORY_ENABLED": "1",
         "CONTROL_ENABLED": "0", "N_ENVS": str(cfg.n_envs),
+        # PPO/obs hyperparams pinned so the train AND eval subprocesses agree (the brain
+        # name encodes frame_stack, so a mismatch would look for the wrong checkpoint).
+        "FRAME_STACK": str(cfg.frame_stack), "ENT_COEF": str(cfg.ent_coef),
+        "GAME_VARS": "1" if gamevars else "0",
+        "USE_LABELS": "1" if cfg.use_labels else "0",
+        "ENGAGEMENT_REWARD": str(cfg.engagement_reward),
         "SPATIAL_MEMORY": "1" if spatial else "0",
         "DEPTH_PERCEPTION": "1" if depth else "0",
+        "STRAFE": "1" if strafe else "0",
+        "AUTOMAP": "1" if automap else "0",
         "USE_LSTM": "1" if cfg.use_lstm else "0",
         "USE_RND": "1" if use_rnd else "0",
         "RND_SCALE": str(cfg.rnd_scale),
@@ -568,11 +615,25 @@ def main() -> None:
         "LIVING_REWARD": str(cfg.living_reward),
     }
 
+    # Accumulate across sessions: overlay reward knobs the agent has PROVEN help (validated
+    # experiments), then adopt any "improved" verdicts sitting in memory from prior runs.
+    try:
+        from writer.learned_config import LearnedConfig
+        from writer.memory_policy import adopt_improved_experiments
+        adopt_improved_experiments(cfg.memory_dir)
+        learned = LearnedConfig(cfg.memory_dir).values()
+        if learned:
+            env = LearnedConfig(cfg.memory_dir).apply_to_env(env)
+            print(f"[autonomous] applied learned config (proven knobs): {learned}")
+    except Exception as e:
+        print(f"[autonomous] learned config unavailable ({type(e).__name__}); skipping.")
+
     history = []
     best_score = -1e9
     start_iter = 0
-    # --resume: restore a prior session's trail so a long auto run survives a kill/restart.
-    if args.resume and not args.fresh:
+    # Resume is the DEFAULT: restore a prior session's trail and continue, so a long auto run
+    # survives a kill/restart. Only --fresh/--clear starts a brand-new session from zero.
+    if not args.fresh:
         history = load_history(cfg)
         if history:
             best_score = max(h["score"] for h in history)
@@ -581,9 +642,16 @@ def main() -> None:
             print(f"[autonomous] --resume: restored {start_iter} prior iters "
                   f"(best score {best_score:.2f}); continuing from iter {start_iter}.")
 
-    print(f"[autonomous] {args.iterations} iterations × {args.steps} steps on {doom_map} "
-          f"({'LLM-refined' if args.llm else 'heuristic'} reward proposals)")
-    for i in range(start_iter, args.iterations):
+    # --iterations is the number of NEW iterations to run THIS session (not a global total).
+    # So resuming a session that already has N iters and asking for 8 runs 8 MORE — otherwise
+    # `range(start_iter, iterations)` would be empty once start_iter caught up (did nothing).
+    end_iter = start_iter + args.iterations
+    scoring = (f"tempered T={cfg.eval_temperature}" if cfg.eval_temperature > 0
+               else "argmax")
+    print(f"[autonomous] {args.iterations} new iterations (iters {start_iter}→{end_iter - 1}) "
+          f"× {args.steps} steps on {doom_map} "
+          f"({'LLM-refined' if args.llm else 'heuristic'} reward proposals; scoring={scoring})")
+    for i in range(start_iter, end_iter):
         fresh = args.fresh and i == 0
         reason = "baseline" if i == 0 else history[-1].get("_next_reason", "adjust")
         print(f"\n===== ITER {i} ({'fresh' if fresh else 'resume'}) — {reason} =====")
@@ -592,7 +660,9 @@ def main() -> None:
         # Catch it, keep the best brain found so far, and continue / finish gracefully.
         try:
             train_chunk(env, doom_map, args.steps, fresh)
-            m = eval_brain(env, args.episodes)
+            # Score the tempered policy (cfg.eval_temperature, default 0.5) — see eval_brain.
+            temp = cfg.eval_temperature if cfg.eval_temperature > 0 else None
+            m = eval_brain(env, args.episodes, temperature=temp)
         except (subprocess.CalledProcessError, RuntimeError) as e:
             print(f"[autonomous] iter {i} FAILED ({type(e).__name__}): {e}")
             print("[autonomous] keeping best-so-far and continuing with the last good config.")

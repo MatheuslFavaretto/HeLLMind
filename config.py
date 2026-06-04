@@ -13,12 +13,15 @@ class Config:
     # ---------- Doom environment ----------
     scenario: str = os.getenv("DOOM_SCENARIO", "defend_the_center")
     frame_skip: int = 4
-    frame_stack: int = 4
+    # Stacked frames (motion). Tunable because each extra obs channel (spatial/depth/automap)
+    # multiplies by frame_stack — so with all perception channels on, drop to 2 to fit memory
+    # (4 base channels × 2 = 8, same footprint as spatial-only × 4). Tagged in the brain name.
+    frame_stack: int = int(os.getenv("FRAME_STACK", "2"))
     resolution: Tuple[int, int] = (84, 84)  # (width, height)
 
     # ---------- CAMPAIGN mode (full WAD maps, in order) ----------
     # Enable campaign mode (train full maps and advance to the next).
-    campaign: bool = os.getenv("CAMPAIGN", "0") in ("1", "true", "True")
+    campaign: bool = os.getenv("CAMPAIGN", "1") in ("1", "true", "True")
     # WAD with the maps. Default: bundled freedoom2.wad (free).
     # For the original Doom 1 maps, point to your doom.wad.
     wad_path: str = os.getenv("WAD_PATH", "")
@@ -29,18 +32,30 @@ class Config:
     steps_per_map: int = int(os.getenv("STEPS_PER_MAP", "200000"))
     loop_maps: bool = os.getenv("LOOP_MAPS", "0") in ("1", "true", "True")
     kills_to_clear: int = int(os.getenv("KILLS_TO_CLEAR", "5"))
-    episode_timeout: int = int(os.getenv("EPISODE_TIMEOUT", "2100"))  # ticks
+    episode_timeout: int = int(os.getenv("EPISODE_TIMEOUT", "2800"))  # ticks
 
     # ---------- PPO training ----------
     total_timesteps: int = int(os.getenv("TOTAL_TIMESTEPS", "2000000"))
     n_envs: int = int(os.getenv("N_ENVS", "8"))
-    n_steps: int = 1024          # rollout per env before each update
-    batch_size: int = 2048
+    # Rollout length per env. CRITICAL vs episode length: if n_steps ≈ episode length, each
+    # rollout holds ~1 (often truncated) episode → poor GAE advantage estimates and slow
+    # learning. Keep n_steps a few× SHORTER than the episode so several episodes fit per
+    # rollout. Smaller n_steps also shrinks the obs rollout buffer (the memory hog with
+    # spatial 8-channel obs), which is what lets more envs fit on a 16GB machine.
+    n_steps: int = int(os.getenv("N_STEPS", "1024"))
+    batch_size: int = int(os.getenv("BATCH_SIZE", "256"))
     n_epochs: int = 4
     gamma: float = 0.99
     gae_lambda: float = 0.95
-    ent_coef: float = 0.01
+    # Entropy bonus: keeps the policy from collapsing its argmax onto one (often bad) action.
+    # Tunable because a too-low value causes the stochastic policy to explore/fight while the
+    # DETERMINISTIC (argmax) policy freezes — the exact gap measured on this agent.
+    ent_coef: float = float(os.getenv("ENT_COEF", "0.03"))
     learning_rate: float = 2.5e-4
+    # Temperature the auto loop uses to SCORE the policy (not pure argmax). This agent's
+    # argmax collapses to passive while its learned distribution explores+fights, so scoring
+    # argmax would optimise a frozen policy. 0 = score argmax; 0.5 = tempered (recommended).
+    eval_temperature: float = float(os.getenv("EVAL_TEMPERATURE", "0.5"))
     clip_range: float = 0.2
     seed: int = int(os.getenv("SEED", "42"))  # configurable for multi-seed A/B
 
@@ -58,7 +73,7 @@ class Config:
     # Anti-circle: reward NET outward progress (new max distance from spawn). Raw move_reward
     # pays the agent to spin in circles (infinite distance); this only pays for going OUTWARD,
     # so it can't be farmed by a limit cycle. Drives directed exploration. Campaign only.
-    frontier_reward: float = float(os.getenv("FRONTIER_REWARD", "0.0"))
+    frontier_reward: float = float(os.getenv("FRONTIER_REWARD", "0.05"))
     # ---------- Exploration & completion (autonomy goal: explore the whole map) ----------
     # Bonus the first time the agent steps on a NEW grid cell (count-based exploration).
     # Drives covering the map instead of pacing the same corridor.
@@ -76,28 +91,46 @@ class Config:
     # in an episode (campaign only). The campaign has SELECT_NEXT_WEAPON but, without this,
     # no reason to ever switch — so it never used the weapons it picks up.
     weapon_variety_reward: float = float(os.getenv("WEAPON_VARIETY_REWARD", "0.5"))
+    # Engagement reward (needs USE_LABELS): tiny bonus per step for keeping a visible enemy
+    # CENTRED in view (in the crosshair). Encourages facing/approaching enemies instead of
+    # wandering past them — complements hit/miss. Keep small so it can't replace killing. 0=off.
+    engagement_reward: float = float(os.getenv("ENGAGEMENT_REWARD", "0.01"))
     # Closed loop (bestiary -> reward): scale the kill bonus by what the agent LEARNED about
     # each monster — killing a deadlier type (higher death-rate-when-present) pays more. Uses
     # the persisted bestiary; needs one prior run to have data. Opt-in (changes the reward).
-    bestiary_reward: bool = os.getenv("BESTIARY_REWARD", "0") in ("1", "true", "True")
+    bestiary_reward: bool = os.getenv("BESTIARY_REWARD", "1") in ("1", "true", "True")
     # Spatial memory: feed the agent a 2nd obs channel of where it has already been
     # (so it can ACT on its own memory, not just be rewarded for it).
-    spatial_memory: bool = os.getenv("SPATIAL_MEMORY", "0") in ("1", "true", "True")
+    spatial_memory: bool = os.getenv("SPATIAL_MEMORY", "1") in ("1", "true", "True")
     # Depth perception: feed ViZDoom's depth buffer as an extra obs channel. Gives the CNN
     # explicit 3D structure (how far each pixel is) — a strong, well-established navigation
     # signal in 3D FPS agents (UNREAL/Arnold). Changes the obs shape, so it needs --fresh.
-    depth_perception: bool = os.getenv("DEPTH_PERCEPTION", "0") in ("1", "true", "True")
+    depth_perception: bool = os.getenv("DEPTH_PERCEPTION", "1") in ("1", "true", "True")
+    # Strafe: add sideways-movement actions (dodging + navigation). Changes the action count
+    # (so the brain name's a{N} differs), so switching it needs --fresh.
+    strafe: bool = os.getenv("STRAFE", "1") in ("1", "true", "True")
+    # Automap: feed ViZDoom's native top-down automap (explored layout + walls) as an extra
+    # obs channel — an allocentric map the agent can navigate by (stronger than the hand-built
+    # spatial-memory grid). Changes the obs shape, so it needs --fresh.
+    automap: bool = os.getenv("AUTOMAP", "1") in ("1", "true", "True")
+    # Labels buffer: ground-truth on-screen enemy detection (ViZDoom labels). Does NOT change
+    # the obs shape — used for telemetry and an optional engagement reward. No --fresh needed.
+    use_labels: bool = os.getenv("USE_LABELS", "1") in ("1", "true", "True")
+    # Game-vars in the policy: feed normalised HEALTH+AMMO into the network (DFP/Arnold). The
+    # agent currently can't SEE its own health → keeps fighting until it dies at low HP. With
+    # this it learns to retreat when weak. Makes the obs a Dict → MultiInputPolicy, needs --fresh.
+    game_vars: bool = os.getenv("GAME_VARS", "1") in ("1", "true", "True")
     # Intrinsic curiosity (RND): spatial bonus that never saturates (unlike count-based
     # coverage_reward which dries up once the starting room is covered). When enabled,
     # adds a normalised prediction-error bonus for visiting unfamiliar positions.
     # Use when exploration is stuck < 20% and coverage_reward alone isn't enough.
-    use_rnd: bool = os.getenv("USE_RND", "0") in ("1", "true", "True")
-    rnd_scale: float = float(os.getenv("RND_SCALE", "0.5"))
+    use_rnd: bool = os.getenv("USE_RND", "1") in ("1", "true", "True")
+    rnd_scale: float = float(os.getenv("RND_SCALE", "0.3"))
     # Go-Explore "return, then explore": with prob goal_prob, an episode is handed a far,
     # rarely-seen frontier cell (from the persisted archive) as a goal; a dense potential
     # reward guides the agent BACK to it, then exploration takes over from that launch point.
     # 0 = off. Use when the agent is stuck near spawn and never reaches the far map / exit.
-    goexplore_goal_prob: float = float(os.getenv("GOEXPLORE_GOAL_PROB", "0.0"))
+    goexplore_goal_prob: float = float(os.getenv("GOEXPLORE_GOAL_PROB", "0.4"))
     goexplore_goal_scale: float = float(os.getenv("GOEXPLORE_GOAL_SCALE", "0.01"))
     goexplore_reach_radius: float = float(os.getenv("GOEXPLORE_REACH_RADIUS", "96.0"))
     # Recurrent policy (LSTM): give the policy temporal memory across steps via
@@ -151,6 +184,7 @@ class Config:
             "coverage_cell": self.coverage_cell,
             "exit_reward": self.exit_reward,
             "exit_prox_scale": self.exit_prox_scale,
+            "engagement_reward": self.engagement_reward,
             "weapon_variety_reward": self.weapon_variety_reward,
             "use_rnd":  float(self.use_rnd),
             "rnd_scale": self.rnd_scale,

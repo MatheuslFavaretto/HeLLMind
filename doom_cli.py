@@ -313,6 +313,12 @@ def cmd_train(a) -> int:
         env["SPATIAL_MEMORY"] = "1"
     if getattr(a, "depth", False):
         env["DEPTH_PERCEPTION"] = "1"
+    if getattr(a, "strafe", False):
+        env["STRAFE"] = "1"
+    if getattr(a, "game_vars", False):
+        env["GAME_VARS"] = "1"
+    if getattr(a, "automap", False):
+        env["AUTOMAP"] = "1"
     if a.lstm:
         env["USE_LSTM"] = "1"
     if a.rnd:
@@ -344,8 +350,13 @@ def cmd_eval(a) -> int:
         cmd.append("--json")
     if a.stochastic:
         cmd.append("--stochastic")
+    if getattr(a, "temperature", None) is not None:
+        cmd += ["--temperature", str(a.temperature)]
     env = {"USE_LSTM": "1"} if a.lstm else None
-    mode = "stochastic" if a.stochastic else "deterministic"
+    if getattr(a, "temperature", None) is not None:
+        mode = f"tempered T={a.temperature}"
+    else:
+        mode = "stochastic" if a.stochastic else "deterministic"
     return run(cmd, env, title=f"📊 Evaluating · {a.episodes} {mode} episodes")
 
 
@@ -354,7 +365,8 @@ def cmd_auto(a) -> int:
            "--steps", str(a.steps)]
     if a.map:
         cmd += ["--map", a.map]
-    if a.fresh:
+    # Resume is the DEFAULT; --fresh/--clear starts over.
+    if a.fresh or getattr(a, "clear", False):
         cmd.append("--fresh")
     if getattr(a, "spatial", False):
         cmd.append("--spatial")
@@ -364,8 +376,13 @@ def cmd_auto(a) -> int:
         cmd.append("--goexplore")
     if getattr(a, "depth", False):
         cmd.append("--depth")
-    if getattr(a, "resume", False):
-        cmd.append("--resume")
+    if getattr(a, "strafe", False):
+        cmd.append("--strafe")
+    if getattr(a, "game_vars", False):
+        cmd.append("--game-vars")
+    if getattr(a, "automap", False):
+        cmd.append("--automap")
+    # --resume is now the DEFAULT in rl.autonomous; no need to pass it.
     if a.llm:
         cmd.append("--llm")
     env = {"USE_LSTM": "1"} if a.lstm else None
@@ -494,6 +511,123 @@ def cmd_db(a) -> int:
     return run(cmd, title=f"🗄️  SQLite memory: {a.db_cmd or 'build'}")
 
 
+def cmd_intel(a) -> int:
+    from config import Config
+    from rl.algo import brain_prefix
+    from rl.introspect import (
+        best_run, brain_report, cognition_stats, disk_usage, training_stats,
+    )
+    cfg = Config()
+
+    # Resolve the current brain family + its latest checkpoint.
+    try:
+        from doom.campaign import campaign_metadata
+        meta = campaign_metadata(cfg.wad_path, cfg.maps[0], strafe=cfg.strafe)
+        n_actions = meta["num_actions"]
+    except Exception:
+        n_actions = 11
+    name_prefix = brain_prefix("campaign", n_actions, cfg.use_lstm,
+                               cfg.spatial_memory, cfg.depth_perception, cfg.automap,
+                               cfg.frame_stack, cfg.game_vars)
+    from rl.train import _latest_checkpoint
+    brain_path = _latest_checkpoint(cfg, name_prefix)
+
+    console.print(Panel("🧠  HeLLMind — Intelligence Report", border_style=EMBER[1], style="bold"))
+
+    # ---- Neural network (the proof) ----
+    rep = brain_report(brain_path) if brain_path else {"exists": False}
+    if not rep.get("exists"):
+        console.print(Panel("No trained brain found in this vault yet — run `doom-cli train`.",
+                            title="🔬 Neural network", border_style=EMBER[3]))
+    elif rep.get("error"):
+        console.print(Panel(f"Brain present but unreadable: {rep['error']}",
+                            title="🔬 Neural network", border_style=EMBER[3]))
+    else:
+        t = Table(title="🔬 Neural network — proof it's a real CNN", border_style=EMBER[2])
+        t.add_column("property"); t.add_column("value", style="bold")
+        t.add_row("policy", rep["policy_class"])
+        t.add_row("total parameters", f"{rep['total_params']:,}")
+        t.add_row("trainable parameters", f"{rep['trainable_params']:,}")
+        t.add_row("weight-bearing layers (depth)", str(rep["depth"]))
+        t.add_row("input (observation)", str(rep["obs_shape"]))
+        t.add_row("output (actions)", str(rep["n_actions"]))
+        t.add_row("device", rep["device"])
+        t.add_row("file size", f"{rep['size_mb']} MB")
+        console.print(t)
+        arch = Table(title="Architecture (the layers)", border_style=EMBER[3])
+        arch.add_column("#"); arch.add_column("layer"); arch.add_column("params", justify="right")
+        for i, lay in enumerate(rep["weight_layers"]):
+            arch.add_row(str(i), lay["desc"], f"{lay['params']:,}")
+        console.print(arch)
+
+    # ---- Training ----
+    ts = training_stats(cfg.checkpoint_dir, name_prefix)
+    br = best_run(cfg.memory_dir)
+    tr = Table(title="📈 Training", border_style=EMBER[2])
+    tr.add_column("metric"); tr.add_column("value", style="bold")
+    tr.add_row("total steps trained", f"{ts['total_steps']:,}")
+    tr.add_row("checkpoints saved", str(ts["checkpoints"]))
+    if br:
+        m = br.get("metrics", {})
+        tr.add_row("best run score", f"{br['score']:.3f} ({br['source']}, iter {br.get('iter')})")
+        if m:
+            tr.add_row("  └ at that run", f"explored={m.get('explored_fraction',0):.0%} "
+                       f"kills={m.get('kills_per_episode',0):.2f} exit={m.get('exit_rate',0):.0%}")
+    console.print(tr)
+
+    # ---- Cognitive memory ----
+    cg = cognition_stats(cfg.memory_dir)
+    cm = Table(title="🧩 Cognitive memory (accumulated)", border_style=EMBER[2])
+    cm.add_column("store"); cm.add_column("count", style="bold")
+    cm.add_row("episode events", f"{cg['events']:,}")
+    cm.add_row("lessons", str(cg["lessons"]))
+    cm.add_row("hypotheses", f"{cg['hypotheses']} ({cg['confirmed_hypotheses']} confirmed)")
+    cm.add_row("experiments", str(cg["experiments"]))
+    cm.add_row("learned (proven) knobs", str(cg["learned_knobs"]))
+    cm.add_row("frontier cells (Go-Explore)", str(cg["frontier_cells"]))
+    cm.add_row("maps with known exit", str(cg["exits_known"]))
+    console.print(cm)
+
+    # ---- Disk ----
+    du = disk_usage(cfg)
+    dk = Table(title="💾 Disk usage", border_style=EMBER[2])
+    dk.add_column("component"); dk.add_column("size", style="bold")
+    dk.add_row("brains (checkpoints)", f"{du['checkpoints_mb']} MB")
+    dk.add_row("cognitive memory", f"{du['memory_mb']} MB")
+    dk.add_row("vault (everything)", f"{du['vault_total_mb']} MB")
+    console.print(dk)
+    return 0
+
+
+def cmd_learned(a) -> int:
+    from config import Config
+    from writer.learned_config import LearnedConfig
+    from writer.memory_policy import adopt_improved_experiments
+    cfg = Config()
+    adopt_improved_experiments(cfg.memory_dir)  # pull in any new "improved" verdicts
+    rec = LearnedConfig(cfg.memory_dir).load()
+    if not rec:
+        console.print(Panel("No proven reward knobs yet — run experiments that get an "
+                            "'improved' verdict (doom-cli experiment / research).",
+                            title="🧠 learned config", border_style=EMBER[3]))
+        return 0
+    console.print(Panel(f"{len(rec)} reward knob(s) the agent has PROVEN help — applied on "
+                        f"every train/auto boot.", title="🧠 learned config",
+                        border_style=EMBER[2]))
+    for k, v in rec.items():
+        console.print(f"  [bold]{k}[/bold] = {v.get('value')}   "
+                      f"[dim]({v.get('source')}, {v.get('verdict')}, "
+                      f"conf={v.get('confidence')})[/dim]")
+    return 0
+
+
+def cmd_bc(a) -> int:
+    cmd = [PY, "-m", "rl.bc", "--epochs", str(a.epochs)]
+    if a.demos:
+        cmd += ["--demos", a.demos]
+    return run(cmd, title="🎓 Behavioral cloning — learning from human demos")
+
+
 def cmd_eureka(a) -> int:
     cmd = [PY, "-m", "rl.eureka", "--generations", str(a.generations),
            "--pop", str(a.pop), "--steps", str(a.steps), "--episodes", str(a.episodes)]
@@ -516,7 +650,7 @@ def cmd_audit(a) -> int:
 def cmd_recall(a) -> int:
     from config import Config
     from writer import db as _db
-    from writer.recall import recall, recall_enemy, recall_region
+    from writer.recall import recall, recall_region
 
     cfg = Config()
     _db.build(cfg.memory_dir)
@@ -673,6 +807,9 @@ def build_parser() -> argparse.ArgumentParser:
     t.add_argument("--envs", type=int); t.add_argument("--fresh", action="store_true")
     t.add_argument("--spatial", action="store_true"); t.add_argument("--no-docs", action="store_true")
     t.add_argument("--depth", action="store_true", help="Depth-perception obs channel (forces --fresh).")
+    t.add_argument("--strafe", action="store_true", help="Add strafe actions (forces --fresh).")
+    t.add_argument("--game-vars", dest="game_vars", action="store_true", help="Feed HEALTH/AMMO into the policy (forces --fresh).")
+    t.add_argument("--automap", action="store_true", help="Native top-down automap channel (forces --fresh).")
     t.add_argument("--lstm", action="store_true", help="RecurrentPPO/LSTM policy (USE_LSTM).")
     t.add_argument("--rnd", action="store_true", help="Enable RND intrinsic curiosity (USE_RND=1).")
     t.set_defaults(fn=cmd_train)
@@ -686,16 +823,23 @@ def build_parser() -> argparse.ArgumentParser:
     e.add_argument("--lstm", action="store_true", help="Evaluate an LSTM brain (USE_LSTM).")
     e.add_argument("--stochastic", action="store_true",
                    help="Sample the policy (vs argmax) — for unconverged brains.")
+    e.add_argument("--temperature", type=float, default=None,
+                   help="Tempered sampling (e.g. 0.5): act on the learned distribution "
+                        "without the argmax-collapse. Overrides --stochastic.")
     e.set_defaults(fn=cmd_eval)
 
     au = sub.add_parser("auto"); au.add_argument("--iterations", type=int, default=5)
     au.add_argument("--steps", type=int, default=100000); au.add_argument("--map")
-    au.add_argument("--fresh", action="store_true")
+    au.add_argument("--fresh", "--clear", dest="fresh", action="store_true",
+                    help="Start over from zero (fresh brain + cleared history). Default = resume.")
     au.add_argument("--spatial", action="store_true", help="Spatial memory obs (forces --fresh).")
     au.add_argument("--rnd", action="store_true", help="RND intrinsic curiosity.")
     au.add_argument("--goexplore", action="store_true", help="Go-Explore frontier-goal resets.")
     au.add_argument("--depth", action="store_true", help="Depth-perception obs channel.")
-    au.add_argument("--resume", action="store_true", help="Continue a prior auto session.")
+    au.add_argument("--strafe", action="store_true", help="Add strafe actions (forces --fresh).")
+    au.add_argument("--game-vars", dest="game_vars", action="store_true", help="Feed HEALTH/AMMO into the policy.")
+    au.add_argument("--automap", action="store_true", help="Native top-down automap channel (forces --fresh).")
+    au.add_argument("--resume", action="store_true", help="(default now) Continue prior session.")
     au.add_argument("--llm", action="store_true", help="LLM-refined reward proposals.")
     au.add_argument("--lstm", action="store_true", help="RecurrentPPO/LSTM policy.")
     au.set_defaults(fn=cmd_auto)
@@ -724,6 +868,14 @@ def build_parser() -> argparse.ArgumentParser:
     au_p.add_argument("--json", action="store_true", dest="json")
     au_p.add_argument("--plot", action="store_true", help="Show matplotlib charts")
     au_p.set_defaults(fn=cmd_audit)
+
+    sub.add_parser("intel", help="Intelligence report: NN architecture/params/depth, training, memory, disk").set_defaults(fn=cmd_intel)
+    sub.add_parser("learned", help="Show reward knobs the agent has PROVEN help").set_defaults(fn=cmd_learned)
+
+    bc_p = sub.add_parser("bc", help="Behavioral cloning from human SPECTATOR demos")
+    bc_p.add_argument("--demos", default=None, help="Demos dir (default: <memory>/demos)")
+    bc_p.add_argument("--epochs", type=int, default=10)
+    bc_p.set_defaults(fn=cmd_bc)
 
     eu = sub.add_parser("eureka", help="LLM-guided evolutionary reward search")
     eu.add_argument("--generations", type=int, default=3)

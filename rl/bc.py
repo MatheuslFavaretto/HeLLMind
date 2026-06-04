@@ -1,0 +1,177 @@
+"""Behavioral cloning from human SPECTATOR demos — bootstrap the agent with a real success.
+
+The exit is a near-impossible accidental discovery (reward is ~zero until the agent first
+stumbles onto it). The classic fix is to SHOW it once: a human plays a few episodes that
+reach the exit, we record (observation, action) pairs, and supervised-train the policy to
+imitate them. The RL run then *continues* from a brain that already knows roughly how to get
+there — turning an impossible exploration problem into a fine-tuning one.
+
+Pipeline:
+    1. record  — `scripts/record_demo.py` (ViZDoom SPECTATOR; a human plays, we log).
+    2. clone   — `python -m rl.bc --demos <dir>` supervised-trains the PPO policy on them.
+    3. train   — `doom-cli train --resume` continues with RL from the cloned brain.
+
+The pure pieces (button→action mapping, demo IO, the BC loss) are unit-tested; building the
+SB3 policy + the supervised loop reuse the same network the RL uses.
+"""
+import argparse
+import glob
+import os
+from typing import Optional, Sequence, Tuple
+
+import numpy as np
+
+
+def nearest_action(pressed: Sequence[int], actions: Sequence[Sequence[int]]) -> int:
+    """Map a raw pressed-button vector (what a human held) to the closest discrete COMBINED
+    action index. Exact match wins; otherwise the action sharing the most buttons (and adding
+    the fewest extra) — so 'forward+attack' held maps to the FWD+ATK combo, not bare ATK."""
+    pressed = [1 if b else 0 for b in pressed]
+    best_i, best_score = 0, -1e9
+    for i, act in enumerate(actions):
+        act = [1 if b else 0 for b in act]
+        overlap = sum(p and a for p, a in zip(pressed, act))
+        missing = sum(p and not a for p, a in zip(pressed, act))   # human pressed, action lacks
+        extra = sum(a and not p for p, a in zip(pressed, act))     # action adds, human didn't
+        score = 2 * overlap - missing - extra                      # reward overlap, punish mismatch
+        if score > best_score:
+            best_i, best_score = i, score
+    return best_i
+
+
+# ---------------------------------------------------------------------------
+# Demo IO  (one .npz per episode: obs uint8 [N,H,W,C], actions int [N])
+# ---------------------------------------------------------------------------
+
+def save_demo(path: str, obs: np.ndarray, actions: np.ndarray) -> None:
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    np.savez_compressed(path, obs=obs.astype(np.uint8), actions=actions.astype(np.int64))
+
+
+def load_demos(demos_dir: str) -> Tuple[np.ndarray, np.ndarray]:
+    """Concatenate every .npz demo in a dir into (obs, actions). Empty -> (0-len arrays)."""
+    files = sorted(glob.glob(os.path.join(demos_dir, "*.npz")))
+    obs_chunks, act_chunks = [], []
+    for f in files:
+        with np.load(f) as d:
+            if "obs" in d and "actions" in d and len(d["actions"]) > 0:
+                obs_chunks.append(d["obs"])
+                act_chunks.append(d["actions"])
+    if not obs_chunks:
+        return np.empty((0,), dtype=np.uint8), np.empty((0,), dtype=np.int64)
+    return np.concatenate(obs_chunks, axis=0), np.concatenate(act_chunks, axis=0)
+
+
+def bc_cross_entropy(logits, targets):
+    """Behavioral-cloning loss: cross-entropy of the policy's action logits vs the human's
+    actions. Pure torch so it's unit-testable without ViZDoom."""
+    import torch.nn.functional as F
+    return F.cross_entropy(logits, targets)
+
+
+# ---------------------------------------------------------------------------
+# Orchestration  (build the SB3 policy, supervised-train it, save the brain)
+# ---------------------------------------------------------------------------
+
+def behavioral_clone(cfg, demos_dir: str, epochs: int = 10, batch_size: int = 64,
+                     lr: float = 3e-4) -> Optional[str]:
+    """Supervised-train the PPO policy to imitate the demos; save it as this vault's brain
+    so `train --resume` continues from it. Returns the saved path (or None if no demos)."""
+    import torch
+    from stable_baselines3 import PPO
+    from stable_baselines3.common.vec_env import DummyVecEnv, VecFrameStack, VecTransposeImage
+
+    from doom.campaign import campaign_metadata, make_campaign_env
+    from rl.algo import brain_prefix
+
+    obs, actions = load_demos(demos_dir)
+    if len(actions) == 0:
+        print(f"[bc] no demos found in {demos_dir}")
+        return None
+    print(f"[bc] {len(actions)} (obs, action) pairs from {demos_dir}")
+
+    # Build a vec env matching the training obs pipeline, so the policy shape is identical.
+    from rl.algo import policy_name
+    venv = DummyVecEnv([make_campaign_env(cfg, cfg.maps[0], 0)])
+    venv = VecFrameStack(VecTransposeImage(venv), n_stack=cfg.frame_stack)
+    model = PPO(policy_name(cfg.use_lstm, cfg.game_vars), venv, verbose=0, seed=cfg.seed)
+    policy = model.policy
+    optimizer = torch.optim.Adam(policy.parameters(), lr=lr)
+    device = policy.device
+
+    # Match the recorded obs to the policy input. The recorder captures only PIXELS
+    # ([N,H,W,C_rec], usually 1 channel); the policy expects framestacked channels-first
+    # [base_ch × frame_stack, H, W], where base_ch may be >1 (spatial/depth/automap). We:
+    #   1) pad the missing base channels with ZEROS (an unrecorded spatial grid starts empty
+    #      anyway — the human demo teaches pixels→action; RL learns the extra channels later),
+    #   2) TILE the frame across the stack (not repeat — tile preserves the [..ch0,ch1..]
+    #      per-frame ordering VecFrameStack uses).
+    # The policy obs may be an image Box OR a Dict {image, vars} (game_vars). Resolve the
+    # image sub-space and the vars sub-space (if any).
+    ospace = model.observation_space
+    if cfg.game_vars:
+        img_space, vars_space = ospace["image"], ospace["vars"]
+    else:
+        img_space, vars_space = ospace, None
+    c_total = int(img_space.shape[0])           # base_ch × frame_stack
+    base_ch = max(1, c_total // cfg.frame_stack)
+    n = len(actions)
+    idx = np.arange(n)
+    for ep in range(epochs):
+        np.random.shuffle(idx)
+        total = 0.0
+        for s in range(0, n, batch_size):
+            b = idx[s:s + batch_size]
+            frames = obs[b].astype(np.float32)                  # [B,H,W,C_rec]
+            frames = np.transpose(frames, (0, 3, 1, 2))         # [B,C_rec,H,W]
+            if frames.shape[1] < base_ch:                       # pad unrecorded channels
+                pad = np.zeros((frames.shape[0], base_ch - frames.shape[1],
+                                frames.shape[2], frames.shape[3]), dtype=frames.dtype)
+                frames = np.concatenate([frames, pad], axis=1)  # [B, base_ch, H, W]
+            elif frames.shape[1] > base_ch:
+                frames = frames[:, :base_ch]
+            stacked = np.tile(frames, (1, cfg.frame_stack, 1, 1))  # [B, base_ch*stack, H,W]
+            img_t = torch.as_tensor(stacked, device=device)
+            if vars_space is not None:
+                # Demos lack game-vars (pixel-only); feed NEUTRAL full-health so cloning
+                # learns the visuo-motor map and RL fills in the health behaviour later.
+                neutral = np.ones((len(b), *vars_space.shape), dtype=np.float32)
+                obs_t = {"image": img_t, "vars": torch.as_tensor(neutral, device=device)}
+            else:
+                obs_t = img_t
+            act_t = torch.as_tensor(actions[b], device=device).long()
+            dist = policy.get_distribution(obs_t)
+            logits = dist.distribution.logits
+            loss = bc_cross_entropy(logits, act_t)
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            total += loss.item() * len(b)
+        print(f"[bc] epoch {ep + 1}/{epochs}  loss={total / n:.4f}")
+
+    meta = campaign_metadata(cfg.wad_path, cfg.maps[0], strafe=cfg.strafe)
+    name_prefix = brain_prefix("campaign", meta["num_actions"], cfg.use_lstm,
+                               cfg.spatial_memory, cfg.depth_perception, cfg.automap,
+                               cfg.frame_stack, cfg.game_vars)
+    os.makedirs(cfg.checkpoint_dir, exist_ok=True)
+    out = os.path.join(cfg.checkpoint_dir, f"{name_prefix}_final.zip")
+    model.save(out)
+    venv.close()
+    print(f"[bc] saved cloned brain -> {out}")
+    return out
+
+
+def main() -> None:
+    from config import Config
+    p = argparse.ArgumentParser(description="Behavioral cloning from human demos.")
+    p.add_argument("--demos", default=None, help="Demos dir (default: <memory>/demos).")
+    p.add_argument("--epochs", type=int, default=10)
+    p.add_argument("--batch-size", type=int, default=64)
+    args = p.parse_args()
+    cfg = Config()
+    demos_dir = args.demos or os.path.join(cfg.memory_dir, "demos")
+    behavioral_clone(cfg, demos_dir, epochs=args.epochs, batch_size=args.batch_size)
+
+
+if __name__ == "__main__":
+    main()

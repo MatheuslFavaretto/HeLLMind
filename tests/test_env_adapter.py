@@ -1,8 +1,10 @@
 """Tests for doom.env_adapter — Phase 6 generalisation interface."""
+from types import SimpleNamespace
+
 import numpy as np
 import pytest
 
-from doom.env_adapter import GymAdapter, EnvAdapter, make_adapter, register_adapter
+from doom.env_adapter import DoomCampaignAdapter, GymAdapter, EnvAdapter, make_adapter, register_adapter
 
 
 # ---------------------------------------------------------------------------
@@ -164,3 +166,60 @@ def test_telemetry_types():
     assert isinstance(t["coverage"], float)
     assert isinstance(t["health"], float)
     assert isinstance(t["length"], int)
+
+
+# ---------------------------------------------------------------------------
+# DoomCampaignAdapter — regression: it must CONSTRUCT (factory thunk) and read the
+# real nested info shape `{"map", "doom": {...}}`, not the flat keys it never produced.
+# ---------------------------------------------------------------------------
+
+class _FakeCampaignEnv:
+    observation_space = _FakeObsSpace()
+    action_space = _FakeActionSpace()
+    button_names = ["FWD", "ATK"]
+
+    def reset(self, **kwargs):
+        return np.zeros(1), {"map": "MAP01", "doom": {}}
+
+    def step(self, action):
+        info = {"map": "MAP01", "doom": {
+            "deltas": {"killcount": 1},
+            "levels": {"health": 80.0, "ammo2": 25.0},
+            "terminal": "exit",
+            "coverage_cells": 12,
+        }}
+        return np.zeros(1), 1.0, True, False, info
+
+    def close(self):
+        pass
+
+
+def test_doom_adapter_constructs_and_maps_real_info(monkeypatch):
+    # make_campaign_env is a factory: it returns a thunk that builds the env.
+    monkeypatch.setattr("doom.campaign.make_campaign_env",
+                        lambda *a, **k: (lambda: _FakeCampaignEnv()))
+    cfg = SimpleNamespace(maps=["MAP01"])
+    ad = DoomCampaignAdapter(cfg)
+    assert isinstance(ad, EnvAdapter)
+    ad.reset()
+    ad.step(0)
+    t = ad.telemetry()
+    assert t["type"] == "exit"          # read from info["doom"]["terminal"]
+    assert t["map"] == "MAP01"
+    assert t["kills"] == 1              # accumulated from per-step killcount delta
+    assert t["coverage"] == 12
+    assert t["health"] == 80.0
+    assert t["length"] == 1
+    assert ad.button_names() == ["FWD", "ATK"]
+
+
+def test_doom_adapter_kills_accumulate_over_steps(monkeypatch):
+    monkeypatch.setattr("doom.campaign.make_campaign_env",
+                        lambda *a, **k: (lambda: _FakeCampaignEnv()))
+    ad = DoomCampaignAdapter(SimpleNamespace(maps=["MAP01"]))
+    ad.reset()
+    ad.step(0); ad.step(0); ad.step(0)
+    assert ad.telemetry()["kills"] == 3
+    assert ad.telemetry()["length"] == 3
+    ad.reset()                          # reset clears the accumulators
+    assert ad.telemetry()["kills"] == 0

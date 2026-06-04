@@ -4,7 +4,36 @@ Regression: a spatial-memory brain (2 obs channels) and a plain brain (1 channel
 shared the name `ppo_campaign_a11` and cross-loaded → hard obs-shape crash on eval/resume.
 The `_sp` tag must keep the families apart, exactly like `_lstm`.
 """
-from rl.algo import brain_prefix, depth_tag, policy_tag, spatial_tag
+from rl.algo import automap_tag, brain_prefix, depth_tag, policy_tag, spatial_tag
+
+
+def test_automap_tag_on_off():
+    assert automap_tag(True) == "_am"
+    assert automap_tag(False) == ""
+
+
+def test_automap_brain_distinct_and_composes():
+    assert brain_prefix("campaign", 11, False, automap=True) == "ppo_campaign_a11_am"
+    # all obs-shape channels compose into one unambiguous family name
+    full = brain_prefix("campaign", 11, True, spatial_memory=True,
+                        depth_perception=True, automap=True)
+    assert full == "ppo_campaign_a11_lstm_sp_dp_am"
+
+
+def test_framestack_tag_default_untagged():
+    from rl.algo import framestack_tag
+    assert framestack_tag(4) == ""          # default stays untagged (no rename of old brains)
+    assert framestack_tag(2) == "_fs2"
+    assert framestack_tag(1) == "_fs1"
+
+
+def test_framestack_changes_brain_name():
+    # A different frame_stack changes the obs shape -> must not collide with the default.
+    default = brain_prefix("campaign", 11, False, frame_stack=4)
+    fs2 = brain_prefix("campaign", 11, False, frame_stack=2)
+    assert default == "ppo_campaign_a11"
+    assert fs2 == "ppo_campaign_a11_fs2"
+    assert default != fs2
 
 
 def test_spatial_tag_on_off():

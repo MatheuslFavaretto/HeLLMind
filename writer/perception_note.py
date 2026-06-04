@@ -6,7 +6,6 @@ reading the knowledge graph — and to the LLM when it generates lessons.
     python -m writer.perception_note
 """
 import os
-from datetime import datetime, timezone
 
 
 CONTENT = """\

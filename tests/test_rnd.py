@@ -1,5 +1,4 @@
 """Tests for doom.rnd — Random Network Distillation exploration bonus."""
-import pytest
 import numpy as np
 from doom.rnd import RNDModule
 

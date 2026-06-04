@@ -2,7 +2,7 @@
 # Diagnostic: can the pipeline learn to SHOOT when enemies are always present?
 # Dense-combat scenario (defend_the_center), fresh, pro-combat shaping.
 set -e
-cd /Users/matheusfavaretto/Documents/labs/poc-doom-obisidyan
+cd "$(dirname "$0")/.."
 PY=.venv/bin/python
 CK=./.cache/dense
 rm -rf "$CK"; mkdir -p "$CK"

@@ -38,13 +38,13 @@ def main() -> None:
     cfg.docs_enabled = False
     cfg.memory_enabled = False
     if cfg.campaign:
-        meta = campaign_metadata(cfg.wad_path, cfg.maps[0])
+        meta = campaign_metadata(cfg.wad_path, cfg.maps[0], strafe=cfg.strafe)
         name_prefix = brain_prefix("campaign", meta["num_actions"], cfg.use_lstm,
-                                   cfg.spatial_memory, cfg.depth_perception)
+                                   cfg.spatial_memory, cfg.depth_perception, cfg.automap, cfg.frame_stack, cfg.game_vars)
     else:
         meta = probe_env_metadata(cfg.scenario, cfg.frame_skip, cfg.resolution)
         name_prefix = brain_prefix(cfg.scenario, meta["num_actions"], cfg.use_lstm,
-                                   cfg.spatial_memory, cfg.depth_perception)
+                                   cfg.spatial_memory, cfg.depth_perception, cfg.automap, cfg.frame_stack, cfg.game_vars)
 
     ckpts = _checkpoints(cfg, name_prefix)
     if len(ckpts) < 2:

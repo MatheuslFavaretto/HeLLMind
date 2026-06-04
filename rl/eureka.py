@@ -127,7 +127,7 @@ def propose_candidates(cfg: Config, base_env: Dict[str, str], metrics: dict,
                               + " ".join(f"{k}={h['env'].get(k)}" for k in EUREKA_BOUNDS
                                          if k in h.get("env", {})))
         user = (
-            f"Current weights:\n" + "\n".join(f"  {k}={base_env.get(k)}" for k in EUREKA_BOUNDS) +
+            "Current weights:\n" + "\n".join(f"  {k}={base_env.get(k)}" for k in EUREKA_BOUNDS) +
             f"\n\nLatest metrics: explored={metrics.get('explored_fraction',0):.0%} "
             f"exit_rate={metrics.get('exit_rate',0):.0%} "
             f"kills={metrics.get('kills_per_episode',0):.2f} "
@@ -191,7 +191,8 @@ def evolve(cfg: Config, doom_map: str, generations: int, pop_size: int,
             print(f"[eureka] gen {gen} cand {ci}: training {steps} steps...")
             try:
                 train_chunk(full, doom_map, steps, fresh)
-                metrics = eval_brain(full, episodes)
+                temp = cfg.eval_temperature if cfg.eval_temperature > 0 else None
+                metrics = eval_brain(full, episodes, temperature=temp)
             except Exception as e:
                 print(f"[eureka] candidate failed ({type(e).__name__}): {e}")
                 continue

@@ -5,11 +5,7 @@ import numpy as np
 
 from rl.autonomous import BOUNDS, llm_propose, propose, propose_next, score
 from config import Config
-from rl.campaign_callbacks import (
-    combined_map_weights,
-    frontier_step_weights,
-    map_step_weights,
-)
+from rl.campaign_callbacks import combined_map_weights, frontier_step_weights
 from instrumentation.stats_tracker import StatsTracker
 
 
@@ -140,11 +136,14 @@ def test_subprocess_env_coerces_floats_to_str():
     assert all(isinstance(v, str) for v in out.values())  # every value subprocess-safe
 
 
-def test_propose_next_heuristic_only_matches_propose():
+def test_propose_next_heuristic_only_matches_propose(tmp_path):
+    # With no LLM and an EMPTY memory (no death history), propose_next is the pure heuristic.
+    cfg = Config()
+    cfg.memory_dir = str(tmp_path)   # isolate: no events -> memory policy stays silent
     env = {k: str(hi) for k, (lo, hi) in BOUNDS.items()}
     m = {"explored_fraction": 0.1, "exit_rate": 0.0,
          "kills_per_episode": 0.0, "shooting_accuracy": 0.0}
-    assert propose_next(Config(), dict(env), m, use_llm=False) == propose(dict(env), m)
+    assert propose_next(cfg, dict(env), m, use_llm=False) == propose(dict(env), m)
 
 
 def test_propose_next_layers_llm_on_top_of_heuristic(monkeypatch):
@@ -186,3 +185,26 @@ def test_exit_rate_and_true_coverage():
     cov = snap["map_coverage"]
     assert cov["source"] == "walls"
     assert 0.0 < cov["explored_fraction"] <= 1.0
+
+
+def test_write_log_handles_non_contiguous_iters(tmp_path):
+    # Regression: failed iterations are skipped, so history iter numbers have GAPS (0,2,4).
+    # write_log must index by list position, not history[iter-1], or it IndexErrors.
+    import os
+    from rl.autonomous import write_log
+    cfg = Config()
+    cfg.memory_dir = str(tmp_path)
+    cfg.vault_path = str(tmp_path)
+    os.makedirs(os.path.join(str(tmp_path), cfg.dir_index), exist_ok=True)
+    base_m = {"explored_fraction": 0.05, "exit_rate": 0.0,
+              "kills_per_episode": 1.5, "shooting_accuracy": 0.0}
+    hist = [
+        {"iter": 0, "score": 0.30, "kept": True, "reason": "baseline",
+         "env": {"COVERAGE_REWARD": "2.0"}, "metrics": base_m},
+        {"iter": 2, "score": 0.30, "kept": True, "reason": "adjust",
+         "env": {"COVERAGE_REWARD": "2.4"}, "metrics": base_m},
+        {"iter": 4, "score": 0.46, "kept": True, "reason": "adjust",
+         "env": {"COVERAGE_REWARD": "2.8"}, "metrics": {**base_m, "explored_fraction": 0.06}},
+    ]
+    write_log(cfg, hist)  # must not raise IndexError
+    assert os.path.exists(os.path.join(str(tmp_path), cfg.dir_index, "Autonomy Log.md"))

@@ -1,5 +1,4 @@
 """Tests for writer.behavior — behavioral flag detectors."""
-import pytest
 
 from writer.behavior import (
     BehaviorFlag,

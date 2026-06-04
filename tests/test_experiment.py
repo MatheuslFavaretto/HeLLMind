@@ -1,8 +1,6 @@
 """Tests for rl.experiment — hypothesis-driven A/B experiment engine."""
 from types import SimpleNamespace
-from unittest.mock import patch
 
-import pytest
 
 from rl.experiment import (
     ExperimentPlan,
@@ -11,8 +9,6 @@ from rl.experiment import (
     record_result,
     write_experiment_note,
 )
-from writer.behavior import BehaviorFlag
-from writer.hypothesize import generate
 
 
 def _cfg(tmp_path):

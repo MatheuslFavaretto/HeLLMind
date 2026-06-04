@@ -5,7 +5,6 @@ resolution) and run only a handful of steps, so they stay fast. Skipped automati
 where ViZDoom or its scenarios/WAD aren't available (e.g. a minimal CI image), so the
 pure-logic suite still runs everywhere.
 """
-import numpy as np
 import pytest
 
 vzd = pytest.importorskip("vizdoom")

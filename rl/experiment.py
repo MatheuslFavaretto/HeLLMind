@@ -17,7 +17,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 
 PY = sys.executable
 
@@ -272,6 +272,19 @@ def record_result(cfg, result: ExperimentResult) -> None:
         notes=result.notes,
     )
 
+    # Close the loop: a PROVEN improvement is adopted into the learned config, so it persists
+    # across sessions (training/auto overlay it on boot). This is what makes the agent
+    # accumulate what it proved, instead of forgetting it every run.
+    if result.verdict == "improved":
+        from writer.learned_config import LearnedConfig
+        changed = {k: v for k, v in result.plan.experimental_env.items()
+                   if result.plan.control_env.get(k) != v}
+        if changed:
+            LearnedConfig(cfg.memory_dir).adopt(
+                changed, source=f"experiment H{result.plan.hypothesis_id}",
+                verdict="improved", confidence=result.confidence)
+            print(f"[experiment] adopted into learned_config: {changed}")
+
 
 def write_experiment_note(cfg, result: ExperimentResult) -> str:
     """Write `70-hypotheses/Experiment-H<id>.md` to the vault. Returns path."""
@@ -321,7 +334,7 @@ def write_experiment_note(cfg, result: ExperimentResult) -> str:
         lines.append(f"| {seed} | {ctrl_v} | {exp_v} |")
     lines += [
         "",
-        f"## Link",
+        "## Link",
         f"← [[Hypotheses]] (H{hid})",
         "",
     ]
@@ -376,7 +389,7 @@ def main() -> None:
         print("[experiment] DRY RUN — would test:")
         print(f"  Hypothesis H{plan.hypothesis_id}: {plan.title}")
         print(f"  Seeds: {plan.seeds}  Steps: {plan.steps}")
-        print(f"  Control env delta (vs current .env):")
+        print("  Control env delta (vs current .env):")
         for k, v in plan.experimental_env.items():
             if plan.control_env.get(k) != v:
                 print(f"    {k}: {plan.control_env.get(k)} → {v}")
