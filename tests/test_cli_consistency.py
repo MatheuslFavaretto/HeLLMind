@@ -37,3 +37,26 @@ def test_help_cards_are_well_formed():
         assert len(card) == 5, f"malformed card: {card}"
         group, name, short, long, example = card
         assert name in example, f"{name}: example '{example}' doesn't run the command"
+
+
+# --------------------------- interactive shell dispatch ---------------------------
+def test_resolve_slash_builtins():
+    known = {c[1] for c in doom_cli.COMMANDS}
+    assert doom_cli.resolve_slash("/help", known) == ("builtin", "help")
+    assert doom_cli.resolve_slash("/exit", known) == ("builtin", "exit")
+    assert doom_cli.resolve_slash("/q", known) == ("builtin", "exit")
+    assert doom_cli.resolve_slash("/clear", known) == ("builtin", "clear")
+
+
+def test_resolve_slash_real_command():
+    known = {c[1] for c in doom_cli.COMMANDS}
+    assert doom_cli.resolve_slash("/benchmark", known) == ("command", "benchmark")
+    assert doom_cli.resolve_slash("watch", known) == ("command", "watch")  # leading / optional
+
+
+def test_resolve_slash_suggests_on_typo():
+    known = {c[1] for c in doom_cli.COMMANDS}
+    kind, payload = doom_cli.resolve_slash("/benchmrk", known)
+    assert kind == "suggest" and "benchmark" in payload
+    kind, payload = doom_cli.resolve_slash("/zzzzz", known)
+    assert kind == "suggest" and payload == []

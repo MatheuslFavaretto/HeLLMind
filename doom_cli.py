@@ -30,6 +30,22 @@ BANNER = r"""
  ╚═╝  ╚═╝╚══════╝╚══════╝╚══════╝╚═╝     ╚═╝╚═╝╚═╝  ╚═══╝╚═════╝
 """
 
+# Doomguy — the marine's HUD face, used as the backdrop of the interactive shell.
+DOOMGUY = r"""
+        ▄▄███████▄▄
+      ▄███████████████▄
+     ███▀▀     ▀▀▀███▄
+    ███   ▄▄   ▄▄   ███
+    ██   ▟██▖ ▗██▙   ██
+    ██    ▀▀   ▀▀    ██
+    ███     ▄▄     ▗███
+    ▝███▖ ▜█████▛ ▗███▘
+      ▀███▄▄▄▄▄▄▄███▀
+     ▄▄█████████████▄▄
+   ▟████  ███████  ████▙
+   ██████▄▄███████▄▄██████
+"""
+
 # (group, name, one-liner, longer explanation, example)
 COMMANDS = [
     ("▶ Run", "diagnose", "Full diagnostic: eval + behavior flags + next step recommendation",
@@ -164,6 +180,10 @@ COMMANDS = [
      "Creates 20-concepts/Concept - Agent Perception.md explaining how the agent sees "
      "the world: pixels, game vars, objects_info, what it does/doesn't know.",
      "doom-cli perception"),
+    ("▶ Run", "shell", "Interactive chat-style REPL with the Doomguy backdrop",
+     "Starts a chat-like prompt: type /command to run it, /help for the menu, /exit to leave. "
+     "Unknown commands get suggestions. The whole CLI, one slash away.",
+     "doom-cli shell"),
     ("🛠 Tools", "gif", "Render a gameplay GIF + screenshots from the brain",
      "Builds an animated GIF straight from the observation tensor (agent view + spatial "
      "memory, no screen recording) plus a few PNG stills for the README.",
@@ -233,6 +253,87 @@ def menu(full: bool = False) -> None:
     console.print(Align.center(Text(
         "doom-cli <command> -h   for that command's options    ·    "
         "-h / --help   for this screen", style="dim")))
+
+
+def resolve_slash(token: str, known: set):
+    """Resolve a typed slash-command token. Returns (kind, payload):
+      ('builtin', name)  for shell built-ins (help/exit/clear)
+      ('command', name)  for a real doom-cli command
+      ('suggest', [..])  for an unknown token (closest matches, possibly empty)
+    Pure + dependency-light so the shell's dispatch is unit-testable."""
+    import difflib
+    t = token.lstrip("/").strip().lower()
+    if t in ("help", "h", "?", "menu"):
+        return "builtin", "help"
+    if t in ("exit", "quit", "q"):
+        return "builtin", "exit"
+    if t in ("clear", "cls"):
+        return "builtin", "clear"
+    if t in known:
+        return "command", t
+    return "suggest", difflib.get_close_matches(t, known, n=3)
+
+
+def _doom_backdrop() -> None:
+    """Render the Doomguy ASCII 'background' + the shell title."""
+    art = Text()
+    lines = DOOMGUY.strip("\n").splitlines()
+    for i, line in enumerate(lines):
+        art.append(line + "\n", style=f"bold {EMBER[min(i // 2, len(EMBER) - 1)]}")
+    console.print(Align.center(art))
+    console.print(Align.center(Text.from_markup(
+        "[bold #ffd000]HeLLMind[/bold #ffd000] [dim]interactive shell · "
+        "rip and tear through the commands[/dim]")))
+    console.print()
+
+
+def cmd_shell(a) -> int:
+    """A chat-style REPL: type /command to run it, /help for the menu, /exit to leave."""
+    import shlex
+    known = {c[1] for c in COMMANDS}
+    console.clear()
+    _doom_backdrop()
+    console.print(Align.center(Text.from_markup(
+        "[dim]type [/dim][#ffd000]/help[/#ffd000][dim] · [/dim][#ffd000]/<command>[/#ffd000]"
+        "[dim] to run · [/dim][#ffd000]/exit[/#ffd000][dim] to quit[/dim]\n")))
+    while True:
+        try:
+            line = console.input("[bold #ff2d00]🔥 doom[/bold #ff2d00] [#ffd000]❯[/#ffd000] ").strip()
+        except (EOFError, KeyboardInterrupt):
+            console.print("\n[dim]rip and tear... until it is done. 👋[/dim]")
+            return 0
+        if not line:
+            continue
+        if not line.startswith("/"):
+            console.print("[dim]commands start with [/dim][#ffd000]/[/#ffd000][dim] — try "
+                          "[/dim][#ffd000]/help[/#ffd000]")
+            continue
+        try:
+            parts = shlex.split(line[1:])
+        except ValueError:
+            console.print("[red]couldn't parse that line[/red]")
+            continue
+        if not parts:
+            continue
+        cmd, rest = parts[0], parts[1:]
+        kind, payload = resolve_slash(cmd, known)
+        if kind == "builtin" and payload == "exit":
+            console.print("[dim]rip and tear... until it is done. 👋[/dim]")
+            return 0
+        if kind == "builtin" and payload == "help":
+            menu(full=False)
+            continue
+        if kind == "builtin" and payload == "clear":
+            console.clear(); _doom_backdrop(); continue
+        if kind == "suggest":
+            hint = (f"  did you mean: {', '.join('/' + n for n in payload)}?"
+                    if payload else "  type /help to see them all")
+            console.print(f"[red]unknown:[/red] [#ffd000]/{cmd}[/#ffd000]{hint}")
+            continue
+        # A real command: run it through the full CLI (subprocess = clean isolation).
+        console.rule(f"[bold #ff5a00]/{cmd}[/bold #ff5a00]", style="#7a0a00")
+        subprocess.run([PY, os.path.abspath(__file__), payload, *rest], cwd=ROOT)
+        console.print()
 
 
 # --------------------------------------------------------------------------- #
@@ -1043,6 +1144,8 @@ def build_parser() -> argparse.ArgumentParser:
     au.add_argument("--llm", action="store_true", help="LLM-refined reward proposals.")
     au.add_argument("--lstm", action="store_true", help="RecurrentPPO/LSTM policy.")
     au.set_defaults(fn=cmd_auto)
+
+    sub.add_parser("shell", help="Interactive chat-style REPL (type /command to run)").set_defaults(fn=cmd_shell)
 
     n = sub.add_parser("notes"); n.add_argument("--run"); n.add_argument("--model")
     n.set_defaults(fn=cmd_notes)
