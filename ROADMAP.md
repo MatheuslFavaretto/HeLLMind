@@ -10,16 +10,16 @@ the real gap — most "cognition" machinery already exists; it needs a stronger 
 
 Watching the bot: it ignores enemies, doesn't shoot, bangs on closed doors. Root causes found:
 
-- [ ] **`watch` shows the FROZEN argmax, not the learned policy.** 🟡 `eval` has `--temperature`
-  but `watch` is pure argmax → you're literally watching the collapsed (passive) policy.
-  **Fix:** add `--temperature` to `watch` so you see the real agent. *(quick win, do first)*
+- [x] **`watch` shows the FROZEN argmax** ✅ DONE — `watch` now defaults to tempered T=0.5 so
+  you see the real learned policy (`--temperature 0` for raw argmax).
 - [ ] **Doors have no reward signal.** USE exists only as the `FWD+USE` action (1 of 11), and
   nothing rewards opening a door → no gradient to learn it. **Fix options:** (a) auto-press USE
   every frame, (b) reward area-progress through a door, (c) add USE to more action combos.
-- [ ] **Decouple combat & exploration (champion architecture).** 🟡 ❌ One network juggles both.
-  Arnold (ViZDoom winner) used **separate nav + combat policies** with a gating signal
-  (enemy-on-screen from the labels buffer, which we already have). Build a 2-head / 2-policy
-  split routed by `is_enemy_visible`.
+  *(next wave — the remaining P0 gameplay fix)*
+- [x] **Decouple combat & exploration** 🟡 DONE (reward-level) — gated by enemy visibility:
+  combat focus when enemies on screen, exploration focus when clear. Per-mode telemetry
+  (`combat_engagement`) lets the coach tune each regime separately. ❌ Still ONE network —
+  the true two-policy split (champion architecture) is a later upgrade.
 - [ ] **Undertraining.** 50k steps is nothing. This is the compute gap — needs the long `auto`
   / Colab runs, not a code change.
 
@@ -27,8 +27,8 @@ Watching the bot: it ignores enemies, doesn't shoot, bangs on closed doors. Root
 
 ## 🟠 P1 — Prove it works (benchmark + multi-seed) — *from your roadmap*
 
-- [ ] **`doom-cli benchmark` (a.k.a. `performance`)** ❌ — no-arg command that runs the ablation
-  matrix simply and writes `results/{benchmark.csv,.json,.md,plots/}`:
+- [x] **`doom-cli benchmark`** ✅ DONE — no-arg ablation (baseline→rnd→memory→full × seeds),
+  writes `results/{benchmark.json,.csv,.md}` with mean±std. *(plots/ still TODO)* Matrix:
   | Config | PPO | RND | Memory | Coach | Knowledge |
   |---|---|---|---|---|---|
   | Baseline | ✅ | | | | |
@@ -36,8 +36,7 @@ Watching the bot: it ignores enemies, doesn't shoot, bangs on closed doors. Root
   | +Memory | ✅ | ✅ | ✅ | | |
   | Full | ✅ | ✅ | ✅ | ✅ | ✅ |
   Metrics: exploration %, kills, survival, exit-rate, reward, unique coverage.
-- [ ] **Multi-seed eval** 🟡 — `experiment` already runs seeds 42,123. Generalize to 5 seeds with
-  mean ± std ± CI so wins aren't luck.
+- [x] **Multi-seed eval** ✅ DONE — `benchmark` runs configurable seeds with mean ± std.
 - [ ] **Research dashboard** ❌ — `doom-cli report` → HTML with the curves.
 
 ---
@@ -105,9 +104,20 @@ Watching the bot: it ignores enemies, doesn't shoot, bangs on closed doors. Root
 
 ---
 
-## ▶️ Recommended order
+## ✅ Wave 1 — DONE (this pass)
 
-1. `watch --temperature` (5 min) — so you finally SEE the real agent, not the frozen argmax.
-2. `doom-cli benchmark` — the proof-it-works matrix (P1) — your highest-value roadmap item.
-3. Door reward + combat/exploration split (P0) — the actual gameplay fix.
-4. Assisted mode (your feedback loop) + long `auto` runs for the compute gap.
+- `watch --temperature` (see the real agent) · combat/exploration decoupling (reward-level) ·
+  per-mode telemetry so the coach tunes combat & exploration separately · `doom-cli benchmark`
+  (P1 multi-seed ablation) · auto tunes 5 more knobs incl. ENT_COEF (argmax-collapse) ·
+  Obsidian Autonomy Log shows the combat regime · fixed 4 blocking bugs (EPISODE_TIMEOUT
+  float, gif, db help, doom-cli maps) + tech debt.
+
+## ▶️ Next waves
+
+- **Wave 2 (P0+P2):** door reward (the gameplay fix) · frontier intelligence
+  (scoring/aging/prioritization) · automatic goal discovery (doors/keys/switches).
+- **Wave 3 (P4+P3):** auto-chain hypothesize→experiment inside `auto` · long-term knowledge
+  tiers (facts/hypotheses/validated).
+- **Wave 4 (P6+P7):** ablation report polish + plots · `doom-cli report` (HTML) ·
+  GIFs (initial vs trained) · `docs/research/` paper · assisted mode.
+- **Always-on:** long `auto`/Colab runs for the compute gap (the real exit-rate lever).
