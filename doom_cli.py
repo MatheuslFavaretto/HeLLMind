@@ -344,15 +344,28 @@ def _shell_welcome() -> None:
     console.print()
 
 
-def _shell_palette() -> None:
-    """A compact command palette — every command, grouped, scannable in one glance."""
+def _shell_palette(filter_text: str = "") -> None:
+    """A Claude-style slash menu: each command with its description, grouped. An optional
+    filter narrows it (so typing /be then the menu shows only matching commands)."""
+    from rich import box
+    f = filter_text.lstrip("/").strip().lower()
+    shown = 0
     for group in GROUP_ORDER:
-        names = [c[1] for c in COMMANDS if c[0] == group and c[1] != "shell"]
-        if not names:
+        rows = [(c[1], c[2]) for c in COMMANDS
+                if c[0] == group and c[1] != "shell" and (not f or c[1].startswith(f))]
+        if not rows:
             continue
-        chips = "  ".join(f"[#ffd000]/{n}[/#ffd000]" for n in names)
-        console.print(f"  [bold #ff9500]{group}[/bold #ff9500]")
-        console.print(f"    {chips}")
+        t = Table(box=box.SIMPLE, show_header=False, padding=(0, 1, 0, 2),
+                  title=f"[bold #ff9500]{group}[/bold #ff9500]", title_justify="left")
+        t.add_column(style="bold #ffd000", no_wrap=True)
+        t.add_column(style="#d8cbb8")
+        for name, desc in rows:
+            t.add_row(f"/{name}", desc)
+            shown += 1
+        console.print(t)
+    if not shown:
+        console.print(f"  [dim]no command starts with [/dim][#ffd000]/{f}[/#ffd000]\n")
+        return
     console.print("  [dim]tip: type the start of any name — [/dim]"
                   "[#ffd000]/bench[/#ffd000][dim] runs [/dim][#ffd000]/benchmark[/#ffd000]\n")
 
@@ -419,8 +432,11 @@ def cmd_shell(a) -> int:
         if kind == "builtin" and payload == "clear":
             console.clear(); _doom_backdrop(); _shell_welcome(); continue
         if kind == "suggest":
-            hint = (f"  did you mean: {', '.join('/' + n for n in payload)}?"
-                    if payload else "  — type /help to see them all")
+            if len(payload) > 1:
+                # Ambiguous prefix (e.g. /be) -> show the matching commands WITH descriptions.
+                console.print(); _shell_palette(cmd); continue
+            hint = (f"  did you mean: [#ffd000]/{payload[0]}[/#ffd000]?"
+                    if payload else "  — type / to see them all")
             console.print(f"  [red]unknown:[/red] [#ffd000]/{cmd}[/#ffd000]{hint}\n")
             continue
         # A real command: run it through the full CLI (subprocess = clean isolation).
