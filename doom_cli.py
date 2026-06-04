@@ -508,6 +508,8 @@ def cmd_db(a) -> int:
         cmd += ["--map", a.map_name]
     if a.lessons:
         cmd.append("--lessons")
+    if getattr(a, "runs", False):
+        cmd.append("--runs")
     return run(cmd, title=f"🗄️  SQLite memory: {a.db_cmd or 'build'}")
 
 
@@ -923,6 +925,7 @@ def build_parser() -> argparse.ArgumentParser:
     db_p.add_argument("--type", dest="event_type", default=None)
     db_p.add_argument("--map", dest="map_name", default=None)
     db_p.add_argument("--lessons", action="store_true")
+    db_p.add_argument("--runs", action="store_true")
     db_p.set_defaults(fn=cmd_db)
 
     cur = sub.add_parser("curriculum")

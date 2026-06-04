@@ -14,6 +14,7 @@ from writer.db import (
     query_hypotheses,
     query_lessons,
     query_maps,
+    query_runs,
     update_hypothesis_status,
 )
 from writer.memory_store import MemoryStore
@@ -59,6 +60,17 @@ def mem(tmp_path):
                    "updated": "2025-01-01T00:00:00+00:00",
                    "cells": {"0,0": 5, "1,0": 3},
                    "walls": [[0, 0, 100, 0]]}, f)
+
+    # Autonomy trail (auto-loop iterations) -> runs table
+    with open(os.path.join(memory_dir, "autonomy.jsonl"), "w") as f:
+        f.write(json.dumps({"iter": 1, "score": 0.11, "kept": True,
+                            "env": {"MAPS": "MAP01"},
+                            "metrics": {"explored_fraction": 0.11, "kills_per_episode": 1.7,
+                                        "mean_episode_length": 400}}) + "\n")
+        f.write(json.dumps({"iter": 2, "score": 0.07, "kept": False,
+                            "env": {"MAPS": "MAP01"},
+                            "metrics": {"explored_fraction": 0.07, "kills_per_episode": 2.5,
+                                        "mean_episode_length": 350}}) + "\n")
     return memory_dir
 
 
@@ -94,11 +106,25 @@ def test_build_populates_maps(mem):
     assert rows[0]["runs"] == 1
 
 
+def test_build_populates_runs(mem):
+    build(mem)
+    rows = query_runs(mem)
+    assert len(rows) == 2
+    names = {r["name"] for r in rows}
+    assert names == {"iter-001", "iter-002"}
+    top = next(r for r in rows if r["name"] == "iter-001")
+    cfgj = json.loads(top["config_json"])
+    assert cfgj["score"] == pytest.approx(0.11)
+    assert cfgj["kept"] is True
+    assert top["maps"] == "MAP01"
+
+
 def test_build_idempotent(mem):
     build(mem)
     build(mem)  # second build should not duplicate
     assert len(query_events(mem)) == 4
     assert len(query_lessons(mem)) == 1
+    assert len(query_runs(mem)) == 2
 
 
 # ---------------------------------------------------------------------------

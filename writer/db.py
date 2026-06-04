@@ -177,6 +177,41 @@ def build(memory_dir: str) -> int:
                 )
                 total += 1
 
+    # Runs (autonomy.jsonl) — one row per auto-loop iteration, full reload.
+    # The write-path is autonomy.jsonl (the resumable loop trail); this mirrors it
+    # into the queryable `runs` table so `db query` / experiment.py can join on it.
+    autonomy_path = os.path.join(memory_dir, "autonomy.jsonl")
+    if os.path.exists(autonomy_path):
+        con.execute("DELETE FROM runs")
+        with open(autonomy_path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                env = rec.get("env", {}) or {}
+                metrics = rec.get("metrics", {}) or {}
+                name = f"iter-{_to_int(rec.get('iter')) or 0:03d}"
+                con.execute(
+                    "INSERT OR REPLACE INTO runs"
+                    " (name, ts, total_steps, maps, config_json)"
+                    " VALUES (?, ?, ?, ?, ?)",
+                    (
+                        name,
+                        rec.get("ts", ""),
+                        _to_int(metrics.get("mean_episode_length")),
+                        env.get("MAPS", ""),
+                        json.dumps({"env": env, "metrics": metrics,
+                                    "score": rec.get("score"),
+                                    "kept": rec.get("kept"),
+                                    "reason": rec.get("reason", "")}),
+                    ),
+                )
+                total += 1
+
     # Maps (coverage/*.json) — full reload
     cov_dir = os.path.join(memory_dir, "coverage")
     if os.path.isdir(cov_dir):
@@ -254,6 +289,16 @@ def query_lessons(
         rows = con.execute(
             "SELECT * FROM lessons ORDER BY ts DESC LIMIT ?", (limit,)
         ).fetchall()
+    con.close()
+    return [dict(r) for r in rows]
+
+
+def query_runs(memory_dir: str, limit: int = 50) -> List[Dict[str, Any]]:
+    con = connect(memory_dir)
+    rows = con.execute(
+        "SELECT name, ts, total_steps, maps, config_json FROM runs"
+        " ORDER BY name DESC LIMIT ?", (limit,)
+    ).fetchall()
     con.close()
     return [dict(r) for r in rows]
 
@@ -395,6 +440,7 @@ def main() -> None:
     q.add_argument("--lessons", action="store_true", help="Search lessons instead of events.")
     q.add_argument("--hypotheses", action="store_true", help="List hypotheses.")
     q.add_argument("--experiments", action="store_true", help="List experiments.")
+    q.add_argument("--runs", action="store_true", help="List auto-loop runs.")
 
     args = p.parse_args()
     from config import Config
@@ -405,7 +451,14 @@ def main() -> None:
         print(f"[db] built hellmind.db — {n} rows loaded into {_db_path(cfg.memory_dir)}")
 
     elif args.cmd == "query":
-        if args.hypotheses:
+        if args.runs:
+            for r in query_runs(cfg.memory_dir):
+                cfgj = json.loads(r["config_json"] or "{}")
+                m = cfgj.get("metrics", {})
+                print(f"{r['name']}  map={r['maps']:6} score={cfgj.get('score')}  "
+                      f"explored={m.get('explored_fraction')} kills={m.get('kills_per_episode')} "
+                      f"kept={cfgj.get('kept')}")
+        elif args.hypotheses:
             for r in query_hypotheses(cfg.memory_dir):
                 print(f"[{r['status']:8}] {r['title']}  (metric={r['metric']}, "
                       f"conf={r['confidence']:.2f})")
