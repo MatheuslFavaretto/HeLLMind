@@ -60,3 +60,21 @@ def test_resolve_slash_suggests_on_typo():
     assert kind == "suggest" and "benchmark" in payload
     kind, payload = doom_cli.resolve_slash("/zzzzz", known)
     assert kind == "suggest" and payload == []
+
+
+def test_resolve_slash_unique_prefix_runs_command():
+    known = {c[1] for c in doom_cli.COMMANDS}
+    assert doom_cli.resolve_slash("/bench", known) == ("command", "benchmark")
+    assert doom_cli.resolve_slash("/know", known) == ("command", "knowledge")
+
+
+def test_resolve_slash_ambiguous_prefix_suggests():
+    known = {"auto", "audit", "watch"}
+    kind, payload = doom_cli.resolve_slash("/au", known)
+    assert kind == "suggest" and set(payload) == {"auto", "audit"}
+
+
+def test_resolve_slash_bare_slash_opens_palette():
+    known = {c[1] for c in doom_cli.COMMANDS}
+    assert doom_cli.resolve_slash("/", known) == ("builtin", "palette")
+    assert doom_cli.resolve_slash("/commands", known) == ("builtin", "palette")

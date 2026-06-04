@@ -262,10 +262,10 @@ def menu(full: bool = False) -> None:
 
 def resolve_slash(token: str, known: set):
     """Resolve a typed slash-command token. Returns (kind, payload):
-      ('builtin', name)  for shell built-ins (help/exit/clear)
-      ('command', name)  for a real doom-cli command
-      ('suggest', [..])  for an unknown token (closest matches, possibly empty)
-    Pure + dependency-light so the shell's dispatch is unit-testable."""
+      ('builtin', name)  for shell built-ins (help/exit/clear/palette)
+      ('command', name)  for a real doom-cli command (exact OR unique prefix)
+      ('suggest', [..])  for an ambiguous/unknown token (candidates, possibly empty)
+    Matching order: builtins → exact → unique prefix (type less) → fuzzy. Pure + testable."""
     import difflib
     t = token.lstrip("/").strip().lower()
     if t in ("help", "h", "?", "menu"):
@@ -274,8 +274,15 @@ def resolve_slash(token: str, known: set):
         return "builtin", "exit"
     if t in ("clear", "cls"):
         return "builtin", "clear"
+    if t in ("", "commands", "ls"):
+        return "builtin", "palette"
     if t in known:
         return "command", t
+    prefix = sorted(c for c in known if c.startswith(t))
+    if len(prefix) == 1:
+        return "command", prefix[0]          # /bench -> benchmark
+    if len(prefix) > 1:
+        return "suggest", prefix[:5]          # ambiguous prefix -> show the options
     return "suggest", difflib.get_close_matches(t, known, n=3)
 
 
@@ -337,14 +344,38 @@ def _shell_welcome() -> None:
     console.print()
 
 
-def _shell_prompt() -> str:
+def _shell_palette() -> None:
+    """A compact command palette — every command, grouped, scannable in one glance."""
+    for group in GROUP_ORDER:
+        names = [c[1] for c in COMMANDS if c[0] == group and c[1] != "shell"]
+        if not names:
+            continue
+        chips = "  ".join(f"[#ffd000]/{n}[/#ffd000]" for n in names)
+        console.print(f"  [bold #ff9500]{group}[/bold #ff9500]")
+        console.print(f"    {chips}")
+    console.print("  [dim]tip: type the start of any name — [/dim]"
+                  "[#ffd000]/bench[/#ffd000][dim] runs [/dim][#ffd000]/benchmark[/#ffd000]\n")
+
+
+# Rotating one-liners shown under the input (a little personality, like Claude's tips).
+_SHELL_TIPS = [
+    "/watch shows the agent play (tempered — the real policy, not the frozen argmax)",
+    "/benchmark proves each layer adds value — it runs a finite matrix and stops",
+    "/auto --fast uses all your CPU cores without turning any perception off",
+    "/knowledge shows what the agent KNOWS in 3 tiers: facts / hypotheses / validated",
+    "/rollback is the safety net — every reward change + its keep/revert verdict",
+    "type just / to see the whole command palette",
+]
+
+
+def _shell_prompt(tip: str) -> str:
     """A Claude-Code-style boxed input. Returns the stripped line (raises on EOF)."""
-    from rich import box
     width = min(console.width, 100)
-    console.print("[#7a0a00]╭" + "─" * (width - 2) + "╮[/#7a0a00]")
+    bar = "─" * (width - 2)
+    console.print(f"[#7a0a00]╭{bar}╮[/#7a0a00]")
     line = console.input("[#7a0a00]│[/#7a0a00] [bold #ff2d00]❯[/bold #ff2d00] ")
-    console.print("[#7a0a00]╰" + "─" * (width - 2) + "╯[/#7a0a00]")
-    console.print("  [dim]/help for commands  ·  /exit to quit[/dim]")
+    console.print(f"[#7a0a00]╰{bar}╯[/#7a0a00]")
+    console.print(f"  [dim]💡 {tip}[/dim]")
     return line.strip()
 
 
@@ -352,12 +383,15 @@ def cmd_shell(a) -> int:
     """A Claude-Code-style REPL: type /command to run it, /help for the menu, /exit to leave."""
     import shlex
     known = {c[1] for c in COMMANDS}
+    import itertools
+    known = known - {"shell"}  # you're already in it
     console.clear()
     _doom_backdrop()
     _shell_welcome()
+    tips = itertools.cycle(_SHELL_TIPS)
     while True:
         try:
-            line = _shell_prompt()
+            line = _shell_prompt(next(tips))
         except (EOFError, KeyboardInterrupt):
             console.print("\n[dim]rip and tear... until it is done. 👋[/dim]")
             return 0
@@ -365,22 +399,23 @@ def cmd_shell(a) -> int:
             continue
         if not line.startswith("/"):
             console.print("  [dim]commands start with [/dim][#ffd000]/[/#ffd000][dim] — try "
-                          "[/dim][#ffd000]/help[/#ffd000]\n")
+                          "[/dim][#ffd000]/help[/#ffd000][dim] or just [/dim][#ffd000]/[/#ffd000]\n")
             continue
         try:
             parts = shlex.split(line[1:])
         except ValueError:
             console.print("  [red]couldn't parse that line[/red]\n")
             continue
-        if not parts:
-            continue
-        cmd, rest = parts[0], parts[1:]
+        cmd = parts[0] if parts else ""   # bare "/" -> palette
+        rest = parts[1:]
         kind, payload = resolve_slash(cmd, known)
         if kind == "builtin" and payload == "exit":
             console.print("[dim]rip and tear... until it is done. 👋[/dim]")
             return 0
         if kind == "builtin" and payload == "help":
             console.print(); menu(full=False); console.print(); continue
+        if kind == "builtin" and payload == "palette":
+            console.print(); _shell_palette(); continue
         if kind == "builtin" and payload == "clear":
             console.clear(); _doom_backdrop(); _shell_welcome(); continue
         if kind == "suggest":
