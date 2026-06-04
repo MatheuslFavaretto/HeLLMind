@@ -1,7 +1,7 @@
 #!/bin/zsh
 # A/B: current reward shaping vs combat-retuned shaping. Fresh MAP01, same seed.
 set -e
-cd /Users/matheusfavaretto/Documents/labs/poc-doom-obisidyan
+cd "$(dirname "$0")/.."
 PY=.venv/bin/python
 STEPS=80000
 

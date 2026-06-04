@@ -2,7 +2,7 @@
 # Campaign-mode combat bootstrap: dense-enemy arena map (MAP07), 8 actions.
 # If this learns to kill, the brain transfers to MAP01-05 (same action space).
 set -e
-cd /Users/matheusfavaretto/Documents/labs/poc-doom-obisidyan
+cd "$(dirname "$0")/.."
 PY=.venv/bin/python
 CK=./.cache/map07
 rm -rf "$CK"; mkdir -p "$CK"

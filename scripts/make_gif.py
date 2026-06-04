@@ -9,7 +9,7 @@ from PIL import Image
 
 from config import Config
 from doom.campaign import campaign_metadata
-from rl.algo import algo_class, policy_tag
+from rl.algo import algo_class, brain_prefix
 from rl.train import _latest_checkpoint, build_vec_env
 
 UP = 4  # upscale factor for the tiny 84x84 view
@@ -48,16 +48,19 @@ def main() -> None:
     cfg.n_envs = 1
     cfg.docs_enabled = False
     cfg.memory_enabled = False
-    meta = campaign_metadata(cfg.wad_path, cfg.maps[0])
-    name_prefix = f"ppo_campaign_a{meta['num_actions']}{policy_tag(cfg.use_lstm)}"
+    meta = campaign_metadata(cfg.wad_path, cfg.maps[0], strafe=cfg.strafe)
+    name_prefix = brain_prefix("campaign", meta["num_actions"], cfg.use_lstm,
+                               cfg.spatial_memory, cfg.depth_perception, cfg.automap, cfg.frame_stack, cfg.game_vars)
     path = args.path or _latest_checkpoint(cfg, name_prefix)
     print(f"[gif] brain: {path} | spatial={cfg.spatial_memory}")
 
     venv = build_vec_env(cfg)
     use_lstm = cfg.use_lstm or "_lstm" in os.path.basename(path or "")
     model = algo_class(use_lstm).load(path, env=venv)
-    channels = 2 if cfg.spatial_memory else 1
-    f_idx = (cfg.frame_stack - 1) * channels        # most-recent frame channel
+    # Base channels in fixed order: pixels, [spatial], [depth], [automap]. The most-recent
+    # frame block starts at (frame_stack-1)*base_ch; pixels is its first channel, spatial 2nd.
+    base_ch = 1 + cfg.spatial_memory + cfg.depth_perception + cfg.automap
+    f_idx = (cfg.frame_stack - 1) * base_ch
     v_idx = f_idx + 1 if cfg.spatial_memory else None
 
     obs = venv.reset()
@@ -70,7 +73,8 @@ def main() -> None:
             deterministic=not args.stochastic)
         obs, _r, dones, _i = venv.step(action)
         starts = dones
-        arr = np.asarray(obs)[0]                    # (C, 84, 84)
+        img = obs["image"] if isinstance(obs, dict) else obs  # game_vars -> Dict obs
+        arr = np.asarray(img)[0]                    # (C, 84, 84)
         frame = arr[f_idx]
         visit = arr[v_idx] if v_idx is not None else None
         frames.append(_tile(frame, visit))

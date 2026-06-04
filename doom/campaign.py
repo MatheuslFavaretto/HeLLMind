@@ -13,6 +13,7 @@ The env emits `info["doom"]` in the SAME format as the scenario env (deltas/leve
 action) to reuse the StatsTracker, plus `info["map"]` and `info["doom"]["success"]`.
 """
 import os
+import random
 from typing import Any, Dict, List, Optional, Tuple
 
 import cv2
@@ -35,6 +36,8 @@ CAMPAIGN_BUTTONS = [
     vzd.Button.USE,                  # open doors / trigger the level exit
     vzd.Button.SPEED,
     vzd.Button.SELECT_NEXT_WEAPON,   # switch weapons (creates weapon variety)
+    vzd.Button.MOVE_LEFT,            # strafe left  (opt-in actions; harmless if unused)
+    vzd.Button.MOVE_RIGHT,           # strafe right
 ]
 
 # Curated COMBINED actions (each presses MULTIPLE buttons at once). A naive one-hot space
@@ -56,6 +59,22 @@ CAMPAIGN_ACTIONS = [
     (["MOVE_FORWARD", "USE"], "FWD+USE"),
     (["SELECT_NEXT_WEAPON"], "NEXTW"),
 ]
+
+# Extra STRAFE actions (opt-in): sideways movement for dodging + navigation. Doom's strafe
+# is a core movement the turn-only set can't express. Appended after the base set so the
+# base action indices are unchanged (action count differs -> the brain name's `a{N}` keeps
+# strafe and non-strafe brains from cross-loading).
+STRAFE_ACTIONS = [
+    (["MOVE_LEFT"], "SL"),
+    (["MOVE_RIGHT"], "SR"),
+    (["MOVE_FORWARD", "MOVE_LEFT"], "FWD+SL"),
+    (["MOVE_FORWARD", "MOVE_RIGHT"], "FWD+SR"),
+]
+
+
+def campaign_actions(strafe: bool = False) -> list:
+    """The action set, optionally with strafe combos appended."""
+    return CAMPAIGN_ACTIONS + (STRAFE_ACTIONS if strafe else [])
 
 
 def default_wad() -> str:
@@ -83,17 +102,35 @@ class CampaignDoomEnv(gym.Env):
         window_visible: bool = False,
         rewards: Optional[Dict[str, float]] = None,
         spatial_memory: bool = False,
+        memory_dir: Optional[str] = None,
+        depth_perception: bool = False,
+        strafe: bool = False,
+        automap: bool = False,
+        use_labels: bool = False,
+        game_vars: bool = False,
     ) -> None:
         super().__init__()
         self.frame_skip = frame_skip
         self.width, self.height = resolution
         self.kills_to_clear = kills_to_clear
         self._spatial = bool(spatial_memory)  # 2nd obs channel: where I've been
+        self._depth = bool(depth_perception)  # extra obs channel: ViZDoom depth buffer
+        self._strafe = bool(strafe)           # add sideways-movement actions
+        self._automap = bool(automap)         # extra obs channel: native top-down automap
+        self._use_labels = bool(use_labels)   # ground-truth on-screen enemy detection
+        self._game_vars = bool(game_vars)     # feed HEALTH/AMMO into the policy (DFP/Arnold)
+        self._engagement_reward = float((rewards or {}).get("engagement_reward", 0.0))
         r = rewards or {}
         self._hit_reward = float(r.get("hit_reward", HIT_REWARD))
         self._miss_penalty = float(r.get("miss_penalty", MISS_PENALTY))
         self._damage_penalty = float(r.get("damage_taken_penalty", 0.1))
         self._move_reward = float(r.get("move_reward", 0.0))  # anti-idle (per distance)
+        # Anti-circle: reward NET outward progress (new max distance from spawn), which
+        # spinning in place CANNOT farm — unlike raw move_reward, which literally pays the
+        # agent to drive in circles. Drives directed exploration instead of a limit cycle.
+        self._frontier_reward = float(r.get("frontier_reward", 0.0))
+        self._spawn_xy: Optional[Tuple[float, float]] = None
+        self._max_dist = 0.0
         # Kill bonus was hardcoded at 5.0 — i.e. the single strongest combat lever wasn't
         # tunable, so the supervisor/suggestions could never push the agent OUT of the
         # combat-avoidance local optimum (idle-to-timeout beats fight-and-die). Now a knob.
@@ -110,10 +147,45 @@ class CampaignDoomEnv(gym.Env):
         self._coverage_reward = float(r.get("coverage_reward", 0.0))  # per NEW cell
         self._coverage_cell = float(r.get("coverage_cell", 96.0))     # grid size
         self._exit_reward = float(r.get("exit_reward", 0.0))          # reach the exit
+        # Exit proximity reward: after the agent reaches the exit once, the position is
+        # memorised and subsequent episodes get a small reward for getting closer to it.
+        # Scale = fraction of exit_reward per unit of normalised progress (0→1).
+        self._exit_prox_scale = float(r.get("exit_prox_scale", 0.1))
+        # Exit memory persisted across runs/iterations/parallel envs. Without it, _exit_pos
+        # lives only in THIS env instance for THIS subprocess — so an exit found by one env
+        # never helps the others, and is forgotten the moment training ends (the eval and
+        # the next auto-loop iteration are separate processes). The disk store fixes that:
+        # the first env to reach the exit writes it; everyone reading the same vault gets it.
+        self._exit_store = None
+        if memory_dir:
+            from writer.exit_store import ExitStore
+            self._exit_store = ExitStore(memory_dir)
+        self._exit_pos: Optional[Tuple[float, float]] = None   # memorised once per map
+        self._prev_exit_dist: Optional[float] = None           # distance at last step
+        # Go-Explore "return, then explore": frontier-goal archive + goal-conditioned reward.
+        self._goal_prob = float(r.get("goexplore_goal_prob", 0.0))
+        self._goal_scale = float(r.get("goexplore_goal_scale", 0.01))
+        self._goal_radius = float(r.get("goexplore_reach_radius", 96.0))
+        self._frontier_store = None
+        if memory_dir and self._goal_prob > 0.0:
+            from writer.frontier_store import FrontierStore
+            self._frontier_store = FrontierStore(memory_dir, cell_size=self._coverage_cell)
+        self._goal_xy: Optional[Tuple[float, float]] = None    # this episode's return target
+        self._goal_reached = False
+        self._prev_goal_dist: Optional[float] = None
+        self._ep_positions: List[Tuple[float, float]] = []     # reached cells -> archive
         # Count-based weapon variety: bonus the first time a NEW weapon slot is wielded
         # this episode -> a reason to actually use SELECT_NEXT_WEAPON on what it picks up.
         self._weapon_variety_reward = float(r.get("weapon_variety_reward", 0.0))
         self._episode_timeout = int(episode_timeout)
+        # Intrinsic curiosity (RND): spatial bonus that never saturates.
+        use_rnd = float(r.get("use_rnd", 0.0)) > 0.0
+        rnd_scale = float(r.get("rnd_scale", 0.5))
+        if use_rnd:
+            from doom.rnd import RNDModule
+            self._rnd = RNDModule(rnd_scale=rnd_scale)
+        else:
+            self._rnd = None
         self._visited: set = set()  # grid cells seen this episode
         self._weapons_seen: set = set()  # weapon slots wielded this episode
         self._ep_enemies: Dict[str, Dict[str, Any]] = {}  # per-monster encounter facts
@@ -140,6 +212,15 @@ class CampaignDoomEnv(gym.Env):
         game.set_available_game_variables(TRACKED_VARS)
         game.set_sectors_info_enabled(True)  # map geometry for the real minimap
         game.set_objects_info_enabled(True)  # actor names/positions -> factual bestiary
+        if self._depth:
+            game.set_depth_buffer_enabled(True)  # per-pixel distance -> 3D structure channel
+        if self._automap:
+            game.set_automap_buffer_enabled(True)  # native top-down explored map channel
+            game.set_automap_mode(vzd.AutomapMode.OBJECTS)  # walls + objects, no HUD clutter
+            game.set_automap_rotate(False)         # keep it north-up (stable allocentric frame)
+            game.set_automap_render_textures(False)  # clean line-art -> crisper for the CNN
+        if self._use_labels:
+            game.set_labels_buffer_enabled(True)   # ground-truth on-screen actor labels
         # Living reward < 0 = time penalty (anti-camping); dying is bad.
         game.set_living_reward(self._living_reward)
         game.set_death_penalty(self._death_penalty)
@@ -154,7 +235,7 @@ class CampaignDoomEnv(gym.Env):
         self.actions: List[List[int]] = []
         self.button_names: List[str] = []
         self._action_attacks: List[bool] = []  # does this action press ATTACK?
-        for combo, label in CAMPAIGN_ACTIONS:
+        for combo, label in campaign_actions(self._strafe):
             vec = [0] * n_buttons
             for name in combo:
                 vec[bidx[name]] = 1
@@ -163,10 +244,24 @@ class CampaignDoomEnv(gym.Env):
             self._action_attacks.append(bool(vec[bidx["ATTACK"]]))
 
         self.action_space = spaces.Discrete(len(self.actions))
-        channels = 2 if self._spatial else 1
-        self.observation_space = spaces.Box(
+        channels = (1 + (1 if self._spatial else 0) + (1 if self._depth else 0)
+                    + (1 if self._automap else 0))
+        image_space = spaces.Box(
             low=0, high=255, shape=(self.height, self.width, channels), dtype=np.uint8
         )
+        # GAME_VARS_OBS: which numeric state to feed the policy, and how to normalise it to
+        # ~[0,1]. HEALTH + AMMO are the decision-relevant ones (retreat when low, push when
+        # full). Without these the agent is BLIND to its own health and keeps fighting until
+        # it dies at low HP (the dominant death mode we measured).
+        self._gamevar_specs = [("health", 100.0), ("ammo2", 50.0)]
+        if self._game_vars:
+            self.observation_space = spaces.Dict({
+                "image": image_space,
+                "vars": spaces.Box(low=0.0, high=1.0,
+                                   shape=(len(self._gamevar_specs),), dtype=np.float32),
+            })
+        else:
+            self.observation_space = image_space
         self._last_vars: Optional[Dict[str, float]] = None
         self._walls_pending = True  # send walls once per map (re-armed on switch)
         # Spatial memory: a persistent visited-grid rendered as the 2nd channel.
@@ -190,7 +285,13 @@ class CampaignDoomEnv(gym.Env):
         vals = state.game_variables
         return {VAR_NAMES[i]: float(vals[i]) for i in range(len(VAR_NAMES))}
 
-    def _get_obs(self) -> np.ndarray:
+    def _get_obs(self):
+        img = self._get_image()
+        if not self._game_vars:
+            return img
+        return {"image": img, "vars": self._gamevar_vector()}
+
+    def _get_image(self) -> np.ndarray:
         state = self.game.get_state()
         if state is None:
             frame = np.zeros((self.height, self.width), dtype=np.uint8)
@@ -199,10 +300,52 @@ class CampaignDoomEnv(gym.Env):
                 state.screen_buffer, (self.width, self.height),
                 interpolation=cv2.INTER_AREA,
             )
-        if not self._spatial:
+        # Channels, in a FIXED order the obs space declares: pixels, [spatial], [depth], [automap].
+        if not self._spatial and not self._depth and not self._automap:
             return frame[:, :, None]
-        # 2nd channel: the agent's own memory of where it has already been.
-        return np.stack([frame, self._visit_grid], axis=2)
+        channels = [frame]
+        if self._spatial:  # the agent's own memory of where it has already been
+            channels.append(self._visit_grid)
+        if self._depth:    # ViZDoom depth buffer (per-pixel distance) -> 3D structure
+            channels.append(self._depth_frame(state))
+        if self._automap:  # native top-down map of the explored layout
+            channels.append(self._automap_frame(state))
+        return np.stack(channels, axis=2)
+
+    def _gamevar_vector(self) -> np.ndarray:
+        """Normalised [health, ammo] in [0,1] for the policy — so it KNOWS its own state."""
+        vars_ = self._last_vars or {}
+        vec = [min(1.0, max(0.0, float(vars_.get(name, 0.0)) / scale))
+               for name, scale in self._gamevar_specs]
+        return np.asarray(vec, dtype=np.float32)
+
+    def _zero_obs(self):
+        """A valid all-zero observation (image, or Dict {image, vars}) for the terminal step."""
+        img = np.zeros((self.height, self.width, self._image_channels()), dtype=np.uint8)
+        if not self._game_vars:
+            return img
+        return {"image": img,
+                "vars": np.zeros(len(self._gamevar_specs), dtype=np.float32)}
+
+    def _image_channels(self) -> int:
+        return (1 + (1 if self._spatial else 0) + (1 if self._depth else 0)
+                + (1 if self._automap else 0))
+
+    def _depth_frame(self, state) -> np.ndarray:
+        """Resized depth buffer as a uint8 channel (0 = near, 255 = far)."""
+        depth = getattr(state, "depth_buffer", None) if state is not None else None
+        if depth is None:
+            return np.zeros((self.height, self.width), dtype=np.uint8)
+        return cv2.resize(depth, (self.width, self.height), interpolation=cv2.INTER_AREA)
+
+    def _automap_frame(self, state) -> np.ndarray:
+        """Resized automap buffer as a grayscale uint8 channel (the explored top-down map)."""
+        amap = getattr(state, "automap_buffer", None) if state is not None else None
+        if amap is None:
+            return np.zeros((self.height, self.width), dtype=np.uint8)
+        if amap.ndim == 3:  # automap is rendered in the screen format (may be 3-channel)
+            amap = cv2.cvtColor(amap, cv2.COLOR_RGB2GRAY)
+        return cv2.resize(amap, (self.width, self.height), interpolation=cv2.INTER_AREA)
 
     # ------------------------------------------------------------------
     def _compute_bbox(self) -> None:
@@ -301,6 +444,11 @@ class CampaignDoomEnv(gym.Env):
             self._current_map = self._pending_map
             self._pending_map = None
             self._walls_pending = True  # new map -> resend the geometry
+            self._exit_pos = None       # new map = unknown exit position
+        # Pull a persisted exit for this map (set by a prior run/env that reached it). Read
+        # each reset so a parallel env that just discovered the exit benefits the others.
+        if self._exit_pos is None and self._exit_store is not None:
+            self._exit_pos = self._exit_store.load(self._current_map)
         self.game.new_episode()
         self._last_vars = self._read_raw_vars()
         self._ep_base = 0.0  # native (unshaped) return, for fair A/B eval
@@ -311,6 +459,32 @@ class CampaignDoomEnv(gym.Env):
         self._ep_enemies = {}
         self._mon_counts = {}
         self._nearest_enemy = None
+        self._spawn_xy = (self._last_vars["position_x"], self._last_vars["position_y"])
+        self._max_dist = 0.0
+        self._prev_exit_dist = None
+        if self._exit_pos is not None and self._spawn_xy is not None:
+            sx, sy = self._spawn_xy
+            ex, ey = self._exit_pos
+            self._prev_exit_dist = ((ex - sx) ** 2 + (ey - sy) ** 2) ** 0.5
+        # Go-Explore: archive the cells the LAST episode reached, then maybe pick a frontier
+        # cell as this episode's "return" goal (dense reward guides the agent back to it).
+        if self._frontier_store is not None:
+            if self._ep_positions:
+                try:
+                    self._frontier_store.merge(self._current_map, self._ep_positions)
+                except OSError:
+                    pass
+            self._ep_positions = []
+        self._goal_xy = None
+        self._goal_reached = False
+        self._prev_goal_dist = None
+        if self._frontier_store is not None and random.random() < self._goal_prob:
+            goal = self._frontier_store.sample_goal(self._current_map, self._spawn_xy)
+            if goal is not None:
+                self._goal_xy = goal
+                gx, gy = goal
+                self._prev_goal_dist = ((gx - self._spawn_xy[0]) ** 2
+                                        + (gy - self._spawn_xy[1]) ** 2) ** 0.5
         self._visit_grid[:] = 0
         if self._spatial:
             self._compute_bbox()
@@ -328,6 +502,9 @@ class CampaignDoomEnv(gym.Env):
 
         cov_bonus = 0.0  # reward for stepping on a NEW grid cell this episode
         weapon_bonus = 0.0  # reward the first time a NEW weapon slot is wielded
+        frontier_bonus = 0.0  # reward NET outward progress (can't be farmed by circling)
+        engage_bonus = 0.0  # reward keeping a visible enemy centred (labels buffer)
+        self._enemies_in_view = 0  # telemetry: how many enemies the agent can see now
         if not done:
             raw = self._read_raw_vars()
             deltas = {n: max(0.0, raw[n] - self._last_vars[n]) for n in MONOTONIC}
@@ -350,16 +527,38 @@ class CampaignDoomEnv(gym.Env):
                 if slot >= 2 and slot not in self._weapons_seen:
                     self._weapons_seen.add(slot)
                     weapon_bonus = self._weapon_variety_reward
+            # Frontier progress: reward only when the agent reaches a NEW farthest point
+            # from spawn. Circling never increases the max distance -> earns nothing.
+            if self._frontier_reward and self._spawn_xy is not None:
+                ddx = raw["position_x"] - self._spawn_xy[0]
+                ddy = raw["position_y"] - self._spawn_xy[1]
+                dist = (ddx * ddx + ddy * ddy) ** 0.5
+                if dist > self._max_dist:
+                    frontier_bonus = self._frontier_reward * (dist - self._max_dist)
+                    self._max_dist = dist
             self._mark_visit(raw["position_x"], raw["position_y"])
             self._track_enemies(raw["position_x"], raw["position_y"],
                                 int(raw.get("selected_weapon", 0)),
                                 int(deltas.get("killcount", 0)))
+            # Labels buffer: ground-truth on-screen enemy detection + engagement reward.
+            if self._use_labels:
+                from doom.entities import visible_enemies
+                st = self.game.get_state()
+                view = visible_enemies(getattr(st, "labels", None) if st else None,
+                                       screen_width=float(self.width))
+                self._enemies_in_view = view["count"]
+                if self._engagement_reward and view["nearest_centered"] is not None:
+                    # 1.0 when an enemy is dead-centred, 0 at the screen edge.
+                    engage_bonus = self._engagement_reward * (1.0 - view["nearest_centered"])
+            # Go-Explore: record reached position for the frontier archive (sampled cheaply).
+            if self._frontier_store is not None and (self._ep_ticks % 8 == 0):
+                self._ep_positions.append((raw["position_x"], raw["position_y"]))
             obs = self._get_obs()
         else:
             deltas = {n: 0.0 for n in MONOTONIC}
             deltas["distance"] = 0.0
             levels = {n: self._last_vars[n] for n in LEVELS}
-            obs = np.zeros(self.observation_space.shape, dtype=np.uint8)
+            obs = self._zero_obs()  # terminal step: a valid zero obs (handles Dict too)
             self._step_threat_bonus = 0.0  # no tracking on the terminal step
 
         # Reward shaping: kills positive, damage taken negative, + aim, + movement,
@@ -370,7 +569,36 @@ class CampaignDoomEnv(gym.Env):
         shaped += self._move_reward * deltas["distance"]  # reward moving (anti-idle)
         shaped += cov_bonus                               # reward exploring new ground
         shaped += weapon_bonus                            # reward using a new weapon
+        shaped += frontier_bonus                          # reward NET outward progress (anti-circle)
+        shaped += engage_bonus                            # reward keeping a visible enemy centred
         shaped += self._step_threat_bonus                 # extra for deadlier monsters (bestiary)
+        if self._rnd and not done:
+            rnd_bonus = self._rnd.bonus(raw["position_x"], raw["position_y"])
+            shaped += rnd_bonus
+        # Exit proximity shaping: small reward for getting closer to the memorised exit.
+        # Activates only after the first successful exit (self._exit_pos is set).
+        if self._exit_pos is not None and not done and self._prev_exit_dist is not None:
+            px, py = raw["position_x"], raw["position_y"]
+            ex, ey = self._exit_pos
+            cur_dist = ((ex - px) ** 2 + (ey - py) ** 2) ** 0.5
+            progress = self._prev_exit_dist - cur_dist  # positive = got closer
+            if progress > 0:
+                shaped += self._exit_prox_scale * progress * 0.001  # tiny per-unit bonus
+            self._prev_exit_dist = cur_dist
+        # Go-Explore goal shaping: dense reward for returning to this episode's frontier
+        # goal. Once within reach_radius the goal is "achieved" — reward stops and the agent
+        # explores OUTWARD from that far launch point (the "then explore" half).
+        if (self._goal_xy is not None and not self._goal_reached and not done
+                and self._prev_goal_dist is not None):
+            px, py = raw["position_x"], raw["position_y"]
+            gx, gy = self._goal_xy
+            gdist = ((gx - px) ** 2 + (gy - py) ** 2) ** 0.5
+            progress = self._prev_goal_dist - gdist
+            if progress > 0:
+                shaped += self._goal_scale * progress  # guide back toward the frontier
+            self._prev_goal_dist = gdist
+            if gdist <= self._goal_radius:
+                self._goal_reached = True  # arrived: hand off to the exploration bonuses
         attacked = self._action_attacks[int(action)]  # this action pressed ATTACK
         if attacked and deltas["hitcount"] == 0 and not done:
             shaped -= self._miss_penalty
@@ -386,6 +614,17 @@ class CampaignDoomEnv(gym.Env):
         if done:
             if reached_exit:
                 shaped += self._exit_reward   # the big prize: finishing the level
+                # Memorise exit position — future episodes get proximity shaping toward it.
+                if self._last_vars:
+                    ex = self._last_vars["position_x"]
+                    ey = self._last_vars["position_y"]
+                    self._exit_pos = (ex, ey)
+                    # Persist so other envs / the eval process / the next iteration inherit it.
+                    if self._exit_store is not None:
+                        try:
+                            self._exit_store.save(self._current_map, ex, ey)
+                        except OSError:
+                            pass  # persistence must never break a finished episode
             elif cleared:
                 shaped += 100.0               # cleared the enemies
 
@@ -396,6 +635,8 @@ class CampaignDoomEnv(gym.Env):
             "attacked": bool(attacked),  # tracker counts attacks from this (combined actions)
             "success": success,
         }
+        if self._use_labels:
+            doom["enemies_in_view"] = int(self._enemies_in_view)  # ground-truth on-screen count
         if done:
             doom["terminal"] = (
                 "death" if dead else ("exit" if reached_exit else "timeout")
@@ -409,6 +650,11 @@ class CampaignDoomEnv(gym.Env):
             if dead and self._nearest_enemy:
                 self._ep_enemies.setdefault(self._nearest_enemy, {})["killed_agent"] = 1
             doom["enemies"] = self._ep_enemies  # per-monster facts -> the bestiary
+            # Episodic context for richer memory records.
+            doom["nearest_enemy"] = self._nearest_enemy or ""
+            px = self._last_vars.get("position_x", 0.0) if self._last_vars else 0.0
+            py = self._last_vars.get("position_y", 0.0) if self._last_vars else 0.0
+            doom["final_pos"] = [round(px), round(py)]
         if self._walls_pending:
             doom["walls"] = read_wall_segments(self.game)
             self._walls_pending = False
@@ -419,41 +665,52 @@ class CampaignDoomEnv(gym.Env):
 
 
 def make_campaign_env(
-    wad_path: str,
+    cfg,
     doom_map: str,
-    frame_skip: int,
-    resolution: Tuple[int, int],
-    episode_timeout: int,
-    kills_to_clear: int,
-    seed: int,
-    rank: int,
-    window_visible: bool = False,
+    rank: int = 0,
+    *,
     rewards: Optional[Dict[str, float]] = None,
-    spatial_memory: bool = False,
+    window_visible: Optional[bool] = None,
+    memory_dir: Optional[str] = None,
 ):
-    """Factory for SubprocVecEnv/DummyVecEnv."""
+    """Factory for SubprocVecEnv/DummyVecEnv.
+
+    Takes the Config object and reads every perception/action flag from it, so adding a new
+    one (depth, automap, strafe, ...) only touches CampaignDoomEnv + Config — not this
+    signature and not the call sites. `rewards`/`window_visible`/`memory_dir` can override
+    cfg for special cases (eval passes its own, BC passes none).
+    """
+    rewards = cfg.reward_weights() if rewards is None else rewards
+    window_visible = cfg.render if window_visible is None else window_visible
 
     def _init():
         env = CampaignDoomEnv(
-            wad_path=wad_path,
+            wad_path=cfg.wad_path,
             doom_map=doom_map,
-            frame_skip=frame_skip,
-            resolution=resolution,
-            episode_timeout=episode_timeout,
-            kills_to_clear=kills_to_clear,
+            frame_skip=cfg.frame_skip,
+            resolution=cfg.resolution,
+            episode_timeout=cfg.episode_timeout,
+            kills_to_clear=cfg.kills_to_clear,
             window_visible=window_visible,
             rewards=rewards,
-            spatial_memory=spatial_memory,
+            spatial_memory=cfg.spatial_memory,
+            memory_dir=memory_dir,
+            depth_perception=cfg.depth_perception,
+            strafe=cfg.strafe,
+            automap=cfg.automap,
+            use_labels=cfg.use_labels,
+            game_vars=getattr(cfg, "game_vars", False),
         )
-        env.reset(seed=seed + rank)
+        env.reset(seed=cfg.seed + rank)
         return env
 
     return _init
 
 
-def campaign_metadata(wad_path: str, doom_map: str) -> Dict[str, Any]:
-    """Discover button names / action count without booting training."""
-    env = CampaignDoomEnv(wad_path=wad_path, doom_map=doom_map)
+def campaign_metadata(wad_path: str, doom_map: str, strafe: bool = False) -> Dict[str, Any]:
+    """Discover button names / action count without booting training. `strafe` must match
+    the training config so the discovered action count (-> brain name) is correct."""
+    env = CampaignDoomEnv(wad_path=wad_path, doom_map=doom_map, strafe=strafe)
     meta = {"button_names": list(env.button_names), "num_actions": int(env.action_space.n)}
     env.close()
     return meta

@@ -37,3 +37,38 @@ def is_monster(name: str) -> bool:
 
 def is_projectile(name: str) -> bool:
     return name in PROJECTILE_CASTER
+
+
+def visible_enemies(labels, screen_width: float = 84.0) -> dict:
+    """Summarise the enemies the agent can SEE from the ViZDoom labels buffer.
+
+    `labels` is `state.labels` — each has `.object_name` and a screen bounding box
+    (`.x`, `.width`). Ground-truth on-screen detection (unlike the map-wide objects list,
+    this is only what's actually in view). Returns:
+        count            — how many monsters are visible
+        nearest_centered — min |bbox-center - screen-center| / (screen_width/2) in [0,1],
+                           0 = an enemy is dead-centred (in the crosshair), 1 = at the edge.
+                           None if no enemy is visible.
+
+    Pure + side-effect free so it unit-tests without ViZDoom (pass simple objects/dicts).
+    """
+    half = screen_width / 2.0 or 1.0
+    count = 0
+    best_off = None
+    for lab in labels or []:
+        name = getattr(lab, "object_name", None)
+        if name is None and isinstance(lab, dict):
+            name = lab.get("object_name")
+        if not name or name not in MONSTERS:
+            continue
+        count += 1
+        x = getattr(lab, "x", None)
+        w = getattr(lab, "width", None)
+        if x is None and isinstance(lab, dict):
+            x, w = lab.get("x"), lab.get("width")
+        if x is None:
+            continue
+        center = float(x) + (float(w or 0) / 2.0)
+        off = abs(center - half) / half          # 0 centred .. 1 at the edge
+        best_off = off if best_off is None else min(best_off, off)
+    return {"count": count, "nearest_centered": best_off}

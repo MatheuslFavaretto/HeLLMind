@@ -32,6 +32,10 @@ BANNER = r"""
 
 # (group, name, one-liner, longer explanation, example)
 COMMANDS = [
+    ("▶ Run", "diagnose", "Full diagnostic: eval + behavior flags + next step recommendation",
+     "Runs 10 eval episodes, detects behavior patterns (circling/passive/low-exploration) "
+     "from telemetry, and prints the exact next test to run. Start here every session.",
+     "doom-cli diagnose"),
     ("▶ Run", "train", "Train the agent (auto-resumes this vault's brain)",
      "Runs PPO on ViZDoom. By default it RESUMES the brain stored in the vault "
      "(same vault = keeps learning). Use --fresh to start over, --spatial for the "
@@ -92,7 +96,37 @@ COMMANDS = [
     ("🧠 Cognition", "compare", "Compare two runs (A/B) into a note",
      "Runs writer.compare_runs to produce a side-by-side verdict of two runs' metrics.",
      "doom-cli compare runA runB"),
+    ("🧠 Cognition", "recall", "Query episodic memory by keyword, enemy or region",
+     "doom-cli recall deaths MAP01  |  doom-cli recall --enemy DoomImp  |  doom-cli recall --region 1x2",
+     "doom-cli recall MAP01"),
+    ("🧠 Cognition", "behavior", "Detect bad behavior patterns from telemetry",
+     "Flags shoot-spam, circling, low-exploration, passivity, route-repetition — "
+     "each with a confidence score and a recommendation. Writes 80-recommendations/Behavior.md.",
+     "doom-cli behavior"),
+    ("🧠 Cognition", "hypothesize", "Generate falsifiable hypotheses from behavior flags",
+     "Turns behavior flags into hypotheses (metric, direction, config delta). "
+     "Writes 70-hypotheses/Hypotheses.md and saves to the SQLite memory.",
+     "doom-cli hypothesize"),
+    ("🧠 Cognition", "experiment", "Run a hypothesis-driven A/B experiment",
+     "Takes a hypothesis ID, trains control+experimental branches (multi-seed), "
+     "judges the result honestly, and records it. Use --list to see open hypotheses.",
+     "doom-cli experiment --list / doom-cli experiment --hypothesis 1 --steps 200000"),
+    ("🧠 Cognition", "db", "Build/query the SQLite cognitive memory",
+     "Rebuilds hellmind.db from the JSONL stores or queries events/lessons/experiments.",
+     "doom-cli db build / doom-cli db query MAP01"),
+    ("🧠 Cognition", "curriculum", "Show map difficulty scores and forgetting alerts",
+     "Computes per-map difficulty (deaths + timeouts + coverage + kills) and detects "
+     "skill regression vs historical peak. Writes 40-maps/Curriculum.md.",
+     "doom-cli curriculum"),
+    ("🧠 Cognition", "research", "Run the full autonomous research loop",
+     "Chains: behavior detection → hypothesis → experiment → curriculum → training. "
+     "Logs everything to the vault. The cognitive loop in one command.",
+     "doom-cli research --iterations 3 --steps 200000 --map MAP01"),
 
+    ("🧠 Cognition", "perception", "Write the agent perception model note to the vault",
+     "Creates 20-concepts/Concept - Agent Perception.md explaining how the agent sees "
+     "the world: pixels, game vars, objects_info, what it does/doesn't know.",
+     "doom-cli perception"),
     ("🛠 Tools", "gif", "Render a gameplay GIF + screenshots from the brain",
      "Builds an animated GIF straight from the observation tensor (agent view + spatial "
      "memory, no screen recording) plus a few PNG stills for the README.",
@@ -161,14 +195,134 @@ def _show_md(rel_path: str, missing: str) -> int:
     return 0
 
 
+def cmd_diagnose(a) -> int:
+    import glob
+    from config import Config
+    from writer.memory_store import MemoryStore
+    from writer.behavior import detect
+    from writer.snapshot_log import SnapshotLog, log_path_for
+
+    cfg = Config()
+
+    # --- Brain state ---
+    zips = sorted(glob.glob(os.path.join(cfg.checkpoint_dir, "*_steps.zip")),
+                  key=os.path.getmtime)
+    brain_ok = bool(zips)
+    console.rule("[bold #ffd000]🔥 HeLLMind Diagnostic[/bold #ffd000]")
+
+    # --- Eval (only if brain exists) ---
+    exploration = 0.0
+    kills = 0.0
+    exit_rate = 0.0
+    accuracy = 0.0
+
+    if brain_ok:
+        console.print(f"[dim]Brain: {os.path.basename(zips[-1])}  ({len(zips)} checkpoints)[/dim]")
+        console.print("[dim]Running 10 deterministic episodes...[/dim]")
+        try:
+            import json as _json
+            out = subprocess.run(
+                [PY, "-m", "rl.eval", "--episodes", "10", "--json"],
+                cwd=ROOT, capture_output=True, text=True,
+                env={**os.environ, "DOCS_ENABLED": "0", "MEMORY_ENABLED": "0"}
+            )
+            for line in out.stdout.splitlines():
+                if line.startswith("METRICS_JSON "):
+                    m = _json.loads(line[len("METRICS_JSON "):])
+                    exploration = m.get("explored_fraction", 0.0)
+                    kills = m.get("kills_per_episode", 0.0)
+                    exit_rate = m.get("exit_rate", 0.0)
+                    accuracy = m.get("shooting_accuracy", 0.0)
+                    break
+        except Exception as e:
+            console.print(f"[yellow]Eval failed: {e}[/yellow]")
+    else:
+        console.print("[yellow]No brain found — train first.[/yellow]")
+
+    # --- Behavior flags ---
+    events = MemoryStore.read_events(cfg.memory_dir)
+    snap_path = log_path_for(cfg.pending_dir, cfg.run_name)
+    snaps = SnapshotLog.read_all(snap_path)
+    flags = detect(events, snaps)
+
+    # --- Dashboard ---
+    t = Table(header_style="bold #ff5a00", border_style="#7a0a00", show_edge=False)
+    t.add_column("metric", style="bold #ffd000")
+    t.add_column("value", justify="right")
+    t.add_column("target", justify="right", style="dim")
+    t.add_column("status", justify="center")
+
+    def _row(label, val, target, ok):
+        status = "[green]✅[/green]" if ok else "[red]❌[/red]"
+        return label, val, target, status
+
+    t.add_row(*_row("exploration", f"{exploration:.0%}", "> 20%", exploration >= 0.20))
+    t.add_row(*_row("kills/ep",    f"{kills:.1f}",       "> 1.0", kills >= 1.0))
+    t.add_row(*_row("exit_rate",   f"{exit_rate:.0%}",   "> 0%",  exit_rate > 0.0))
+    t.add_row(*_row("accuracy",    f"{accuracy:.0%}",    "> 5%",  accuracy >= 0.05))
+    console.print(Panel(t, title="📊 Deterministic eval", border_style=EMBER[2], title_align="left"))
+
+    # --- Behavior flags ---
+    if flags:
+        ft = Table(header_style="bold #ff5a00", border_style="#7a0a00", show_edge=False)
+        ft.add_column("flag", style="bold red")
+        ft.add_column("confidence", justify="right")
+        ft.add_column("fix")
+        for f in sorted(flags, key=lambda x: -x.confidence):
+            icon = "🔴" if f.confidence >= 0.7 else "🟡"
+            ft.add_row(f"{icon} {f.name}", f"{f.confidence:.0%}", f.recommendation[:60] + "…")
+        console.print(Panel(ft, title="🚩 Behavior flags", border_style=EMBER[3], title_align="left"))
+    else:
+        console.print(Panel("[green]No behavior flags detected.[/green]",
+                            title="🚩 Behavior", border_style=EMBER[2], title_align="left"))
+
+    # --- Recommendation ---
+    if not brain_ok:
+        next_cmd = "doom-cli train --map MAP01 --steps 400000 --fresh"
+        reason = "No brain — start training from zero."
+    elif exploration < 0.20 and exit_rate == 0.0 and kills < 1.0:
+        use_rnd = cfg.use_rnd
+        if use_rnd:
+            next_cmd = "doom-cli train --map MAP01 --steps 400000 --fresh --rnd"
+            reason = "RND already on — train fresh to test intrinsic curiosity."
+        else:
+            next_cmd = "doom-cli train --map MAP01 --steps 400000 --fresh"
+            reason = "Agent passive/circling. Test corrected .env (FRONTIER+MOVE_REWARD floor)."
+    elif exploration < 0.20:
+        next_cmd = "doom-cli train --map MAP01 --steps 400000 --fresh --rnd"
+        reason = "Exploration stuck. Enable RND (USE_RND=1 in .env) — intrinsic curiosity."
+    elif exit_rate == 0.0:
+        next_cmd = "doom-cli train --map MAP01 --steps 800000 --resume"
+        reason = "Exploring OK but never finds exit. Train longer + EXIT_REWARD=1000."
+    else:
+        next_cmd = "doom-cli research --iterations 3 --steps 200000 --map MAP01"
+        reason = "Agent works! Run the cognitive research loop."
+
+    console.print(Panel(
+        f"[bold #ffd000]{reason}[/bold #ffd000]\n\n[white]{next_cmd}[/white]",
+        title="👉 Next step", border_style=EMBER[0], title_align="left"
+    ))
+    return 0
+
+
 def cmd_train(a) -> int:
     env = {"DOCS_ENABLED": "0" if a.no_docs else "1"}
     if a.envs:
         env["N_ENVS"] = str(a.envs)
     if a.spatial:
         env["SPATIAL_MEMORY"] = "1"
+    if getattr(a, "depth", False):
+        env["DEPTH_PERCEPTION"] = "1"
+    if getattr(a, "strafe", False):
+        env["STRAFE"] = "1"
+    if getattr(a, "game_vars", False):
+        env["GAME_VARS"] = "1"
+    if getattr(a, "automap", False):
+        env["AUTOMAP"] = "1"
     if a.lstm:
         env["USE_LSTM"] = "1"
+    if a.rnd:
+        env["USE_RND"] = "1"
     cmd = [PY, "-m", "rl.train", "--timesteps", str(a.steps)]
     if a.map:
         cmd += ["--maps", a.map]
@@ -196,8 +350,13 @@ def cmd_eval(a) -> int:
         cmd.append("--json")
     if a.stochastic:
         cmd.append("--stochastic")
+    if getattr(a, "temperature", None) is not None:
+        cmd += ["--temperature", str(a.temperature)]
     env = {"USE_LSTM": "1"} if a.lstm else None
-    mode = "stochastic" if a.stochastic else "deterministic"
+    if getattr(a, "temperature", None) is not None:
+        mode = f"tempered T={a.temperature}"
+    else:
+        mode = "stochastic" if a.stochastic else "deterministic"
     return run(cmd, env, title=f"📊 Evaluating · {a.episodes} {mode} episodes")
 
 
@@ -206,8 +365,24 @@ def cmd_auto(a) -> int:
            "--steps", str(a.steps)]
     if a.map:
         cmd += ["--map", a.map]
-    if a.fresh:
+    # Resume is the DEFAULT; --fresh/--clear starts over.
+    if a.fresh or getattr(a, "clear", False):
         cmd.append("--fresh")
+    if getattr(a, "spatial", False):
+        cmd.append("--spatial")
+    if getattr(a, "rnd", False):
+        cmd.append("--rnd")
+    if getattr(a, "goexplore", False):
+        cmd.append("--goexplore")
+    if getattr(a, "depth", False):
+        cmd.append("--depth")
+    if getattr(a, "strafe", False):
+        cmd.append("--strafe")
+    if getattr(a, "game_vars", False):
+        cmd.append("--game-vars")
+    if getattr(a, "automap", False):
+        cmd.append("--automap")
+    # --resume is now the DEFAULT in rl.autonomous; no need to pass it.
     if a.llm:
         cmd.append("--llm")
     env = {"USE_LSTM": "1"} if a.lstm else None
@@ -230,7 +405,7 @@ def cmd_compare(a) -> int:
 
 
 def cmd_gif(a) -> int:
-    cmd = [PY, "make_gif.py", "--steps", str(a.steps)]
+    cmd = [PY, os.path.join(ROOT, "scripts", "make_gif.py"), "--steps", str(a.steps)]
     if a.path:
         cmd += ["--path", a.path]
     if a.out:
@@ -268,6 +443,248 @@ def cmd_progress(a) -> int:
 def cmd_bestiary(a) -> int:
     return _show_md("70-bestiary/Bestiary.md",
                     "No bestiary yet — train in campaign mode (monsters are recorded then).")
+
+
+def cmd_behavior(a) -> int:
+    return run([PY, "-m", "writer.behavior"], title="🔍 Detecting behavioral patterns")
+
+
+def cmd_hypothesize(a) -> int:
+    cmd = [PY, "-m", "writer.hypothesize"]
+    if a.json:
+        cmd.append("--json")
+    return run(cmd, title="💡 Generating hypotheses from behavior flags")
+
+
+def cmd_experiment(a) -> int:
+    cmd = [PY, "-m", "rl.experiment"]
+    if a.list:
+        cmd.append("--list")
+        return run(cmd, title="📋 Listing open hypotheses")
+    if a.hypothesis is None:
+        console.print(Panel(
+            "Use --hypothesis <id> to run an experiment, or --list to see open hypotheses.",
+            border_style=EMBER[3], style="yellow"
+        ))
+        return 1
+    cmd += ["--hypothesis", str(a.hypothesis), "--steps", str(a.steps),
+            "--seeds", a.seeds, "--episodes", str(a.episodes)]
+    if a.map:
+        cmd += ["--map", a.map]
+    if a.dry_run:
+        cmd.append("--dry-run")
+    return run(cmd, title=f"🧪 Running experiment H{a.hypothesis} · {a.steps:,} steps/arm")
+
+
+def cmd_curriculum(a) -> int:
+    cmd = [PY, "-m", "rl.curriculum"]
+    if a.note:
+        cmd.append("--note")
+    return run(cmd, title="📚 Curriculum: difficulty scores + forgetting alerts")
+
+
+def cmd_research(a) -> int:
+    cmd = [PY, "-m", "rl.research_agent",
+           "--iterations", str(a.iterations),
+           "--steps", str(a.steps),
+           "--episodes", str(a.episodes)]
+    if a.map:
+        cmd += ["--map", a.map]
+    if a.fresh:
+        cmd.append("--fresh")
+    if a.dry_run:
+        cmd.append("--dry-run")
+    return run(cmd, title=f"🤖 Research Agent · {a.iterations} iter × {a.steps:,} steps"
+                          f"{' [DRY RUN]' if a.dry_run else ''}")
+
+
+def cmd_db(a) -> int:
+    cmd = [PY, "-m", "writer.db", a.db_cmd or "build"]
+    if a.keyword:
+        cmd.append(a.keyword)
+    if a.event_type:
+        cmd += ["--type", a.event_type]
+    if a.map_name:
+        cmd += ["--map", a.map_name]
+    if a.lessons:
+        cmd.append("--lessons")
+    return run(cmd, title=f"🗄️  SQLite memory: {a.db_cmd or 'build'}")
+
+
+def cmd_intel(a) -> int:
+    from config import Config
+    from rl.algo import brain_prefix
+    from rl.introspect import (
+        best_run, brain_report, cognition_stats, disk_usage, training_stats,
+    )
+    cfg = Config()
+
+    # Resolve the current brain family + its latest checkpoint.
+    try:
+        from doom.campaign import campaign_metadata
+        meta = campaign_metadata(cfg.wad_path, cfg.maps[0], strafe=cfg.strafe)
+        n_actions = meta["num_actions"]
+    except Exception:
+        n_actions = 11
+    name_prefix = brain_prefix("campaign", n_actions, cfg.use_lstm,
+                               cfg.spatial_memory, cfg.depth_perception, cfg.automap,
+                               cfg.frame_stack, cfg.game_vars)
+    from rl.train import _latest_checkpoint
+    brain_path = _latest_checkpoint(cfg, name_prefix)
+
+    console.print(Panel("🧠  HeLLMind — Intelligence Report", border_style=EMBER[1], style="bold"))
+
+    # ---- Neural network (the proof) ----
+    rep = brain_report(brain_path) if brain_path else {"exists": False}
+    if not rep.get("exists"):
+        console.print(Panel("No trained brain found in this vault yet — run `doom-cli train`.",
+                            title="🔬 Neural network", border_style=EMBER[3]))
+    elif rep.get("error"):
+        console.print(Panel(f"Brain present but unreadable: {rep['error']}",
+                            title="🔬 Neural network", border_style=EMBER[3]))
+    else:
+        t = Table(title="🔬 Neural network — proof it's a real CNN", border_style=EMBER[2])
+        t.add_column("property"); t.add_column("value", style="bold")
+        t.add_row("policy", rep["policy_class"])
+        t.add_row("total parameters", f"{rep['total_params']:,}")
+        t.add_row("trainable parameters", f"{rep['trainable_params']:,}")
+        t.add_row("weight-bearing layers (depth)", str(rep["depth"]))
+        t.add_row("input (observation)", str(rep["obs_shape"]))
+        t.add_row("output (actions)", str(rep["n_actions"]))
+        t.add_row("device", rep["device"])
+        t.add_row("file size", f"{rep['size_mb']} MB")
+        console.print(t)
+        arch = Table(title="Architecture (the layers)", border_style=EMBER[3])
+        arch.add_column("#"); arch.add_column("layer"); arch.add_column("params", justify="right")
+        for i, lay in enumerate(rep["weight_layers"]):
+            arch.add_row(str(i), lay["desc"], f"{lay['params']:,}")
+        console.print(arch)
+
+    # ---- Training ----
+    ts = training_stats(cfg.checkpoint_dir, name_prefix)
+    br = best_run(cfg.memory_dir)
+    tr = Table(title="📈 Training", border_style=EMBER[2])
+    tr.add_column("metric"); tr.add_column("value", style="bold")
+    tr.add_row("total steps trained", f"{ts['total_steps']:,}")
+    tr.add_row("checkpoints saved", str(ts["checkpoints"]))
+    if br:
+        m = br.get("metrics", {})
+        tr.add_row("best run score", f"{br['score']:.3f} ({br['source']}, iter {br.get('iter')})")
+        if m:
+            tr.add_row("  └ at that run", f"explored={m.get('explored_fraction',0):.0%} "
+                       f"kills={m.get('kills_per_episode',0):.2f} exit={m.get('exit_rate',0):.0%}")
+    console.print(tr)
+
+    # ---- Cognitive memory ----
+    cg = cognition_stats(cfg.memory_dir)
+    cm = Table(title="🧩 Cognitive memory (accumulated)", border_style=EMBER[2])
+    cm.add_column("store"); cm.add_column("count", style="bold")
+    cm.add_row("episode events", f"{cg['events']:,}")
+    cm.add_row("lessons", str(cg["lessons"]))
+    cm.add_row("hypotheses", f"{cg['hypotheses']} ({cg['confirmed_hypotheses']} confirmed)")
+    cm.add_row("experiments", str(cg["experiments"]))
+    cm.add_row("learned (proven) knobs", str(cg["learned_knobs"]))
+    cm.add_row("frontier cells (Go-Explore)", str(cg["frontier_cells"]))
+    cm.add_row("maps with known exit", str(cg["exits_known"]))
+    console.print(cm)
+
+    # ---- Disk ----
+    du = disk_usage(cfg)
+    dk = Table(title="💾 Disk usage", border_style=EMBER[2])
+    dk.add_column("component"); dk.add_column("size", style="bold")
+    dk.add_row("brains (checkpoints)", f"{du['checkpoints_mb']} MB")
+    dk.add_row("cognitive memory", f"{du['memory_mb']} MB")
+    dk.add_row("vault (everything)", f"{du['vault_total_mb']} MB")
+    console.print(dk)
+    return 0
+
+
+def cmd_learned(a) -> int:
+    from config import Config
+    from writer.learned_config import LearnedConfig
+    from writer.memory_policy import adopt_improved_experiments
+    cfg = Config()
+    adopt_improved_experiments(cfg.memory_dir)  # pull in any new "improved" verdicts
+    rec = LearnedConfig(cfg.memory_dir).load()
+    if not rec:
+        console.print(Panel("No proven reward knobs yet — run experiments that get an "
+                            "'improved' verdict (doom-cli experiment / research).",
+                            title="🧠 learned config", border_style=EMBER[3]))
+        return 0
+    console.print(Panel(f"{len(rec)} reward knob(s) the agent has PROVEN help — applied on "
+                        f"every train/auto boot.", title="🧠 learned config",
+                        border_style=EMBER[2]))
+    for k, v in rec.items():
+        console.print(f"  [bold]{k}[/bold] = {v.get('value')}   "
+                      f"[dim]({v.get('source')}, {v.get('verdict')}, "
+                      f"conf={v.get('confidence')})[/dim]")
+    return 0
+
+
+def cmd_bc(a) -> int:
+    cmd = [PY, "-m", "rl.bc", "--epochs", str(a.epochs)]
+    if a.demos:
+        cmd += ["--demos", a.demos]
+    return run(cmd, title="🎓 Behavioral cloning — learning from human demos")
+
+
+def cmd_eureka(a) -> int:
+    cmd = [PY, "-m", "rl.eureka", "--generations", str(a.generations),
+           "--pop", str(a.pop), "--steps", str(a.steps), "--episodes", str(a.episodes)]
+    if a.map:
+        cmd += ["--map", a.map]
+    return run(cmd, title="🧬 Eureka — evolving the reward design (LLM-guided)")
+
+
+def cmd_audit(a) -> int:
+    cmd = [PY, "-m", "rl.audit"]
+    if a.run:
+        cmd += ["--run", a.run]
+    if a.json:
+        cmd.append("--json")
+    if a.plot:
+        cmd.append("--plot")
+    return run(cmd, title="🔬 RL quality audit — is the agent genuinely learning?")
+
+
+def cmd_recall(a) -> int:
+    from config import Config
+    from writer import db as _db
+    from writer.recall import recall, recall_region
+
+    cfg = Config()
+    _db.build(cfg.memory_dir)
+
+    if a.enemy:
+        from writer.recall import recall_enemy as _re
+        rows = _re(a.enemy, memory_dir=cfg.memory_dir)
+        console.print(Panel(f"Episodes near [bold]{a.enemy}[/bold]: {len(rows)}",
+                            title="🔍 recall enemy", border_style=EMBER[2]))
+        for r in rows[:20]:
+            console.print(f"  [{r.get('type','?')}] {r.get('map','?')} · "
+                          f"hp={r.get('health')} kills={r.get('kills')} "
+                          f"region={r.get('region','')} cov={r.get('coverage')}")
+        return 0
+
+    if a.region:
+        rows = recall_region(a.region, memory_dir=cfg.memory_dir)
+        console.print(Panel(f"Episodes ending in region [bold]{a.region}[/bold]: {len(rows)}",
+                            title="🗺️  recall region", border_style=EMBER[2]))
+        for r in rows[:20]:
+            console.print(f"  [{r.get('type','?')}] {r.get('map','?')} · "
+                          f"hp={r.get('health')} kills={r.get('kills')} enemy={r.get('nearest_enemy','')}")
+        return 0
+
+    # General keyword recall
+    query = " ".join(a.query) if a.query else "MAP01"
+    results = recall(query, memory_dir=cfg.memory_dir, top_k=a.top_k)
+    console.print(Panel(f"Query: [bold]{query}[/bold] → {len(results)} results",
+                        title="💭 recall", border_style=EMBER[2]))
+    for r in results:
+        icon = "📖" if r["source"] == "lesson" else "🎮"
+        console.print(f"  {icon} [bold]{r['title']}[/bold]")
+        console.print(f"     {r['body'][:120]}")
+    return 0
 
 
 def cmd_clean(a) -> int:
@@ -322,7 +739,7 @@ def cmd_maps(a) -> int:
         t.add_column(col)
     for m in a.maps:
         try:
-            out = subprocess.run([PY, "probe_map.py", m], cwd=ROOT, timeout=45,
+            out = subprocess.run([PY, os.path.join(ROOT, "scripts", "probe_map.py"), m], cwd=ROOT, timeout=45,
                                  capture_output=True, text=True).stdout
             line = next((l for l in out.splitlines() if l.startswith("MAP=")), "")
             d = dict(p.split("=") for p in line.split() if "=" in p)
@@ -389,7 +806,12 @@ def build_parser() -> argparse.ArgumentParser:
     t.add_argument("--map"); t.add_argument("--steps", type=int, default=200000)
     t.add_argument("--envs", type=int); t.add_argument("--fresh", action="store_true")
     t.add_argument("--spatial", action="store_true"); t.add_argument("--no-docs", action="store_true")
+    t.add_argument("--depth", action="store_true", help="Depth-perception obs channel (forces --fresh).")
+    t.add_argument("--strafe", action="store_true", help="Add strafe actions (forces --fresh).")
+    t.add_argument("--game-vars", dest="game_vars", action="store_true", help="Feed HEALTH/AMMO into the policy (forces --fresh).")
+    t.add_argument("--automap", action="store_true", help="Native top-down automap channel (forces --fresh).")
     t.add_argument("--lstm", action="store_true", help="RecurrentPPO/LSTM policy (USE_LSTM).")
+    t.add_argument("--rnd", action="store_true", help="Enable RND intrinsic curiosity (USE_RND=1).")
     t.set_defaults(fn=cmd_train)
 
     w = sub.add_parser("watch"); w.add_argument("--episodes", type=int, default=3)
@@ -401,11 +823,23 @@ def build_parser() -> argparse.ArgumentParser:
     e.add_argument("--lstm", action="store_true", help="Evaluate an LSTM brain (USE_LSTM).")
     e.add_argument("--stochastic", action="store_true",
                    help="Sample the policy (vs argmax) — for unconverged brains.")
+    e.add_argument("--temperature", type=float, default=None,
+                   help="Tempered sampling (e.g. 0.5): act on the learned distribution "
+                        "without the argmax-collapse. Overrides --stochastic.")
     e.set_defaults(fn=cmd_eval)
 
     au = sub.add_parser("auto"); au.add_argument("--iterations", type=int, default=5)
     au.add_argument("--steps", type=int, default=100000); au.add_argument("--map")
-    au.add_argument("--fresh", action="store_true")
+    au.add_argument("--fresh", "--clear", dest="fresh", action="store_true",
+                    help="Start over from zero (fresh brain + cleared history). Default = resume.")
+    au.add_argument("--spatial", action="store_true", help="Spatial memory obs (forces --fresh).")
+    au.add_argument("--rnd", action="store_true", help="RND intrinsic curiosity.")
+    au.add_argument("--goexplore", action="store_true", help="Go-Explore frontier-goal resets.")
+    au.add_argument("--depth", action="store_true", help="Depth-perception obs channel.")
+    au.add_argument("--strafe", action="store_true", help="Add strafe actions (forces --fresh).")
+    au.add_argument("--game-vars", dest="game_vars", action="store_true", help="Feed HEALTH/AMMO into the policy.")
+    au.add_argument("--automap", action="store_true", help="Native top-down automap channel (forces --fresh).")
+    au.add_argument("--resume", action="store_true", help="(default now) Continue prior session.")
     au.add_argument("--llm", action="store_true", help="LLM-refined reward proposals.")
     au.add_argument("--lstm", action="store_true", help="RecurrentPPO/LSTM policy.")
     au.set_defaults(fn=cmd_auto)
@@ -429,10 +863,81 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("config").set_defaults(fn=cmd_config)
     sub.add_parser("status").set_defaults(fn=cmd_status)
 
+    au_p = sub.add_parser("audit", help="RL quality audit (explained variance, entropy, KL)")
+    au_p.add_argument("--run", default=None, help="TensorBoard run dir (default: latest)")
+    au_p.add_argument("--json", action="store_true", dest="json")
+    au_p.add_argument("--plot", action="store_true", help="Show matplotlib charts")
+    au_p.set_defaults(fn=cmd_audit)
+
+    sub.add_parser("intel", help="Intelligence report: NN architecture/params/depth, training, memory, disk").set_defaults(fn=cmd_intel)
+    sub.add_parser("learned", help="Show reward knobs the agent has PROVEN help").set_defaults(fn=cmd_learned)
+
+    bc_p = sub.add_parser("bc", help="Behavioral cloning from human SPECTATOR demos")
+    bc_p.add_argument("--demos", default=None, help="Demos dir (default: <memory>/demos)")
+    bc_p.add_argument("--epochs", type=int, default=10)
+    bc_p.set_defaults(fn=cmd_bc)
+
+    eu = sub.add_parser("eureka", help="LLM-guided evolutionary reward search")
+    eu.add_argument("--generations", type=int, default=3)
+    eu.add_argument("--pop", type=int, default=4, help="Candidates per generation")
+    eu.add_argument("--steps", type=int, default=50000, help="Train steps per candidate")
+    eu.add_argument("--episodes", type=int, default=10)
+    eu.add_argument("--map", default=None)
+    eu.set_defaults(fn=cmd_eureka)
+
     cl = sub.add_parser("clean"); cl.add_argument("--brain", action="store_true")
     cl.add_argument("--memory", action="store_true"); cl.set_defaults(fn=cmd_clean)
 
     m = sub.add_parser("maps"); m.add_argument("maps", nargs="+"); m.set_defaults(fn=cmd_maps)
+
+    sub.add_parser("diagnose").set_defaults(fn=cmd_diagnose)
+    sub.add_parser("perception").set_defaults(fn=lambda a: run(
+        [PY, "-m", "writer.perception_note"],
+        title="🧠 Writing agent perception note to vault"
+    ))
+    sub.add_parser("behavior").set_defaults(fn=cmd_behavior)
+
+    rc = sub.add_parser("recall", help="Query episodic memory")
+    rc.add_argument("query", nargs="*", help="Free-text query")
+    rc.add_argument("--enemy", default=None, help="Filter by nearest_enemy (partial match)")
+    rc.add_argument("--region", default=None, help="Filter by map region (e.g. '1x2')")
+    rc.add_argument("--top-k", type=int, default=10, dest="top_k")
+    rc.set_defaults(fn=cmd_recall)
+
+    hyp = sub.add_parser("hypothesize")
+    hyp.add_argument("--json", action="store_true"); hyp.set_defaults(fn=cmd_hypothesize)
+
+    ex = sub.add_parser("experiment")
+    ex.add_argument("--hypothesis", type=int, default=None)
+    ex.add_argument("--steps", type=int, default=200000)
+    ex.add_argument("--seeds", default="42,123")
+    ex.add_argument("--episodes", type=int, default=15)
+    ex.add_argument("--map", default=None)
+    ex.add_argument("--list", action="store_true")
+    ex.add_argument("--dry-run", action="store_true")
+    ex.set_defaults(fn=cmd_experiment)
+
+    db_p = sub.add_parser("db")
+    db_p.add_argument("db_cmd", nargs="?", default="build", choices=["build", "query"])
+    db_p.add_argument("keyword", nargs="?", default=None)
+    db_p.add_argument("--type", dest="event_type", default=None)
+    db_p.add_argument("--map", dest="map_name", default=None)
+    db_p.add_argument("--lessons", action="store_true")
+    db_p.set_defaults(fn=cmd_db)
+
+    cur = sub.add_parser("curriculum")
+    cur.add_argument("--note", action="store_true", help="Write vault note.")
+    cur.set_defaults(fn=cmd_curriculum)
+
+    res = sub.add_parser("research")
+    res.add_argument("--iterations", type=int, default=3)
+    res.add_argument("--steps", type=int, default=200000)
+    res.add_argument("--episodes", type=int, default=15)
+    res.add_argument("--map", default=None)
+    res.add_argument("--fresh", action="store_true")
+    res.add_argument("--dry-run", action="store_true")
+    res.set_defaults(fn=cmd_research)
+
     return p
 
 

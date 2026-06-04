@@ -13,7 +13,6 @@ import glob
 import os
 from typing import Optional
 
-from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import CheckpointCallback
 from stable_baselines3.common.vec_env import (
     DummyVecEnv,
@@ -136,20 +135,24 @@ def _probe_ollama(cfg: Config) -> bool:
 
 
 def _latest_checkpoint(cfg: Config, name_prefix: str) -> Optional[str]:
-    """The most recent brain for this task in the vault (prefers _final).
+    """The most recent brain for this task in the vault — by MODIFICATION TIME across both
+    `_final.zip` and `_<digits>_steps.zip`.
 
     Matches only this exact family. The step files are `{name_prefix}_<digits>_steps.zip`,
     so we glob the digit boundary — otherwise `ppo_campaign_a8` (a prefix of
     `ppo_campaign_a8_lstm`) would wrongly pick up a RecurrentPPO brain and crash the load.
+
+    Picking by mtime (not "prefer _final") matters: if a run is killed before its final
+    save, `_final.zip` is STALE and a newer `_<steps>.zip` exists — preferring _final would
+    silently resume the OLD brain and throw away the newer progress.
     """
+    candidates = glob.glob(os.path.join(cfg.checkpoint_dir, f"{name_prefix}_[0-9]*_steps.zip"))
     final = os.path.join(cfg.checkpoint_dir, f"{name_prefix}_final.zip")
     if os.path.exists(final):
-        return final
-    candidates = sorted(
-        glob.glob(os.path.join(cfg.checkpoint_dir, f"{name_prefix}_[0-9]*_steps.zip")),
-        key=os.path.getmtime,
-    )
-    return candidates[-1] if candidates else None
+        candidates.append(final)
+    if not candidates:
+        return None
+    return max(candidates, key=os.path.getmtime)
 
 
 def _resolve_resume(cfg: Config, args: argparse.Namespace, name_prefix: str) -> Optional[str]:
@@ -181,17 +184,12 @@ def build_vec_env(cfg: Config):
         first_map = cfg.maps[0]
         env_fns = [
             make_campaign_env(
-                cfg.wad_path,
+                cfg,
                 first_map,
-                cfg.frame_skip,
-                cfg.resolution,
-                cfg.episode_timeout,
-                cfg.kills_to_clear,
-                cfg.seed,
                 rank,
-                window_visible=cfg.render,
                 rewards=rewards,
-                spatial_memory=cfg.spatial_memory,
+                window_visible=cfg.render,
+                memory_dir=cfg.memory_dir if cfg.memory_enabled else None,
             )
             for rank in range(cfg.n_envs)
         ]
@@ -208,8 +206,11 @@ def build_vec_env(cfg: Config):
             )
             for rank in range(cfg.n_envs)
         ]
-    # Render needs a window in the main process -> DummyVecEnv (no subprocess).
-    venv = DummyVecEnv(env_fns) if cfg.render else SubprocVecEnv(env_fns)
+    # DummyVecEnv (in-process) when rendering OR running a single env — spawning a subprocess
+    # worker for one env is pointless and, under memory pressure, a worker that gets OOM-killed
+    # breaks the parent's pipe (silent exit 1). SubprocVecEnv only earns its keep with N>1.
+    use_dummy = cfg.render or cfg.n_envs == 1
+    venv = DummyVecEnv(env_fns) if use_dummy else SubprocVecEnv(env_fns)
     venv = VecMonitor(venv)  # aggregated episode stats
     venv = VecFrameStack(venv, n_stack=cfg.frame_stack)  # stack frames (motion)
     return venv
@@ -230,7 +231,7 @@ def main() -> None:
 
     # Discover button names (action-distribution labels) without booting training.
     if cfg.campaign:
-        meta = campaign_metadata(cfg.wad_path, cfg.maps[0])
+        meta = campaign_metadata(cfg.wad_path, cfg.maps[0], strafe=cfg.strafe)
         button_names = meta["button_names"]
         print(
             f"Campaign | WAD: {os.path.basename(cfg.wad_path)} | "
@@ -246,10 +247,11 @@ def main() -> None:
     # Include the action count so resume never loads an incompatible brain
     # (e.g., a 7-button campaign checkpoint into an 8-button one).
     task = "campaign" if cfg.campaign else cfg.scenario
-    # Tag the policy family (`_lstm`) so a recurrent brain never cross-loads with a
-    # feed-forward one (same guard idea as the action-count `a{N}`).
-    from rl.algo import algo_class, describe, policy_name, policy_tag
-    name_prefix = f"ppo_{task}_a{meta['num_actions']}{policy_tag(cfg.use_lstm)}"
+    # Tag the brain family (`_lstm`, `_sp`) so a recurrent or spatial-memory brain never
+    # cross-loads with an incompatible one (same guard idea as the action-count `a{N}`).
+    from rl.algo import algo_class, brain_prefix, describe, policy_name
+    name_prefix = brain_prefix(task, meta["num_actions"], cfg.use_lstm,
+                               cfg.spatial_memory, cfg.depth_perception, cfg.automap, cfg.frame_stack, cfg.game_vars)
     AlgoClass = algo_class(cfg.use_lstm)
 
     # By DEFAULT, reuse this vault's brain (don't restart from scratch).
@@ -267,7 +269,7 @@ def main() -> None:
         algo_label, pol = describe(cfg.use_lstm)
         print(f"[brain] policy: {algo_label} / {pol}")
         model = AlgoClass(
-            policy=policy_name(cfg.use_lstm),
+            policy=policy_name(cfg.use_lstm, cfg.game_vars),
             env=venv,
             n_steps=cfg.n_steps,
             batch_size=cfg.batch_size,
