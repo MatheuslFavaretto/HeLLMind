@@ -106,6 +106,13 @@ class Config:
     # CENTRED in view (in the crosshair). Encourages facing/approaching enemies instead of
     # wandering past them — complements hit/miss. Keep small so it can't replace killing. 0=off.
     engagement_reward: float = float(os.getenv("ENGAGEMENT_REWARD", "0.01"))
+    # Combat/exploration decoupling (Arnold/ViZDoom-champion style): pursue ONE objective at a
+    # time, gated by ground-truth enemy visibility (USE_LABELS). Enemy on screen -> COMBAT
+    # focus (damp exploration pulls so it doesn't wander off mid-fight); screen clear ->
+    # EXPLORE focus (damp the miss penalty so blind shots while navigating aren't punished).
+    # factor = how hard to damp the off-mode rewards (0.25 = keep 25%). Needs USE_LABELS.
+    combat_explore_split: bool = os.getenv("COMBAT_EXPLORE_SPLIT", "1") in ("1", "true", "True")
+    combat_explore_factor: float = float(os.getenv("COMBAT_EXPLORE_FACTOR", "0.25"))
     # Closed loop (bestiary -> reward): scale the kill bonus by what the agent LEARNED about
     # each monster — killing a deadlier type (higher death-rate-when-present) pays more. Uses
     # the persisted bestiary; needs one prior run to have data. Opt-in (changes the reward).
@@ -196,6 +203,8 @@ class Config:
             "exit_reward": self.exit_reward,
             "exit_prox_scale": self.exit_prox_scale,
             "engagement_reward": self.engagement_reward,
+            "combat_explore_split": float(self.combat_explore_split),
+            "combat_explore_factor": self.combat_explore_factor,
             "weapon_variety_reward": self.weapon_variety_reward,
             "use_rnd":  float(self.use_rnd),
             "rnd_scale": self.rnd_scale,

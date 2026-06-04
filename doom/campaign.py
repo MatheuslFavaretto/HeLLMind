@@ -86,6 +86,21 @@ def default_wad() -> str:
     return os.path.join(os.path.dirname(vzd.scenarios_path), "freedoom2.wad")
 
 
+def mode_scales(enemies_in_view: int, split_on: bool, factor: float):
+    """Combat/exploration decoupling weights (pure, so it's unit-testable without ViZDoom).
+
+    Returns (explore_scale, combat_scale):
+      - split off  -> (1, 1): every shaping term at full strength.
+      - enemy seen -> (factor, 1): COMBAT — damp exploration pulls, full combat signal.
+      - clear view -> (1, factor): EXPLORE — full exploration, damp combat penalties.
+    """
+    if not split_on:
+        return 1.0, 1.0
+    if enemies_in_view > 0:
+        return factor, 1.0
+    return 1.0, factor
+
+
 class CampaignDoomEnv(gym.Env):
     """Plays a full WAD map. The map can be switched at runtime."""
 
@@ -121,6 +136,10 @@ class CampaignDoomEnv(gym.Env):
         self._game_vars = bool(game_vars)     # feed HEALTH/AMMO into the policy (DFP/Arnold)
         self._engagement_reward = float((rewards or {}).get("engagement_reward", 0.0))
         r = rewards or {}
+        # Combat/exploration decoupling: gate which objective the shaping emphasises by
+        # ground-truth enemy visibility (needs labels). See Config.combat_explore_split.
+        self._combat_explore_split = bool(r.get("combat_explore_split", 0.0))
+        self._ce_factor = float(r.get("combat_explore_factor", 0.25))
         self._hit_reward = float(r.get("hit_reward", HIT_REWARD))
         self._miss_penalty = float(r.get("miss_penalty", MISS_PENALTY))
         self._damage_penalty = float(r.get("damage_taken_penalty", 0.1))
@@ -561,6 +580,18 @@ class CampaignDoomEnv(gym.Env):
             obs = self._zero_obs()  # terminal step: a valid zero obs (handles Dict too)
             self._step_threat_bonus = 0.0  # no tracking on the terminal step
 
+        # Combat/exploration decoupling (champion-style, gated by ground-truth enemy
+        # visibility): pursue ONE objective at a time so they don't fight each other.
+        #   enemy on screen -> COMBAT: damp exploration pulls (don't wander off mid-fight)
+        #   screen clear     -> EXPLORE: damp the miss penalty (blind shots while navigating
+        #                       shouldn't be punished); exploration drives.
+        split_on = self._combat_explore_split and self._use_labels and not done
+        explore_scale, combat_scale = mode_scales(
+            self._enemies_in_view, split_on, self._ce_factor)
+        cov_bonus *= explore_scale
+        weapon_bonus *= explore_scale
+        frontier_bonus *= explore_scale
+
         # Reward shaping: kills positive, damage taken negative, + aim, + movement,
         # + exploration (new cells).
         shaped = base_reward + self._kill_reward * deltas["killcount"]
@@ -574,7 +605,7 @@ class CampaignDoomEnv(gym.Env):
         shaped += self._step_threat_bonus                 # extra for deadlier monsters (bestiary)
         if self._rnd and not done:
             rnd_bonus = self._rnd.bonus(raw["position_x"], raw["position_y"])
-            shaped += rnd_bonus
+            shaped += rnd_bonus * explore_scale  # curiosity is an exploration pull
         # Exit proximity shaping: small reward for getting closer to the memorised exit.
         # Activates only after the first successful exit (self._exit_pos is set).
         if self._exit_pos is not None and not done and self._prev_exit_dist is not None:
@@ -595,13 +626,13 @@ class CampaignDoomEnv(gym.Env):
             gdist = ((gx - px) ** 2 + (gy - py) ** 2) ** 0.5
             progress = self._prev_goal_dist - gdist
             if progress > 0:
-                shaped += self._goal_scale * progress  # guide back toward the frontier
+                shaped += self._goal_scale * progress * explore_scale  # frontier pull
             self._prev_goal_dist = gdist
             if gdist <= self._goal_radius:
                 self._goal_reached = True  # arrived: hand off to the exploration bonuses
         attacked = self._action_attacks[int(action)]  # this action pressed ATTACK
         if attacked and deltas["hitcount"] == 0 and not done:
-            shaped -= self._miss_penalty
+            shaped -= self._miss_penalty * combat_scale  # don't punish blind shots while exploring
 
         # Completion: reaching the level EXIT = episode ended, not dead, before the
         # timeout. That's the real "I finished the map". Clearing the kill quota also
@@ -637,6 +668,8 @@ class CampaignDoomEnv(gym.Env):
         }
         if self._use_labels:
             doom["enemies_in_view"] = int(self._enemies_in_view)  # ground-truth on-screen count
+            if self._combat_explore_split:
+                doom["mode"] = "combat" if self._enemies_in_view > 0 else "explore"
         if done:
             doom["terminal"] = (
                 "death" if dead else ("exit" if reached_exit else "timeout")
