@@ -53,18 +53,20 @@ Watching the bot: it ignores enemies, doesn't shoot, bangs on closed doors. Root
 
 - [x] **Episodic memory** ✅ — events store situation→action→result (weapon/region/nearest_enemy).
 - [x] **Semantic recall** ✅ — `doom-cli recall "revenant"` (by keyword/enemy/region) works.
-- [ ] **Long-term knowledge tiers** 🟡 — split Facts / Hypotheses / Validated. We have hypotheses
-  + lessons + learned_config; formalize the 3 tiers explicitly.
+- [x] **Long-term knowledge tiers** ✅ DONE — `writer/knowledge.py` + `doom-cli knowledge`
+  present Facts (bestiary) / Hypotheses (open) / Validated (confirmed + learned_config).
 
 ---
 
 ## 🟡 P4 — Coach (the self-improvement loop)
 
 - [x] **Structured hypotheses** ✅ — `hypothesize` → `experiment` → verdict → `learned_config`.
-- [ ] **Auto-chain it inside `auto`** ❌ — today the falsifiable cycle is MANUAL (or via
-  `research`). `auto` only tunes reward + reverts. Wire hypothesize→experiment→adopt into `auto`.
-- [x] **Rollback / keep-if-improved** ✅ — auto reverts regressions (see `timeline`).
-- [x] **Experiment registry** ✅ — SQLite `experiments` table + `db query --experiments`.
+- [x] **Auto-chain it inside `auto`** ✅ DONE — every auto iteration now records its reward
+  change + keep/revert verdict into the experiment registry (single-seed, so NOT auto-adopted;
+  multi-seed `experiment` stays the validation path).
+- [x] **Rollback / keep-if-improved** ✅ — auto reverts regressions (see `timeline`), now logged.
+- [x] **Experiment registry** ✅ — SQLite `experiments` table + `db query --experiments`,
+  populated by both `experiment` (validated) and `auto` (kept/reverted trail).
 
 ---
 
@@ -116,9 +118,12 @@ Watching the bot: it ignores enemies, doesn't shoot, bangs on closed doors. Root
   prioritization + pruning) · automatic goal discovery (reward first sighting of keys/weapons/
   powerups/new monsters via the labels buffer).
 
+## ✅ Wave 3 — DONE (this pass)
+
+- Long-term knowledge tiers (`doom-cli knowledge`: facts/hypotheses/validated) · auto-chain
+  (every auto iteration logged to the experiment registry with its keep/revert verdict).
+
 ## ▶️ Next waves
-- **Wave 3 (P4+P3):** auto-chain hypothesize→experiment inside `auto` · long-term knowledge
-  tiers (facts/hypotheses/validated).
 - **Wave 4 (P6+P7):** ablation report plots · `doom-cli report` (HTML) · GIFs (initial vs
   trained) · `docs/research/` paper · assisted mode (your live-feedback loop).
 - **Always-on:** long `auto`/Colab runs for the compute gap (the real exit-rate lever).
