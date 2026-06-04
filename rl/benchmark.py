@@ -94,17 +94,22 @@ def run(doom_map="MAP01", steps=50000, seeds=(42, 123), episodes=20, n_envs=4,
                   f"elapsed {_fmt(elapsed)} · ~{_fmt(remaining)} left"
                   + (f" · ETA {datetime.fromtimestamp(eta).strftime('%H:%M')}" if remaining > 0
                      else " · DONE"))
-        results[name] = _aggregate(per_seed)
+        agg = _aggregate(per_seed)
+        agg["_score"] = _config_score(agg)   # one rankable number per config
+        results[name] = agg
 
+    best = max(results, key=lambda n: results[n]["_score"]) if results else None
     payload = {
         "generated": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "map": doom_map, "steps": steps, "seeds": list(seeds), "episodes": episodes,
-        "configs": results,
+        "best": best, "configs": results,
     }
     _write_json(out_dir, payload)
     _write_csv(out_dir, results)
     _write_md(out_dir, payload)
-    print(f"\n[benchmark] wrote results to {out_dir}/ (benchmark.json/.csv/.md)")
+    _write_html(out_dir, payload)
+    print(f"\n[benchmark] wrote results to {out_dir}/ "
+          f"(benchmark.json/.csv/.md/.html) · best config: {best}")
     return payload
 
 
@@ -116,6 +121,16 @@ def _fmt(seconds: float) -> str:
     if s < 3600:
         return f"{s // 60}m{s % 60:02d}s"
     return f"{s // 3600}h{(s % 3600) // 60:02d}m"
+
+
+def _config_score(agg: dict) -> float:
+    """One composite score per config so they can be ranked at a glance — same philosophy as
+    the auto loop: finishing > approaching the exit > exploring > fighting, minus dying."""
+    g = lambda k: float(agg.get(k, {}).get("mean", 0.0))
+    kills = min(g("kills_per_episode"), 5.0) / 5.0
+    return round(4.0 * g("exit_rate") + 1.5 * g("exit_progress")
+                 + 3.0 * g("explored_fraction") + 0.5 * kills
+                 - 1.0 * g("death_rate"), 3)
 
 
 def _aggregate(per_seed: list) -> dict:
@@ -142,24 +157,73 @@ def _write_csv(out_dir, results):
             f.write(",".join(row) + "\n")
 
 
+_PCT = {"exit_rate", "exit_progress", "explored_fraction", "combat_engagement", "death_rate"}
+
+
+def _cell(k, agg):
+    m, sd = agg[k]["mean"], agg[k]["std"]
+    return f"{m*100:.0f}±{sd*100:.0f}%" if k in _PCT else f"{m:.2f}±{sd:.2f}"
+
+
 def _write_md(out_dir, payload):
-    results = payload["configs"]
-    pct = {"exit_rate", "exit_progress", "explored_fraction", "combat_engagement", "death_rate"}
+    results, best = payload["configs"], payload.get("best")
     lines = ["# 📊 HeLLMind ablation benchmark", "",
              f"_map {payload['map']} · {payload['steps']:,} steps · "
              f"{len(payload['seeds'])} seeds · eval {payload['episodes']} eps (tempered)_", "",
-             "Does each layer add value? Mean ± std across seeds.", "",
-             "| config | " + " | ".join(METRIC_KEYS) + " |",
-             "|" + "---|" * (len(METRIC_KEYS) + 1)]
+             "Does each layer add value? **score** ranks each config (finishing > approaching "
+             "the exit > exploring > fighting − dying). Mean ± std across seeds.", "",
+             "| config | score | " + " | ".join(METRIC_KEYS) + " |",
+             "|" + "---|" * (len(METRIC_KEYS) + 2)]
     for name, agg in results.items():
-        cells = []
-        for k in METRIC_KEYS:
-            m, sd = agg[k]["mean"], agg[k]["std"]
-            cells.append(f"{m*100:.0f}±{sd*100:.0f}%" if k in pct else f"{m:.2f}±{sd:.2f}")
-        lines.append(f"| **{name}** | " + " | ".join(cells) + " |")
-    lines += ["", "> Reproduce: `doom-cli benchmark`. Raw numbers in `benchmark.json/.csv`."]
+        star = " ⭐" if name == best else ""
+        cells = " | ".join(_cell(k, agg) for k in METRIC_KEYS)
+        lines.append(f"| **{name}**{star} | **{agg.get('_score', 0):.2f}** | {cells} |")
+    lines += ["", f"> Best: **{best}**. Reproduce: `doom-cli benchmark`. "
+              "Open `benchmark.html` for the visual report."]
     with open(os.path.join(out_dir, "benchmark.md"), "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
+
+
+def _write_html(out_dir, payload):
+    """A self-contained dark/ember HTML report — score bars + the full metric table."""
+    results, best = payload["configs"], payload.get("best")
+    scores = {n: a.get("_score", 0.0) for n, a in results.items()}
+    smax = max(scores.values()) or 1.0
+    smin = min(scores.values())
+    span = (smax - smin) or 1.0
+
+    rows = ""
+    for name, agg in results.items():
+        is_best = name == best
+        frac = (scores[name] - smin) / span
+        bar_w = 8 + frac * 92  # 8–100% width so even the worst shows a sliver
+        cells = "".join(f"<td>{_cell(k, agg)}</td>" for k in METRIC_KEYS)
+        rows += (
+            f'<tr class="{"best" if is_best else ""}">'
+            f'<td class="cfg">{name}{" ⭐" if is_best else ""}</td>'
+            f'<td class="score"><div class="bar" style="width:{bar_w:.0f}%">'
+            f'{scores[name]:.2f}</div></td>{cells}</tr>\n')
+    heads = "".join(f"<th>{k.replace('_', ' ')}</th>" for k in METRIC_KEYS)
+    html = f"""<!doctype html><html><head><meta charset="utf-8">
+<title>HeLLMind benchmark</title><style>
+body{{background:#15110d;color:#f3e9dc;font:15px/1.5 -apple-system,Segoe UI,Roboto,sans-serif;margin:0;padding:40px}}
+h1{{color:#ff5a00;margin:0 0 4px}} .sub{{color:#9b8e7e;margin-bottom:24px}}
+table{{border-collapse:collapse;width:100%;max-width:1100px}}
+th,td{{padding:10px 12px;text-align:right;border-bottom:1px solid #3a2c1e}}
+th{{color:#ffd000;font-weight:600;text-align:right}} th:first-child,td.cfg{{text-align:left}}
+td.cfg{{font-weight:700;color:#ffb060}} tr.best{{background:#241a10}}
+.bar{{background:linear-gradient(90deg,#c41200,#ff9500);color:#15110d;font-weight:700;
+padding:3px 8px;border-radius:4px;text-align:right;min-width:34px}}
+.foot{{color:#9b8e7e;margin-top:20px;font-size:13px}}</style></head><body>
+<h1>📊 HeLLMind ablation benchmark</h1>
+<div class="sub">map {payload['map']} · {payload['steps']:,} steps · {len(payload['seeds'])} seeds ·
+eval {payload['episodes']} eps (tempered) · best: <b>{best}</b></div>
+<table><thead><tr><th>config</th><th>score</th>{heads}</tr></thead>
+<tbody>{rows}</tbody></table>
+<div class="foot">score = finishing &gt; approaching the exit &gt; exploring &gt; fighting − dying.
+Generated {payload['generated']}.</div></body></html>"""
+    with open(os.path.join(out_dir, "benchmark.html"), "w", encoding="utf-8") as f:
+        f.write(html)
 
 
 def main() -> None:

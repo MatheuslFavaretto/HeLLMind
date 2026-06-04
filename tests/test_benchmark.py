@@ -30,20 +30,32 @@ def test_aggregate_mean_and_std():
     assert agg["_seeds"] == 2
 
 
-def test_writers_produce_all_three_files(tmp_path):
-    results = {"baseline": _aggregate([{k: 0.1 for k in METRIC_KEYS}]),
-               "full": _aggregate([{k: 0.5 for k in METRIC_KEYS}])}
+def test_config_score_ranks_better_config_higher():
+    from rl.benchmark import _config_score
+    weak = _aggregate([{"explored_fraction": 0.05}])
+    strong = _aggregate([{"exit_rate": 0.5, "exit_progress": 0.8, "explored_fraction": 0.4}])
+    assert _config_score(strong) > _config_score(weak)
+
+
+def test_writers_produce_all_four_files(tmp_path):
+    from rl.benchmark import _config_score, _write_html
+    results = {}
+    for name, ev in (("baseline", 0.1), ("full", 0.5)):
+        agg = _aggregate([{k: ev for k in METRIC_KEYS}])
+        agg["_score"] = _config_score(agg)
+        results[name] = agg
+    best = max(results, key=lambda n: results[n]["_score"])
     payload = {"generated": "now", "map": "MAP01", "steps": 50000,
-               "seeds": [42], "episodes": 20, "configs": results}
+               "seeds": [42], "episodes": 20, "best": best, "configs": results}
     _write_json(str(tmp_path), payload)
     _write_csv(str(tmp_path), results)
     _write_md(str(tmp_path), payload)
-    for fname in ("benchmark.json", "benchmark.csv", "benchmark.md"):
+    _write_html(str(tmp_path), payload)
+    for fname in ("benchmark.json", "benchmark.csv", "benchmark.md", "benchmark.html"):
         assert os.path.exists(tmp_path / fname)
-    loaded = json.loads((tmp_path / "benchmark.json").read_text())
-    assert "full" in loaded["configs"]
-    assert "baseline" in (tmp_path / "benchmark.md").read_text()
-    assert "config" in (tmp_path / "benchmark.csv").read_text()
+    html = (tmp_path / "benchmark.html").read_text()
+    assert "<table" in html and "score" in html
+    assert "best" in (tmp_path / "benchmark.md").read_text().lower()
 
 
 def test_fmt_durations():
