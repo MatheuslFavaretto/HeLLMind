@@ -165,6 +165,10 @@ def main() -> None:
             "cells_visited": float(cov.get("cells_visited", 0.0)),
             "mean_base_reward": float(s["mean_base_reward"]),
             "mean_episode_length": float(s["mean_episode_length"]),
+            # Combat vs exploration regime — so the coach tunes each one separately.
+            "combat_fraction": float(s.get("combat_fraction", 0.0)),
+            "combat_engagement": float(s.get("combat_engagement", 0.0)),
+            "combat_accuracy": float(s.get("combat_accuracy", 0.0)),
         }
         print("METRICS_JSON " + json.dumps(metrics))
 

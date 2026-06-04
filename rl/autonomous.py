@@ -115,13 +115,21 @@ def propose(env: dict, m: dict) -> tuple[dict, str]:
         bump("DEATH_PENALTY", factor=1.2)
         return new, (f"death_rate {m.get('death_rate',0):.0%} -> raise DAMAGE_TAKEN_PENALTY "
                      f"to {new['DAMAGE_TAKEN_PENALTY']}, DEATH_PENALTY to {new['DEATH_PENALTY']}")
-    # Passivity / argmax-collapse: barely kills despite not timing out -> the deterministic
-    # policy has frozen. Un-freeze it (entropy) and pay it to face enemies.
+    # COMBAT regime diagnosis (separate from exploration): the agent SEES enemies but won't
+    # shoot (combat_engagement low) or barely kills -> the deterministic policy has frozen.
+    # Un-freeze it (entropy) and pay it to face enemies. Uses the per-mode telemetry when
+    # present (combat_fraction/engagement), else falls back to kills/ep.
     kills = m.get("kills_per_episode", 0.0)
-    if kills < 0.5 and timeout_rate < 0.6:
+    engagement = m.get("combat_engagement")
+    saw_enemies = m.get("combat_fraction", 0.0) > 0.05
+    combat_passive = (engagement is not None and saw_enemies and engagement < 0.3) \
+        or (kills < 0.5 and timeout_rate < 0.6)
+    if combat_passive:
         bump("ENT_COEF", factor=1.3)
         bump("ENGAGEMENT_REWARD", factor=1.5)
-        return new, (f"passive (kills/ep={kills:.2f}) -> un-freeze policy: ENT_COEF to "
+        why = (f"combat_engagement={engagement:.0%} (sees enemies, won't shoot)"
+               if engagement is not None and saw_enemies else f"kills/ep={kills:.2f}")
+        return new, (f"passive in combat ({why}) -> un-freeze policy: ENT_COEF to "
                      f"{new['ENT_COEF']}, ENGAGEMENT_REWARD to {new['ENGAGEMENT_REWARD']}")
     if explored < 0.5:
         bump("COVERAGE_REWARD", factor=1.3)

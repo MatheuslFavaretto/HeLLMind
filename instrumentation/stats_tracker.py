@@ -40,6 +40,14 @@ class StatsTracker:
         # we fall back to the single-button method (scenario env).
         self.attack_steps = 0
         self._has_attack_flag = False
+        # Combat/exploration split telemetry (needs USE_LABELS): how the agent spends its
+        # time and whether it actually FIGHTS when it sees an enemy — the two regimes the
+        # reward decoupling separates, so the coach can tune each one independently.
+        self.combat_steps = 0          # steps with an enemy on screen
+        self.explore_steps = 0         # steps with a clear screen
+        self.combat_attack_steps = 0   # of combat steps, how many it pressed ATTACK
+        self.combat_hits = 0.0         # hits landed while in combat
+        self._has_mode_flag = False
         self.episode_rewards: List[float] = []
         self.base_returns: List[float] = []  # native (unshaped) episode returns
         self.episode_lengths: List[int] = []
@@ -76,6 +84,17 @@ class StatsTracker:
                     self._has_attack_flag = True
                     if doom["attacked"]:
                         self.attack_steps += 1
+                # Combat vs exploration regime (ground-truth enemy visibility).
+                if "enemies_in_view" in doom:
+                    self._has_mode_flag = True
+                    in_combat = int(doom["enemies_in_view"]) > 0
+                    if in_combat:
+                        self.combat_steps += 1
+                        if doom.get("attacked"):
+                            self.combat_attack_steps += 1
+                        self.combat_hits += float(doom["deltas"].get("hitcount", 0.0))
+                    else:
+                        self.explore_steps += 1
                 # Coverage/path: discretize position into a grid and count visits.
                 px = doom["levels"].get("position_x", 0.0)
                 py = doom["levels"].get("position_y", 0.0)
@@ -175,6 +194,11 @@ class StatsTracker:
             "shots_missed": misses,
             "shooting_accuracy": float(accuracy),
             "kills_per_episode": (d.get("killcount", 0.0) / n_eps) if n_eps else 0.0,
+            # Combat vs exploration regime (needs USE_LABELS). combat_fraction = how much
+            # time it spent facing enemies; combat_engagement = of that time, how often it
+            # actually SHOT (low = the passivity the user saw); combat_accuracy = aim in
+            # combat. These let the coach tune COMBAT and EXPLORATION separately.
+            **self._mode_metrics(),
             # exploration / path taken
             "distance_traveled": d.get("distance", 0.0),
             "distance_per_episode": (d.get("distance", 0.0) / n_eps) if n_eps else 0.0,
@@ -205,6 +229,22 @@ class StatsTracker:
         return snap
 
     # ------------------------------------------------------------------
+    def _mode_metrics(self) -> Dict[str, float]:
+        """Combat/exploration regime split (empty-ish if USE_LABELS is off)."""
+        if not self._has_mode_flag:
+            return {"combat_fraction": 0.0, "combat_engagement": 0.0, "combat_accuracy": 0.0}
+        total = self.combat_steps + self.explore_steps
+        return {
+            # share of decision steps spent with an enemy on screen
+            "combat_fraction": (self.combat_steps / total) if total else 0.0,
+            # of combat steps, how often it pressed ATTACK (low = passive when it sees enemies)
+            "combat_engagement": (self.combat_attack_steps / self.combat_steps)
+            if self.combat_steps else 0.0,
+            # aim while in combat (hits per attack step)
+            "combat_accuracy": (self.combat_hits / self.combat_attack_steps)
+            if self.combat_attack_steps else 0.0,
+        }
+
     def _coverage(self) -> Dict[str, float]:
         """Explored fraction of the map.
 
