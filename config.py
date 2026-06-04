@@ -63,6 +63,14 @@ class Config:
     # DETERMINISTIC (argmax) policy freezes — the exact gap measured on this agent.
     ent_coef: float = float(os.getenv("ENT_COEF", "0.03"))
     learning_rate: float = 2.5e-4
+    # Linearly decay the learning rate to 0 over each training call (a standard PPO practice
+    # that stabilises late training). On the chunked auto loop it's a per-chunk warm-restart
+    # decay. 1 = on.
+    lr_schedule: bool = os.getenv("LR_SCHEDULE", "1") in ("1", "true", "True")
+    # Normalise the (heavily shaped) reward with a running return std during training — helps
+    # PPO's value function when shaping terms have very different scales. Obs are NOT
+    # normalised (images stay raw). 1 = on.
+    normalize_reward: bool = os.getenv("NORMALIZE_REWARD", "1") in ("1", "true", "True")
     # Temperature the auto loop uses to SCORE the policy (not pure argmax). This agent's
     # argmax collapses to passive while its learned distribution explores+fights, so scoring
     # argmax would optimise a frozen policy. 0 = score argmax; 0.5 = tempered (recommended).
