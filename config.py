@@ -8,6 +8,17 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
+def _int_env(name: str, default: str) -> int:
+    """Parse an int-typed env var, tolerating float-like strings ('2100.0').
+    The auto-loop / memory_policy can emit floats for int knobs (e.g. EPISODE_TIMEOUT);
+    int('2100.0') would crash, so route every int knob through float() first."""
+    raw = os.getenv(name, default)
+    try:
+        return int(float(raw))
+    except (TypeError, ValueError):
+        return int(float(default))
+
+
 @dataclass
 class Config:
     # ---------- Doom environment ----------
@@ -16,7 +27,7 @@ class Config:
     # Stacked frames (motion). Tunable because each extra obs channel (spatial/depth/automap)
     # multiplies by frame_stack — so with all perception channels on, drop to 2 to fit memory
     # (4 base channels × 2 = 8, same footprint as spatial-only × 4). Tagged in the brain name.
-    frame_stack: int = int(os.getenv("FRAME_STACK", "2"))
+    frame_stack: int = _int_env("FRAME_STACK", "2")
     resolution: Tuple[int, int] = (84, 84)  # (width, height)
 
     # ---------- CAMPAIGN mode (full WAD maps, in order) ----------
@@ -31,18 +42,18 @@ class Config:
     )
     steps_per_map: int = int(os.getenv("STEPS_PER_MAP", "200000"))
     loop_maps: bool = os.getenv("LOOP_MAPS", "0") in ("1", "true", "True")
-    kills_to_clear: int = int(os.getenv("KILLS_TO_CLEAR", "5"))
-    episode_timeout: int = int(os.getenv("EPISODE_TIMEOUT", "2800"))  # ticks
+    kills_to_clear: int = _int_env("KILLS_TO_CLEAR", "5")
+    episode_timeout: int = _int_env("EPISODE_TIMEOUT", "2800")  # ticks
 
     # ---------- PPO training ----------
     total_timesteps: int = int(os.getenv("TOTAL_TIMESTEPS", "2000000"))
-    n_envs: int = int(os.getenv("N_ENVS", "8"))
+    n_envs: int = _int_env("N_ENVS", "8")
     # Rollout length per env. CRITICAL vs episode length: if n_steps ≈ episode length, each
     # rollout holds ~1 (often truncated) episode → poor GAE advantage estimates and slow
     # learning. Keep n_steps a few× SHORTER than the episode so several episodes fit per
     # rollout. Smaller n_steps also shrinks the obs rollout buffer (the memory hog with
     # spatial 8-channel obs), which is what lets more envs fit on a 16GB machine.
-    n_steps: int = int(os.getenv("N_STEPS", "1024"))
+    n_steps: int = _int_env("N_STEPS", "1024")
     batch_size: int = int(os.getenv("BATCH_SIZE", "256"))
     n_epochs: int = 4
     gamma: float = 0.99

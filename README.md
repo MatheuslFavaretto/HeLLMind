@@ -106,14 +106,10 @@ Stored on disk (JSONL for safe writes, SQLite as the queryable view):
 
 ### 5. Coach — the self-improvement loop
 
-```
-train a chunk → evaluate (tempered, the honest measure) → score against the GOAL
-   → tune the reward toward the weakest metric (heuristic + memory + optional LLM)
-   → revert anything that regressed → adopt anything proven → repeat
-```
-
-`doom-cli auto` runs this loop. It **resumes by default** and accumulates — leave it running
-and it keeps improving without losing progress.
+`doom-cli auto` trains a chunk, measures it honestly, and nudges one reward knob toward the
+weakest metric — **keeping the change only if it helped, undoing it if it hurt.** It resumes
+by default and accumulates, so you can just leave it running. The full cycle is the
+[knowledge loop](#-the-knowledge-loop) below.
 
 ### Learning from YOU (behavioral cloning)
 

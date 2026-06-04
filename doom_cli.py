@@ -109,11 +109,12 @@ COMMANDS = [
      "doom-cli hypothesize"),
     ("🧠 Cognition", "experiment", "Run a hypothesis-driven A/B experiment",
      "Takes a hypothesis ID, trains control+experimental branches (multi-seed), "
-     "judges the result honestly, and records it. Use --list to see open hypotheses.",
-     "doom-cli experiment --list / doom-cli experiment --hypothesis 1 --steps 200000"),
+     "judges the result honestly, and records it. Run 'experiment --list' first to see IDs.",
+     "doom-cli experiment --hypothesis 1 --steps 200000"),
     ("🧠 Cognition", "db", "Build/query the SQLite cognitive memory",
-     "Rebuilds hellmind.db from the JSONL stores or queries events/lessons/experiments/runs.",
-     "doom-cli db build / doom-cli db query MAP01 / doom-cli db query --runs"),
+     "Rebuilds hellmind.db, or queries it. Run each as a SEPARATE command: "
+     "'db build', then 'db query MAP01', or 'db query --runs'.",
+     "doom-cli db query --runs"),
     ("🧠 Cognition", "timeline", "Show the agent's evolution across auto iterations",
      "Reads the runs table (explored/exit/kills/score per iteration) and prints the trend — "
      "the honest 'is it actually improving?' view over time.",
