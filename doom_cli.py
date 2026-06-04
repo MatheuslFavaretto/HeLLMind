@@ -119,6 +119,10 @@ COMMANDS = [
      "Reads the runs table (explored/exit/kills/score per iteration) and prints the trend — "
      "the honest 'is it actually improving?' view over time.",
      "doom-cli timeline"),
+    ("🧠 Cognition", "rollback", "Structured rollback audit trail (never degrade permanently)",
+     "Every auto adjustment is logged as before/change/after/result + kept|reverted — the "
+     "safety net that rolls back any regression. `doom-cli rollback` shows the trail.",
+     "doom-cli rollback"),
     ("🧠 Cognition", "knowledge", "Long-term knowledge in 3 tiers (facts/hypotheses/validated)",
      "Aggregates the bestiary (facts), open hypotheses, and proven experiments/learned_config "
      "(validated) into the three certainty tiers — what the agent KNOWS vs suspects vs proved.",
@@ -642,6 +646,30 @@ def cmd_learned(a) -> int:
     return 0
 
 
+def cmd_rollback(a) -> int:
+    """Show the structured rollback audit trail: every auto adjustment + its verdict."""
+    from config import Config
+    from writer.rollback import RollbackLog
+    hist = RollbackLog(Config().memory_dir).history()
+    if not hist:
+        console.print(Panel("No adjustments logged yet — run `doom-cli auto`.",
+                            title="↩ rollback log", border_style=EMBER[3]))
+        return 0
+    n_rev = sum(1 for r in hist if not r.get("kept", True))
+    table = Table(title=f"↩ Rollback log — {len(hist)} adjustments, {n_rev} reverted",
+                  title_style=f"bold {EMBER[1]}", border_style=EMBER[3])
+    table.add_column("iter"); table.add_column("change"); table.add_column("score", justify="right")
+    table.add_column("verdict", justify="center")
+    for r in hist[-30:]:
+        change = "; ".join(f"{k}: {v[0]}→{v[1]}" for k, v in r.get("change", {}).items())
+        verdict = "[green]kept[/green]" if r.get("kept") else "[red]↩ reverted[/red]"
+        score = r.get("result", {}).get("score", "")
+        table.add_row(str(r.get("iter")), change[:60], str(score), verdict)
+    console.print(table)
+    console.print("[dim]The safety net: any change that regressed was rolled back automatically.[/dim]")
+    return 0
+
+
 def cmd_knowledge(a) -> int:
     """Show the agent's long-term knowledge in 3 tiers: facts / hypotheses / validated."""
     from config import Config
@@ -1001,6 +1029,7 @@ def build_parser() -> argparse.ArgumentParser:
     tl.add_argument("--limit", type=int, default=50)
     tl.set_defaults(fn=cmd_timeline)
     sub.add_parser("knowledge", help="Long-term knowledge in 3 tiers: facts / hypotheses / validated").set_defaults(fn=cmd_knowledge)
+    sub.add_parser("rollback", help="Structured rollback audit trail (before/change/after/result per adjustment)").set_defaults(fn=cmd_rollback)
     bm = sub.add_parser("benchmark", help="Ablation: train baseline/rnd/memory/full × seeds, prove each layer adds value")
     bm.add_argument("--map", default="MAP01"); bm.add_argument("--steps", type=int, default=50000)
     bm.add_argument("--seeds", default="42,123"); bm.add_argument("--episodes", type=int, default=20)

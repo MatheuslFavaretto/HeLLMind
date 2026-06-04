@@ -282,18 +282,23 @@ def _record_iteration(cfg: Config, i: int, prev_env: dict, eval_env: dict,
     command) and don't pollute the 'validated' knowledge tier. Best-effort."""
     if i == 0:
         return
-    changed = {k: (prev_env.get(k), eval_env.get(k)) for k in eval_env
-               if str(prev_env.get(k)) != str(eval_env.get(k))}
-    if not changed:
+    from writer.rollback import RollbackLog, diff_envs
+    before, change, after = diff_envs(prev_env, eval_env)
+    if not change:
         return
     try:
+        # Structured rollback log (the audit trail: before/change/after/result/kept).
+        RollbackLog(cfg.memory_dir).record(i, before, change, after,
+                                           {"score": round(float(sc), 4)}, kept)
+        # Mirror into the SQLite experiment registry (queryable view). 'kept'/'reverted'
+        # NOT 'improved' -> single-seed auto decisions are logged but never auto-adopted.
         from writer.db import insert_experiment
-        desc = "; ".join(f"{k} {o}→{n}" for k, (o, n) in changed.items())
+        desc = "; ".join(f"{k} {o}→{n}" for k, (o, n) in change.items())
         insert_experiment(cfg.memory_dir, param=f"auto iter {i}: {desc}",
                           old_val="", new_val="", result="kept" if kept else "reverted",
                           confidence=0.3, notes=f"score={sc:.3f}")
     except Exception as exc:  # pragma: no cover - defensive
-        print(f"[autonomous] experiment registry skipped: {exc}")
+        print(f"[autonomous] rollback/registry log skipped: {exc}")
 
 
 def write_log(cfg: Config, history: list) -> None:
