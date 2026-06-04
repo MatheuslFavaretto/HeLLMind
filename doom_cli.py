@@ -112,8 +112,12 @@ COMMANDS = [
      "judges the result honestly, and records it. Use --list to see open hypotheses.",
      "doom-cli experiment --list / doom-cli experiment --hypothesis 1 --steps 200000"),
     ("🧠 Cognition", "db", "Build/query the SQLite cognitive memory",
-     "Rebuilds hellmind.db from the JSONL stores or queries events/lessons/experiments.",
-     "doom-cli db build / doom-cli db query MAP01"),
+     "Rebuilds hellmind.db from the JSONL stores or queries events/lessons/experiments/runs.",
+     "doom-cli db build / doom-cli db query MAP01 / doom-cli db query --runs"),
+    ("🧠 Cognition", "timeline", "Show the agent's evolution across auto iterations",
+     "Reads the runs table (explored/exit/kills/score per iteration) and prints the trend — "
+     "the honest 'is it actually improving?' view over time.",
+     "doom-cli timeline"),
     ("🧠 Cognition", "curriculum", "Show map difficulty scores and forgetting alerts",
      "Computes per-map difficulty (deaths + timeouts + coverage + kills) and detects "
      "skill regression vs historical peak. Writes 40-maps/Curriculum.md.",
@@ -623,6 +627,71 @@ def cmd_learned(a) -> int:
     return 0
 
 
+def cmd_timeline(a) -> int:
+    """Evolution report: explored / exit-rate / kills / score per auto-loop iteration.
+    Reads the SQLite `runs` table (mirrored from autonomy.jsonl) so you can SEE whether
+    the agent is actually improving over time, not just trust a single eval."""
+    import json as _json
+
+    from config import Config
+    from writer import db
+    cfg = Config()
+    db.build(cfg.memory_dir)                      # always show the freshest view
+    runs = db.query_runs(cfg.memory_dir, limit=getattr(a, "limit", 50))
+    if not runs:
+        console.print(Panel("No auto-loop runs yet — run `doom-cli auto` first.",
+                            title="📈 timeline", border_style=EMBER[3]))
+        return 0
+
+    runs = sorted(runs, key=lambda r: r["name"])  # chronological (iter-001 → N)
+    rows = []
+    for r in runs:
+        c = _json.loads(r["config_json"] or "{}")
+        m = c.get("metrics", {})
+        rows.append({
+            "name": r["name"], "map": r["maps"] or "?",
+            "explored": m.get("explored_fraction"), "exit": m.get("exit_rate"),
+            "kills": m.get("kills_per_episode"), "score": c.get("score"),
+            "kept": c.get("kept"),
+        })
+
+    best = max(rows, key=lambda x: x["score"] if x["score"] is not None else -1)
+    first_exp = rows[0]["explored"]
+    last_exp = rows[-1]["explored"]
+
+    table = Table(title="📈 Agent evolution (per auto iteration)",
+                  title_style=f"bold {EMBER[1]}", border_style=EMBER[3])
+    table.add_column("iter"); table.add_column("map")
+    table.add_column("explored", justify="right"); table.add_column("exit%", justify="right")
+    table.add_column("kills", justify="right"); table.add_column("score", justify="right")
+    table.add_column("kept", justify="center")
+
+    def pct(v):
+        return f"{v*100:.1f}%" if isinstance(v, (int, float)) else "–"
+
+    def num(v):
+        return f"{v:.2f}" if isinstance(v, (int, float)) else "–"
+
+    for r in rows:
+        star = " ⭐" if r["name"] == best["name"] else ""
+        table.add_row(
+            r["name"].replace("iter-", "#"), str(r["map"]),
+            pct(r["explored"]), pct(r["exit"]), num(r["kills"]), num(r["score"]) + star,
+            "[green]✓[/green]" if r["kept"] else "[dim]·[/dim]",
+        )
+    console.print(table)
+
+    # One honest sentence on the trend.
+    if isinstance(first_exp, (int, float)) and isinstance(last_exp, (int, float)):
+        delta = (last_exp - first_exp) * 100
+        arrow = "↑" if delta > 0.5 else ("↓" if delta < -0.5 else "→")
+        console.print(f"  exploration {arrow} {first_exp*100:.1f}% → {last_exp*100:.1f}% "
+                      f"over {len(rows)} iters · best score {best['score']:.3f} ({best['name']})")
+    any_exit = any(isinstance(r["exit"], (int, float)) and r["exit"] > 0 for r in rows)
+    console.print(f"  exit reached: {'[green]YES[/green]' if any_exit else '[red]not yet (0%)[/red]'}")
+    return 0
+
+
 def cmd_bc(a) -> int:
     cmd = [PY, "-m", "rl.bc", "--epochs", str(a.epochs)]
     if a.demos:
@@ -873,6 +942,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("intel", help="Intelligence report: NN architecture/params/depth, training, memory, disk").set_defaults(fn=cmd_intel)
     sub.add_parser("learned", help="Show reward knobs the agent has PROVEN help").set_defaults(fn=cmd_learned)
+    tl = sub.add_parser("timeline", help="Evolution report: explored/exit/kills/score per auto iteration")
+    tl.add_argument("--limit", type=int, default=50)
+    tl.set_defaults(fn=cmd_timeline)
 
     bc_p = sub.add_parser("bc", help="Behavioral cloning from human SPECTATOR demos")
     bc_p.add_argument("--demos", default=None, help="Demos dir (default: <memory>/demos)")
