@@ -279,12 +279,16 @@ def resolve_slash(token: str, known: set):
     return "suggest", difflib.get_close_matches(t, known, n=3)
 
 
+# Terminals that speak the iTerm2 inline-image protocol (so the real PNG can render).
+_IMG_TERMINALS = {"iTerm.app", "WarpTerminal", "WezTerm", "mintty"}
+
+
 def _render_iterm_image(path: str, height_rows: int = 16) -> bool:
     """Render a real image inline using the iTerm2 image protocol. Returns True on success.
     Lets the shell show the ACTUAL in-game Doomguy face when a PNG is provided + the terminal
-    supports it (iTerm2). Any other terminal falls back to the ASCII art."""
+    supports it (iTerm2 / Warp / WezTerm). Other terminals fall back to the ASCII art."""
     import base64
-    if os.environ.get("TERM_PROGRAM") != "iTerm.app" or not os.path.exists(path):
+    if os.environ.get("TERM_PROGRAM") not in _IMG_TERMINALS or not os.path.exists(path):
         return False
     try:
         with open(path, "rb") as f:
