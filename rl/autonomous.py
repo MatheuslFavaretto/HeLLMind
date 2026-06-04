@@ -227,6 +227,16 @@ def load_history(cfg: Config) -> list:
     return history
 
 
+def _refresh_db(cfg: Config) -> None:
+    """Re-sync the SQLite read-view from the JSONL stores. Best-effort: a failure here
+    must never abort a training run (the JSONL remains the source of truth)."""
+    try:
+        from writer import db
+        db.build(cfg.memory_dir)
+    except Exception as exc:  # pragma: no cover - defensive
+        print(f"[autonomous] db refresh skipped: {exc}")
+
+
 def write_log(cfg: Config, history: list) -> None:
     """Persist the self-improvement trail: JSONL (machine) + live Obsidian log (human)."""
     os.makedirs(cfg.memory_dir, exist_ok=True)
@@ -689,6 +699,7 @@ def main() -> None:
         })
         env = nxt  # apply the proposed tweak for the next iteration
         write_log(cfg, history)  # update the log every iter (resumable, observable)
+        _refresh_db(cfg)  # keep the SQLite read-view in sync (events + this run)
 
     if not history:
         print("[autonomous] no iteration completed — nothing to report.")
