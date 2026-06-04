@@ -94,6 +94,15 @@ the exact architecture, parameter count, and depth — proof it's a real neural 
 | **Engagement reward** | small bonus for facing enemies (anti-passivity) |
 | **Bestiary reward** | deadlier monsters (the ones that actually kill it) are worth more |
 
+**Combat / exploration decoupling** (inspired by the ViZDoom champions like Arnold, who used
+separate nav + combat networks). HeLLMind does a lighter version: **one brain**, but the
+reward pursues **one objective at a time**, gated by ground-truth enemy visibility — enemy on
+screen → combat focus (exploration pulls damped so it fights instead of wandering off); screen
+clear → exploration focus (blind shots not punished). It also measures the two regimes
+separately (`combat_engagement` = does it shoot when it sees enemies?), so the coach can tune
+combat and exploration **independently**. *(Honest note: this is reward-level decoupling, not
+yet two separate networks.)*
+
 ### 4. Memory — what persists across runs
 
 Stored on disk (JSONL for safe writes, SQLite as the queryable view):
@@ -204,6 +213,7 @@ doom-cli watch     # watch the agent play in a window
 
 # Measure
 doom-cli eval --temperature 0.5   # honest metrics (kills, exploration, exit-rate)
+doom-cli benchmark                # ablation: prove each layer (RND/memory/full) adds value
 doom-cli intel                    # neural-net proof + training + memory + disk
 doom-cli timeline                 # evolution per auto iteration (explored/exit/kills/score)
 doom-cli audit                    # is it REALLY learning? (entropy, KL, value loss)
@@ -234,8 +244,10 @@ This is a research/learning project, and it says so plainly. The measured realit
 
 - ✅ **Passivity solved** — the agent went from freezing at spawn (90% timeouts) to actively
   fighting and exploring.
-- ✅ **The machinery works** — every feature above is wired, tested (320 tests), and the
+- ✅ **The machinery works** — every feature above is wired, tested (335 tests), and the
   self-improvement loop demonstrably tunes the agent and accumulates memory across runs.
+- 🔬 **Provable** — `doom-cli benchmark` runs the ablation (baseline → +RND → +memory → full)
+  across seeds with mean ± std, so "each layer adds value" is a measured claim, not a vibe.
 - ⚠️ **Exploration ~11%** and climbing as it trains longer.
 - ❌ **Exit-rate still 0%** — the agent hasn't completed a map yet. The remaining gap is
   **compute**, not features: architecturally this has the champions' toolkit; it needs the
