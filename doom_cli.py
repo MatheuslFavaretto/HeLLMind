@@ -185,6 +185,10 @@ COMMANDS = [
      "Creates 20-concepts/Concept - Agent Perception.md explaining how the agent sees "
      "the world: pixels, game vars, objects_info, what it does/doesn't know.",
      "doom-cli perception"),
+    ("▶ Run", "curriculum2", "Progressive curriculum: my_way_home → deadly_corridor → MAP01",
+     "The V2 curriculum trains the individual skills first (find-exit, then survive+navigate) "
+     "before combining them on full maps — the approach that gets exit-rate off zero.",
+     "doom-cli curriculum2 --steps 150000"),
     ("▶ Run", "shell", "Interactive chat-style REPL with the Doomguy backdrop",
      "Starts a chat-like prompt: type /command to run it, /help for the menu, /exit to leave. "
      "Unknown commands get suggestions. The whole CLI, one slash away.",
@@ -1359,6 +1363,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     cl = sub.add_parser("clean"); cl.add_argument("--brain", action="store_true")
     cl.add_argument("--memory", action="store_true"); cl.set_defaults(fn=cmd_clean)
+
+    cur2 = sub.add_parser("curriculum2", help="Progressive curriculum: my_way_home → deadly_corridor → MAP01")
+    cur2.add_argument("--steps", type=int, default=150000); cur2.set_defaults(fn=lambda a: (
+        __import__("subprocess").run([__import__("sys").executable,
+            __import__("os").path.join(ROOT, "scripts/run_curriculum.sh"), str(a.steps)],
+            cwd=ROOT).returncode))
 
     m = sub.add_parser("maps"); m.add_argument("maps", nargs="+"); m.set_defaults(fn=cmd_maps)
 
