@@ -79,12 +79,18 @@ The compute gap + 80% death-rate both point to **sample efficiency**. Three opti
 | **Rainbow DQN** (off-policy, discrete) | ✅ | medium | medium | **safe upgrade** — proven on Doom |
 | **DreamerV3** (model-based, world model) | ✅ | **highest** | high | **the bet** — learns from imagination |
 
-**Recommendation:** ship **Rainbow DQN** as the new default (gives you the replay buffer +
-continuous off-policy updates you want, and it's far more sample-efficient than PPO on
-discrete Doom), and **prototype DreamerV3** in parallel as the high-ceiling research track
-(it directly attacks the compute wall by learning a world model and training in imagination).
-Keep PPO as a benchmark baseline. Reference impls: cleanRL (single-file clarity), SB3 +
-sb3-contrib (Rainbow pieces), `danijar/dreamerv3`.
+**Recommendation:** ship a **value-based off-policy agent** as the new default (gives you the
+replay buffer + continuous updates you want, and it's more sample-efficient than PPO on
+discrete Doom), and **prototype DreamerV3** as the high-ceiling research track.
+
+> **Reality check (from actually reading the repos):** "Rainbow DQN" is **not off-the-shelf**.
+> CleanRL ships **DQN + C51** (single-file, not importable); sb3-contrib ships **QR-DQN**;
+> full Rainbow (DQN + double + dueling + PER + n-step + noisy + distributional) must be
+> **assembled**. So V2's realistic path is: start from **SB3 DQN or sb3-contrib QR-DQN**
+> (proven, tested, fits our PyTorch stack), add **prioritized replay + n-step** incrementally
+> toward Rainbow — rather than chasing a one-shot Rainbow import. Keep PPO as the benchmark
+> baseline. **DreamerV3 caveat:** it's **JAX + Python 3.11+**, a different framework from our
+> PyTorch/SB3 stack — real integration cost; treat it as a separate research spike, not a drop-in.
 
 ---
 
@@ -93,11 +99,11 @@ sb3-contrib (Rainbow pieces), `danijar/dreamerv3`.
 | Project | Borrow |
 |---|---|
 | **this repo (V1)** | the cognition scaffolding: memory, rollback, knowledge tiers, honest tempered eval, multi-seed benchmark — **keep all of it** |
-| **cleanrl** | single-file, readable algo implementations — rewrite the RL core this way (no more 10-module sprawl) |
-| **stable-baselines3 / sb3-contrib** | robust, tested algos + VecEnv + Rainbow components |
+| **cleanrl** | single-file readability to LEARN from (DQN/C51/PPO) — *not importable* (copy patterns, don't depend on it) |
+| **stable-baselines3 / sb3-contrib** | the actual base we build on: DQN / QR-DQN + VecEnv + tested training (PyTorch, fits our stack) |
 | **ViZDoom** | the buffers we under-use: labels (bbox), depth, automap (minimap), objects (HUD) → §8 overlays |
-| **Voyager** ⭐ | the north star for the cognition layer: an LLM that builds a **skill library** + curriculum + self-verification. Our coach should grow *reusable skills*, not just tweak reward knobs |
-| **dreamerv3** ⭐ | world model + replay + train-in-imagination = the sample-efficiency answer |
+| **Voyager** ⭐ | borrow the **concept** (auto curriculum + a library of reusable, *self-verified* behaviors), NOT the mechanism — Voyager stores skills as executable Minecraft *code* + GPT-4 prompting; that doesn't map 1:1 to a pixel-based RL policy. Our version: a curriculum + a library of validated reward/skill configs the coach composes |
+| **dreamerv3** ⭐ | world model + replay + train-in-imagination = the sample-efficiency answer. **But it's JAX** — a research spike, not a drop-in (we're PyTorch) |
 | **ray / rllib** | distributed rollout workers + central trainer (the §7 scaling, when we outgrow one machine) |
 | **langgraph** | model the coach as an explicit **graph** (observe→hypothesize→experiment→validate→adopt) instead of ad-hoc Python |
 | **AlphaZero (1712.01815)** | self-play + search — a *future* extension (multi-agent Doom) |
@@ -187,3 +193,19 @@ PPO baseline** AND exit-rate > 0 on at least one map. Until then, no new feature
 Honest, tempered eval · multi-seed benchmark (+score+HTML) · rollback log · knowledge tiers ·
 SQLite memory · the Claude-style shell · the closed-loop coach concept. These are genuinely
 good and rare. V2 makes the **agent under them** finally worth the scaffolding.
+
+---
+
+## 12. Sources (actually fetched & verified, not from memory)
+
+These were read live (Jun 2026) to ground §4–§5, and corrected the plan:
+- **Voyager** (github.com/MineDojo/Voyager) — skills as executable *code* + GPT-4 self-verify,
+  no fine-tuning → borrow the *concept*, not the mechanism.
+- **DreamerV3** (github.com/danijar/dreamerv3) — JAX, Python 3.11+, categorical world model,
+  trains in imagination, scales with model size → research spike, not a drop-in.
+- **CleanRL** (github.com/vwxyzjn/cleanrl) — single-file DQN/C51/PPO, *not importable* → learn
+  from, don't depend on. **No off-the-shelf Rainbow.**
+- **Ray/RLlib** (github.com/ray-project/ray) — tasks/actors/objects for distributed workers →
+  the §7 scaling path when one machine isn't enough.
+- Not yet fetched (referenced from prior knowledge): ViZDoom, doom-pytorch, procgen, SB3,
+  langgraph, AlphaZero (1712.01815). Flag me to verify any before we commit to it.
