@@ -64,7 +64,8 @@ Watching the bot: it ignores enemies, doesn't shoot, bangs on closed doors. Root
 - [x] **Auto-chain it inside `auto`** ✅ DONE — every auto iteration now records its reward
   change + keep/revert verdict into the experiment registry (single-seed, so NOT auto-adopted;
   multi-seed `experiment` stays the validation path).
-- [x] **Rollback / keep-if-improved** ✅ — auto reverts regressions (see `timeline`), now logged.
+- [x] **Rollback system** ✅ DONE — structured `before/change/after/result/kept` records in
+  `rollback.jsonl` (`writer/rollback.py`, `doom-cli rollback`) — every adjustment reversible.
 - [x] **Experiment registry** ✅ — SQLite `experiments` table + `db query --experiments`,
   populated by both `experiment` (validated) and `auto` (kept/reverted trail).
 
