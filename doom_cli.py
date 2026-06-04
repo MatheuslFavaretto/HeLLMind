@@ -30,21 +30,26 @@ BANNER = r"""
  ╚═╝  ╚═╝╚══════╝╚══════╝╚══════╝╚═╝     ╚═╝╚═╝╚═╝  ╚═══╝╚═════╝
 """
 
-# Doomguy — the marine's HUD face, used as the backdrop of the interactive shell.
+# Doomguy — the marine's HUD face (STFST), the backdrop of the interactive shell. For the
+# REAL in-game face, drop a PNG at assets/doomguy.png and it renders inline on iTerm2.
 DOOMGUY = r"""
-        ▄▄███████▄▄
-      ▄███████████████▄
-     ███▀▀     ▀▀▀███▄
-    ███   ▄▄   ▄▄   ███
-    ██   ▟██▖ ▗██▙   ██
-    ██    ▀▀   ▀▀    ██
-    ███     ▄▄     ▗███
-    ▝███▖ ▜█████▛ ▗███▘
-      ▀███▄▄▄▄▄▄▄███▀
-     ▄▄█████████████▄▄
-   ▟████  ███████  ████▙
-   ██████▄▄███████▄▄██████
+        ▄▄▄█████████▄▄▄
+      ▟███████████████████▙
+     ████▀▀▀       ▀▀▀████
+    ███▀  ▀▄▄▄   ▄▄▄▀  ▀███
+   ███░░░░░░░░░░░░░░░░░░░███
+   ██░░░░▄▄▄▄░░░░░▄▄▄▄░░░░██
+   ██░░░▟████▙░░░▟████▙░░░██
+   ██░░░▜█▰▰█▛░░░▜█▰▰█▛░░░██
+   ██░░░░▀▀▀▀░░▟▙░▀▀▀▀░░░░██
+   ██░░░░░░░░▟████▙░░░░░░░██
+   ▜█░░░░▗▟██████████▙▖░░█▛
+    ██░░░████▘▘▘▘▘▘████░░██
+    ▜██▄░░▀▀▀▀▀▀▀▀▀▀░░▄██▛
+     ▜████▄▄▄▄▄▄▄▄▄▄████▛
+       ▀▀▀██████████▀▀▀
 """
+DOOMGUY_IMG = "assets/doomguy.png"  # drop the real face here for inline rendering
 
 # (group, name, one-liner, longer explanation, example)
 COMMANDS = [
@@ -274,13 +279,34 @@ def resolve_slash(token: str, known: set):
     return "suggest", difflib.get_close_matches(t, known, n=3)
 
 
+def _render_iterm_image(path: str, height_rows: int = 16) -> bool:
+    """Render a real image inline using the iTerm2 image protocol. Returns True on success.
+    Lets the shell show the ACTUAL in-game Doomguy face when a PNG is provided + the terminal
+    supports it (iTerm2). Any other terminal falls back to the ASCII art."""
+    import base64
+    if os.environ.get("TERM_PROGRAM") != "iTerm.app" or not os.path.exists(path):
+        return False
+    try:
+        with open(path, "rb") as f:
+            data = base64.b64encode(f.read()).decode("ascii")
+        # ESC ]1337;File=...:base64 BEL  — centred-ish via a leading indent.
+        sys.stdout.write(
+            f"\033]1337;File=inline=1;height={height_rows};preserveAspectRatio=1;size="
+            f"{len(data)}:{data}\a\n")
+        sys.stdout.flush()
+        return True
+    except OSError:
+        return False
+
+
 def _doom_backdrop() -> None:
-    """Render the Doomguy ASCII 'background' + the shell title."""
-    art = Text()
-    lines = DOOMGUY.strip("\n").splitlines()
-    for i, line in enumerate(lines):
-        art.append(line + "\n", style=f"bold {EMBER[min(i // 2, len(EMBER) - 1)]}")
-    console.print(Align.center(art))
+    """Render the Doomguy backdrop (real PNG inline on iTerm2, else ASCII) + the shell title."""
+    if not _render_iterm_image(os.path.join(ROOT, DOOMGUY_IMG)):
+        art = Text()
+        lines = DOOMGUY.strip("\n").splitlines()
+        for i, line in enumerate(lines):
+            art.append(line + "\n", style=f"bold {EMBER[min(i // 3, len(EMBER) - 1)]}")
+        console.print(Align.center(art))
     console.print(Align.center(Text.from_markup(
         "[bold #ffd000]HeLLMind[/bold #ffd000] [dim]interactive shell · "
         "rip and tear through the commands[/dim]")))
