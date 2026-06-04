@@ -70,14 +70,30 @@ def run(doom_map="MAP01", steps=50000, seeds=(42, 123), episodes=20, n_envs=4,
     os.makedirs(out_dir, exist_ok=True)
     ck_root = os.path.join(ROOT, ".cache", "benchmark")
 
+    import time
+    total = len(configs) * len(seeds)
+    print(f"[benchmark] {len(configs)} configs × {len(seeds)} seeds = {total} runs "
+          f"× {steps:,} steps on {doom_map}. Timing the first run to estimate the rest…")
+    t0 = time.time()
+    done = 0
     results = {}
     for name in configs:
         per_seed = []
         for seed in seeds:
             ck = os.path.join(ck_root, f"{name}_s{seed}")
             os.makedirs(ck, exist_ok=True)
-            print(f"\n===== {name} | seed {seed} | {steps} steps =====")
+            print(f"\n===== [{done + 1}/{total}] {name} | seed {seed} | {steps:,} steps =====")
+            r_start = time.time()
             per_seed.append(_run_one(CONFIGS[name], seed, doom_map, steps, episodes, n_envs, ck))
+            done += 1
+            elapsed = time.time() - t0
+            per_run = elapsed / done
+            remaining = per_run * (total - done)
+            eta = datetime.now().timestamp() + remaining
+            print(f"[benchmark] ✓ {done}/{total} done · this run {_fmt(time.time() - r_start)} · "
+                  f"elapsed {_fmt(elapsed)} · ~{_fmt(remaining)} left"
+                  + (f" · ETA {datetime.fromtimestamp(eta).strftime('%H:%M')}" if remaining > 0
+                     else " · DONE"))
         results[name] = _aggregate(per_seed)
 
     payload = {
@@ -90,6 +106,16 @@ def run(doom_map="MAP01", steps=50000, seeds=(42, 123), episodes=20, n_envs=4,
     _write_md(out_dir, payload)
     print(f"\n[benchmark] wrote results to {out_dir}/ (benchmark.json/.csv/.md)")
     return payload
+
+
+def _fmt(seconds: float) -> str:
+    """Human-readable duration: '45s', '3m12s', '1h04m'."""
+    s = int(max(0, seconds))
+    if s < 60:
+        return f"{s}s"
+    if s < 3600:
+        return f"{s // 60}m{s % 60:02d}s"
+    return f"{s // 3600}h{(s % 3600) // 60:02d}m"
 
 
 def _aggregate(per_seed: list) -> dict:

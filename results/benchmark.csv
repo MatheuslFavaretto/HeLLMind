@@ -1,0 +1,5 @@
+config,exit_rate_mean,exit_rate_std,explored_fraction_mean,explored_fraction_std,kills_per_episode_mean,kills_per_episode_std,death_rate_mean,death_rate_std,combat_engagement_mean,combat_engagement_std,mean_base_reward_mean,mean_base_reward_std
+baseline,0.0000,0.0000,0.0398,0.0000,1.0750,0.1250,0.6750,0.0250,0.2876,0.0000,-24.0635,0.8360
+rnd,0.0000,0.0000,0.0398,0.0000,1.3500,0.0500,0.6250,0.0750,0.2187,0.0084,-22.6840,1.2795
+memory,0.0000,0.0000,0.0398,0.0000,1.7250,0.2250,0.2500,0.2000,0.4261,0.0416,-25.2312,2.2747
+full,0.0000,0.0000,0.0398,0.0000,1.4250,0.0750,0.4500,0.0500,0.3068,0.0519,-23.5137,0.0428

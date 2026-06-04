@@ -44,3 +44,11 @@ def test_writers_produce_all_three_files(tmp_path):
     assert "full" in loaded["configs"]
     assert "baseline" in (tmp_path / "benchmark.md").read_text()
     assert "config" in (tmp_path / "benchmark.csv").read_text()
+
+
+def test_fmt_durations():
+    from rl.benchmark import _fmt
+    assert _fmt(45) == "45s"
+    assert _fmt(75) == "1m15s"
+    assert _fmt(3700) == "1h01m"
+    assert _fmt(-5) == "0s"

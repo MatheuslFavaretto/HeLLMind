@@ -1,0 +1,120 @@
+{
+  "generated": "2026-06-04T19:38:29+00:00",
+  "map": "MAP01",
+  "steps": 50000,
+  "seeds": [
+    42,
+    123
+  ],
+  "episodes": 20,
+  "configs": {
+    "baseline": {
+      "exit_rate": {
+        "mean": 0.0,
+        "std": 0.0
+      },
+      "explored_fraction": {
+        "mean": 0.03975155279503106,
+        "std": 0.0
+      },
+      "kills_per_episode": {
+        "mean": 1.075,
+        "std": 0.125
+      },
+      "death_rate": {
+        "mean": 0.675,
+        "std": 0.024999999999999967
+      },
+      "combat_engagement": {
+        "mean": 0.2875852268473587,
+        "std": 1.565356349969571e-05
+      },
+      "mean_base_reward": {
+        "mean": -24.063499999999735,
+        "std": 0.8359999999999808
+      },
+      "_seeds": 2
+    },
+    "rnd": {
+      "exit_rate": {
+        "mean": 0.0,
+        "std": 0.0
+      },
+      "explored_fraction": {
+        "mean": 0.03975155279503106,
+        "std": 0.0
+      },
+      "kills_per_episode": {
+        "mean": 1.35,
+        "std": 0.04999999999999993
+      },
+      "death_rate": {
+        "mean": 0.625,
+        "std": 0.07499999999999996
+      },
+      "combat_engagement": {
+        "mean": 0.21866990999360297,
+        "std": 0.008436317112624117
+      },
+      "mean_base_reward": {
+        "mean": -22.683999999999763,
+        "std": 1.2794999999999668
+      },
+      "_seeds": 2
+    },
+    "memory": {
+      "exit_rate": {
+        "mean": 0.0,
+        "std": 0.0
+      },
+      "explored_fraction": {
+        "mean": 0.03975155279503106,
+        "std": 0.0
+      },
+      "kills_per_episode": {
+        "mean": 1.725,
+        "std": 0.22499999999999998
+      },
+      "death_rate": {
+        "mean": 0.25,
+        "std": 0.2
+      },
+      "combat_engagement": {
+        "mean": 0.4260824859004705,
+        "std": 0.0416127889307735
+      },
+      "mean_base_reward": {
+        "mean": -25.23124999999967,
+        "std": 2.274749999999928
+      },
+      "_seeds": 2
+    },
+    "full": {
+      "exit_rate": {
+        "mean": 0.0,
+        "std": 0.0
+      },
+      "explored_fraction": {
+        "mean": 0.03975155279503106,
+        "std": 0.0
+      },
+      "kills_per_episode": {
+        "mean": 1.425,
+        "std": 0.07499999999999996
+      },
+      "death_rate": {
+        "mean": 0.45,
+        "std": 0.04999999999999999
+      },
+      "combat_engagement": {
+        "mean": 0.3067746413192579,
+        "std": 0.05189519240995824
+      },
+      "mean_base_reward": {
+        "mean": -23.513749999999725,
+        "std": 0.04275000000000162
+      },
+      "_seeds": 2
+    }
+  }
+}
