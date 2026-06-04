@@ -39,7 +39,8 @@ git push
 
 ### Cell 2 — clone the repo + install Python deps
 ```python
-!git clone https://github.com/MatheuslFavaretto/HeLLMind.git
+# The full-agent code is on the feat/new-features branch (merge it to main to drop -b).
+!git clone -b feat/new-features https://github.com/MatheuslFavaretto/HeLLMind.git
 %cd HeLLMind
 !pip -q install -r requirements.txt
 ```
