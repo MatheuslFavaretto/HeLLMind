@@ -167,6 +167,7 @@ doom-cli watch     # watch the agent play in a window
 # Measure
 doom-cli eval --temperature 0.5   # honest metrics (kills, exploration, exit-rate)
 doom-cli intel                    # neural-net proof + training + memory + disk
+doom-cli timeline                 # evolution per auto iteration (explored/exit/kills/score)
 doom-cli audit                    # is it REALLY learning? (entropy, KL, value loss)
 doom-cli progress                 # learning curve across checkpoints
 doom-cli status                   # brain + memory + config at a glance
@@ -177,6 +178,7 @@ doom-cli behavior     # detect circling / passive / low-exploration / shoot-spam
 doom-cli hypothesize  # turn behaviour into falsifiable hypotheses
 doom-cli experiment   # run a multi-seed A/B to validate a hypothesis
 doom-cli learned      # reward knobs the agent has PROVEN help
+doom-cli db query --runs   # per-iteration metrics straight from the SQLite view
 doom-cli recall       # query episodic memory (by keyword / enemy / region)
 doom-cli bestiary     # factual monster database
 doom-cli curriculum   # map difficulty + forgetting alerts
