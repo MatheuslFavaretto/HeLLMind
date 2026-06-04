@@ -231,6 +231,21 @@ class CampaignDoomEnv(gym.Env):
             else vzd.ScreenResolution.RES_160X120
         )
         game.set_window_visible(window_visible)
+        # Speed: skip rendering cosmetic elements the agent doesn't need to learn from. Each
+        # disabled layer is render time saved every single frame (ViZDoom is CPU-render-bound).
+        # Kept: the weapon sprite (useful context). Dropped: HUD/crosshair/decals/particles/
+        # corpses/messages — pure clutter for a GRAY8 84×84 policy view.
+        for setter, val in (("set_render_hud", False), ("set_render_minimal_hud", False),
+                            ("set_render_crosshair", False), ("set_render_decals", False),
+                            ("set_render_particles", False), ("set_render_corpses", False),
+                            ("set_render_messages", False),
+                            ("set_render_effects_sprites", False)):
+            fn = getattr(game, setter, None)
+            if fn is not None:
+                try:
+                    fn(val)
+                except Exception:
+                    pass  # tolerate ViZDoom builds missing a given setter
         game.set_mode(vzd.Mode.PLAYER)
         game.set_episode_timeout(episode_timeout)
         game.set_available_buttons(CAMPAIGN_BUTTONS)
