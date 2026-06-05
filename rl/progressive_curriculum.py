@@ -1,19 +1,21 @@
 """Progressive curriculum engine (V2 Phase 2).
 
-The V1 mistake: training directly on full maps (hard). The agent had to simultaneously
-learn navigation, combat, and survival — with 80% death-rate as the result.
+The V1 mistake: training directly on full maps (hard). V2 starts on ViZDoom's
+purpose-built scenarios (tiny, clear objectives) and advances to the full game:
 
-This curriculum trains one skill at a time using the SAME action space and brain,
-so weights transfer between stages without any architecture mismatch:
+  Stage 0 — MYWH:     my_way_home scenario — find the exit, no enemies, tiny map.
+                       The easiest possible exit-finding task (exit-rate > 0 fast).
+  Stage 1 — CORRIDOR: deadly_corridor scenario — navigate a corridor with enemies.
+                       Trains survival before we add map complexity.
+  Stage 2 — NAVIGATE: freedoom2 MAP01, combat zeroed — focus on map exploration.
+  Stage 3 — FULL:     freedoom2 MAP01, all rewards — the complete task.
 
-  Stage 1 — NAVIGATE: find the exit. Max exploration/exit rewards, combat zeroed.
-  Stage 2 — SURVIVE:  navigate without dying. Death penalty raised, combat added.
-  Stage 3 — FULL:     all rewards live. The agent has the building blocks.
+Stages 0–1 are SCENARIO mode (DoomEnv, built-in ViZDoom maps) and train their own
+brain family. Stages 2–3 are CAMPAIGN mode (CampaignDoomEnv) and train a new brain.
+The scenario stages prove exit-finding is learnable; the campaign stages apply it to
+the real maps. Both algo choices (ppo / dqn) are supported at every stage.
 
-Transfer is trivial because the action space never changes. The same QR-DQN or PPO
-brain is loaded at the start of each stage from the previous stage's checkpoint.
-
-    python -m rl.progressive_curriculum --map MAP01 --steps-per-stage 150000
+    python -m rl.progressive_curriculum --stages mywh,corridor,navigate,full
     python -m rl.progressive_curriculum --algo dqn --steps-per-stage 200000
 """
 import argparse
@@ -26,88 +28,150 @@ import time
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-# ── Reward profiles per stage (env-var overrides) ─────────────────────────────
+# ── Stage definitions ─────────────────────────────────────────────────────────
+# Each entry: (mode, reward_profile_overrides)
+# mode "scenario" → CAMPAIGN=0, DOOM_SCENARIO=<name> (uses DoomEnv)
+# mode "campaign" → CAMPAIGN=1, MAPS=<doom_map>      (uses CampaignDoomEnv)
 
-STAGE_PROFILES = {
+STAGE_DEFS = {
+    # ── ViZDoom built-in scenarios (scenario mode, no action-space mismatch) ──────
+    "mywh": {
+        "_mode": "scenario",
+        "_scenario": "my_way_home",      # tiny exit-finding map, no enemies
+        "EPISODE_TIMEOUT": "2100",
+        "EXIT_REWARD": "500.0",
+        "USE_RND": "1", "RND_SCALE": "0.5",
+        "DEATH_PENALTY": "1.0",
+        "ENT_COEF": "0.05",
+    },
+    "corridor": {
+        "_mode": "scenario",
+        "_scenario": "deadly_corridor",   # corridor + enemies → trains survival
+        "EPISODE_TIMEOUT": "2100",
+        "EXIT_REWARD": "500.0",
+        "HIT_REWARD": "2.0", "MISS_PENALTY": "0.05", "KILL_REWARD": "5.0",
+        "DEATH_PENALTY": "15.0",
+        "DAMAGE_TAKEN_PENALTY": "0.2",
+        "ENT_COEF": "0.03",
+        "USE_RND": "1", "RND_SCALE": "0.3",
+    },
+    # ── Campaign mode (freedoom2 full maps) ───────────────────────────────────────
     "navigate": {
-        # Goal: find and reach the exit. Combat zeroed so the agent ignores enemies
-        # and focuses entirely on movement and map coverage.
+        "_mode": "campaign",
+        # Goal: find and reach the exit. Combat zeroed so the agent focuses on movement.
         "COVERAGE_REWARD": "2.0",
         "FRONTIER_REWARD": "0.1",
         "EXIT_REWARD": "1000.0",
         "EXIT_PROX_SCALE": "0.5",
-        "GOEXPLORE_GOAL_PROB": "0.5",
         "USE_RND": "1", "RND_SCALE": "0.5",
-        "HIT_REWARD": "0", "MISS_PENALTY": "0",
-        "KILL_REWARD": "0",
-        "DEATH_PENALTY": "1.0",           # tiny — don't obsess, just don't get stuck
-        "DAMAGE_TAKEN_PENALTY": "0.05",
-        "ENGAGEMENT_REWARD": "0",
-        "BESTIARY_REWARD": "0",
+        "HIT_REWARD": "0", "MISS_PENALTY": "0", "KILL_REWARD": "0",
+        "DEATH_PENALTY": "1.0",
+        "DAMAGE_TAKEN_PENALTY": "0.0",
         "EPISODE_TIMEOUT": "3500",
-        "ENT_COEF": "0.05",               # higher entropy: force exploration
+        "ENT_COEF": "0.05",
     },
     "survive": {
-        # Goal: navigate without dying. Now combat matters: dying is expensive,
-        # so the agent must learn to engage enemies or avoid them.
+        "_mode": "campaign",
+        # Goal: navigate without dying. Combat now costs.
         "COVERAGE_REWARD": "1.0",
         "FRONTIER_REWARD": "0.05",
         "EXIT_REWARD": "500.0",
         "EXIT_PROX_SCALE": "0.3",
-        "GOEXPLORE_GOAL_PROB": "0.3",
         "USE_RND": "1", "RND_SCALE": "0.3",
-        "HIT_REWARD": "2.0", "MISS_PENALTY": "0.05",
-        "KILL_REWARD": "5.0",
-        "DEATH_PENALTY": "15.0",          # raised sharply: dying is really bad
+        "HIT_REWARD": "2.0", "MISS_PENALTY": "0.05", "KILL_REWARD": "5.0",
+        "DEATH_PENALTY": "15.0",
         "DAMAGE_TAKEN_PENALTY": "0.3",
-        "ENGAGEMENT_REWARD": "0.02",
-        "BESTIARY_REWARD": "1",
         "EPISODE_TIMEOUT": "2800",
         "ENT_COEF": "0.03",
     },
     "full": {
-        # Stage 3: restore normal defaults (just unset the overrides)
-        # Memory and docs enabled for the real run.
+        "_mode": "campaign",
+        # Stage 3: restore normal defaults — memory and docs enabled.
     },
 }
+
+# Back-compat alias: old stage name still works
+STAGE_PROFILES = STAGE_DEFS
 
 
 # ── Core ───────────────────────────────────────────────────────────────────────
 
+# Campaign-only obs channels: the simple scenario env (doom/env.py DoomEnv) does NOT support
+# game-vars (Dict obs), spatial memory, depth, automap or strafe — they're CampaignDoomEnv
+# features. Forcing them off for every scenario stage avoids a MultiInputPolicy/obs-shape crash.
+_SCENARIO_FORCE_OFF = {
+    "GAME_VARS": "0", "SPATIAL_MEMORY": "0", "DEPTH_PERCEPTION": "0",
+    "AUTOMAP": "0", "STRAFE": "0",
+}
+
+
 def _run_stage(stage: str, profile: dict, doom_map: str,
                steps: int, algo: str, fresh: bool) -> None:
-    env = {**os.environ, "CAMPAIGN": "1", "MAPS": doom_map,
-           "DOCS_ENABLED": "0",
-           "MEMORY_ENABLED": "1" if stage == "full" else "0",
-           **profile}
+    mode     = profile.get("_mode", "campaign")
+    scenario = profile.get("_scenario", "")
+    # Strip internal keys before passing to the subprocess env.
+    env_overrides = {k: v for k, v in profile.items() if not k.startswith("_")}
 
-    if algo == "dqn":
-        cmd = [sys.executable, "-m", "rl.train_dqn",
-               "--map", doom_map, "--timesteps", str(steps), "--n-envs", "1"]
+    if mode == "scenario":
+        # ViZDoom built-in scenario: use DoomEnv (CAMPAIGN=0). Campaign-only channels off.
+        base_env = {**os.environ, "CAMPAIGN": "0",
+                    "DOOM_SCENARIO": scenario,
+                    "DOCS_ENABLED": "0", "MEMORY_ENABLED": "0",
+                    **_SCENARIO_FORCE_OFF,
+                    **env_overrides}
+        if algo == "dqn":
+            cmd = [sys.executable, "-m", "rl.train_dqn",
+                   "--timesteps", str(steps), "--n-envs", "1"]
+        else:
+            cmd = [sys.executable, "-m", "rl.train",
+                   "--timesteps", str(steps)]
     else:
-        cmd = [sys.executable, "-m", "rl.train",
-               "--maps", doom_map, "--timesteps", str(steps)]
+        # Campaign mode: freedoom2 full map
+        base_env = {**os.environ, "CAMPAIGN": "1", "MAPS": doom_map,
+                    "DOCS_ENABLED": "0",
+                    "MEMORY_ENABLED": "1" if stage == "full" else "0",
+                    **env_overrides}
+        if algo == "dqn":
+            cmd = [sys.executable, "-m", "rl.train_dqn",
+                   "--map", doom_map, "--timesteps", str(steps), "--n-envs", "1"]
+        else:
+            cmd = [sys.executable, "-m", "rl.train",
+                   "--maps", doom_map, "--timesteps", str(steps)]
 
     if fresh:
         cmd.append("--fresh")
 
+    tag = f"scenario:{scenario}" if mode == "scenario" else f"map:{doom_map}"
     print(f"\n{'═'*64}")
-    print(f"  STAGE: {stage.upper()}  |  algo: {algo}  |  steps: {steps:,}")
-    key = {k: v for k, v in profile.items()
+    print(f"  STAGE: {stage.upper()}  |  algo: {algo}  |  steps: {steps:,}  |  {tag}")
+    key = {k: v for k, v in env_overrides.items()
            if any(x in k for x in ("EXIT_REWARD", "DEATH_PENALTY", "COVERAGE_REWARD"))}
     if key:
         print(f"  reward profile: {key}")
     print(f"{'═'*64}\n")
-    subprocess.run(cmd, cwd=ROOT, env=env, check=False)
+    subprocess.run(cmd, cwd=ROOT, env=base_env, check=False)
 
 
-def _eval_stage(profile: dict, doom_map: str, episodes: int = 20) -> dict:
-    env = {**os.environ, "CAMPAIGN": "1", "MAPS": doom_map,
-           "DOCS_ENABLED": "0", "MEMORY_ENABLED": "0", **profile}
-    out = subprocess.run(
-        [sys.executable, "-m", "rl.eval",
-         "--episodes", str(episodes), "--json", "--temperature", "0.5"],
-        cwd=ROOT, env=env, capture_output=True, text=True)
+def _eval_stage(profile: dict, doom_map: str, episodes: int = 20,
+                algo: str = "ppo") -> dict:
+    mode     = profile.get("_mode", "campaign")
+    scenario = profile.get("_scenario", "")
+    env_overrides = {k: v for k, v in profile.items() if not k.startswith("_")}
+
+    if mode == "scenario":
+        env = {**os.environ, "CAMPAIGN": "0", "DOOM_SCENARIO": scenario,
+               "DOCS_ENABLED": "0", "MEMORY_ENABLED": "0",
+               **_SCENARIO_FORCE_OFF, **env_overrides}
+    else:
+        env = {**os.environ, "CAMPAIGN": "1", "MAPS": doom_map,
+               "DOCS_ENABLED": "0", "MEMORY_ENABLED": "0", **env_overrides}
+
+    cmd = [sys.executable, "-m", "rl.eval",
+           "--episodes", str(episodes), "--json", "--algo", algo]
+    # QR-DQN ignores temperature (value-based); PPO uses it for the honest tempered score.
+    if algo != "dqn":
+        cmd += ["--temperature", "0.5"]
+    out = subprocess.run(cmd, cwd=ROOT, env=env, capture_output=True, text=True)
     for line in out.stdout.splitlines():
         if line.startswith("METRICS_JSON"):
             return json.loads(line.split("METRICS_JSON", 1)[1])
@@ -118,18 +182,18 @@ def run(doom_map: str = "MAP01", steps_per_stage: int = 150_000,
         algo: str = "ppo", stages: list | None = None,
         eval_episodes: int = 20) -> dict:
     """Run the full progressive curriculum and return per-stage metrics."""
-    stages = stages or ["navigate", "survive", "full"]
+    stages = stages or ["mywh", "corridor", "navigate", "full"]
     out_dir = os.path.join(ROOT, "reports",
                            f"curriculum-{time.strftime('%Y%m%d-%H%M%S')}")
     os.makedirs(out_dir, exist_ok=True)
     results = {}
 
     for i, stage in enumerate(stages):
-        profile = STAGE_PROFILES.get(stage, {})
+        profile = STAGE_DEFS.get(stage, {})
         _run_stage(stage, profile, doom_map, steps_per_stage, algo, fresh=(i == 0))
 
-        print(f"\n── eval: {stage} ──")
-        m = _eval_stage(profile, doom_map, eval_episodes)
+        print(f"\n── eval: {stage} ({profile.get('_mode','campaign')}) ──")
+        m = _eval_stage(profile, doom_map, eval_episodes, algo=algo)
         results[stage] = m
         if m:
             print(f"  explored={m.get('explored_fraction',0):.0%}  "
@@ -159,7 +223,10 @@ def _write_summary(out_dir, results, doom_map, algo) -> None:
             for k in keys)
         lines.append(f"| **{stage}** | {cells} |")
     lines += ["",
-              "> Same brain across all stages — weights transfer via checkpoint, no mismatch.",
+              "> Scenario stages (mywh/corridor) and campaign stages (navigate/survive/full) have",
+              "> DIFFERENT action spaces (5 / 7 / 15 actions), so each trains its own brain — the",
+              "> scenario stages PROVE a skill is learnable in isolation; weight transfer happens",
+              "> only WITHIN the campaign stages (all 15-action, same brain family).",
               f"> Reproduce: `doom-cli curriculum2 --algo {algo}`"]
     with open(os.path.join(out_dir, "summary.md"), "w") as f:
         f.write("\n".join(lines) + "\n")
@@ -172,7 +239,10 @@ def main() -> None:
     p.add_argument("--map", default="MAP01")
     p.add_argument("--steps-per-stage", type=int, default=150_000)
     p.add_argument("--algo", default="ppo", choices=["ppo", "dqn"])
-    p.add_argument("--stages", default="navigate,survive,full")
+    p.add_argument("--stages", default="mywh,corridor,navigate,full",
+                   help="Comma-separated stages: mywh,corridor,navigate,survive,full. "
+                        "mywh/corridor use ViZDoom built-in scenarios; navigate/survive/full "
+                        "use freedoom2 campaign mode.")
     p.add_argument("--eval-episodes", type=int, default=20)
     args = p.parse_args()
     run(doom_map=args.map, steps_per_stage=args.steps_per_stage,

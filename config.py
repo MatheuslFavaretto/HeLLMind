@@ -90,8 +90,8 @@ class Config:
     damage_taken_penalty: float = float(os.getenv("DAMAGE_TAKEN_PENALTY", "0.05"))
     death_penalty: float = float(os.getenv("DEATH_PENALTY", "5.0"))
     # Anti-idle: reward movement, and make standing still cost reward (time penalty).
-    move_reward: float = float(os.getenv("MOVE_REWARD", "0.002"))
-    living_reward: float = float(os.getenv("LIVING_REWARD", "-0.005"))
+    move_reward: float = float(os.getenv("MOVE_REWARD", "0.0"))
+    living_reward: float = float(os.getenv("LIVING_REWARD", "0.0"))
     # Anti-circle: reward NET outward progress (new max distance from spawn). Raw move_reward
     # pays the agent to spin in circles (infinite distance); this only pays for going OUTWARD,
     # so it can't be farmed by a limit cycle. Drives directed exploration. Campaign only.
@@ -109,14 +109,12 @@ class Config:
     # exit AFTER the first success memorises its position (see campaign.py).
     exit_reward: float = float(os.getenv("EXIT_REWARD", "1000.0"))
     exit_prox_scale: float = float(os.getenv("EXIT_PROX_SCALE", "0.1"))
-    # Count-based weapon variety: bonus the FIRST time the agent wields a NEW weapon slot
-    # in an episode (campaign only). The campaign has SELECT_NEXT_WEAPON but, without this,
-    # no reason to ever switch — so it never used the weapons it picks up.
-    weapon_variety_reward: float = float(os.getenv("WEAPON_VARIETY_REWARD", "0.5"))
-    # Engagement reward (needs USE_LABELS): tiny bonus per step for keeping a visible enemy
-    # CENTRED in view (in the crosshair). Encourages facing/approaching enemies instead of
-    # wandering past them — complements hit/miss. Keep small so it can't replace killing. 0=off.
-    engagement_reward: float = float(os.getenv("ENGAGEMENT_REWARD", "0.01"))
+    # V2 Phase 0: reward zoo collapsed. weapon_variety, engagement, discovery, bestiary,
+    # move, living are now 0/false by default — the 4 active buckets are: curiosity (RND),
+    # frontier/coverage (exploration), exit-proximity (goal), combat (kill/hit/miss/death).
+    # Re-enable individually via env vars if needed.
+    weapon_variety_reward: float = float(os.getenv("WEAPON_VARIETY_REWARD", "0.0"))
+    engagement_reward: float = float(os.getenv("ENGAGEMENT_REWARD", "0.0"))
     # Combat/exploration decoupling (Arnold/ViZDoom-champion style): pursue ONE objective at a
     # time, gated by ground-truth enemy visibility (USE_LABELS). Enemy on screen -> COMBAT
     # focus (damp exploration pulls so it doesn't wander off mid-fight); screen clear ->
@@ -129,14 +127,8 @@ class Config:
     # signal -> it gets stuck banging on closed doors (observed). On by default; the agent
     # still chooses where to GO, this just stops doors from being a dead end.
     auto_use: bool = os.getenv("AUTO_USE", "1") in ("1", "true", "True")
-    # Automatic goal/discovery reward (needs USE_LABELS): bonus the FIRST time each episode the
-    # agent SEES a new notable object (key, switch-adjacent item, weapon, powerup, a new monster
-    # type) — progress-guided exploration toward objectives, not blind wandering. 0 = off.
-    discovery_reward: float = float(os.getenv("DISCOVERY_REWARD", "0.5"))
-    # Closed loop (bestiary -> reward): scale the kill bonus by what the agent LEARNED about
-    # each monster — killing a deadlier type (higher death-rate-when-present) pays more. Uses
-    # the persisted bestiary; needs one prior run to have data. Opt-in (changes the reward).
-    bestiary_reward: bool = os.getenv("BESTIARY_REWARD", "1") in ("1", "true", "True")
+    discovery_reward: float = float(os.getenv("DISCOVERY_REWARD", "0.0"))
+    bestiary_reward: bool = os.getenv("BESTIARY_REWARD", "0") in ("1", "true", "True")
     # Spatial memory: feed the agent a 2nd obs channel of where it has already been
     # (so it can ACT on its own memory, not just be rewarded for it).
     spatial_memory: bool = os.getenv("SPATIAL_MEMORY", "1") in ("1", "true", "True")
