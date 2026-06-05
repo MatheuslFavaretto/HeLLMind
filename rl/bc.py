@@ -43,20 +43,46 @@ def nearest_action(pressed: Sequence[int], actions: Sequence[Sequence[int]]) -> 
 # Demo IO  (one .npz per episode: obs uint8 [N,H,W,C], actions int [N])
 # ---------------------------------------------------------------------------
 
-def save_demo(path: str, obs: np.ndarray, actions: np.ndarray) -> None:
+def save_demo(path: str, obs: np.ndarray, actions: np.ndarray,
+              reached_exit: Optional[bool] = None) -> None:
+    """Save one episode's (obs, action) pairs. `reached_exit` flags whether the human
+    actually reached the level exit — BC on demos that WANDER or DIE clones wandering/dying,
+    so recording this lets us train only on the successful runs (the whole point of BC)."""
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    np.savez_compressed(path, obs=obs.astype(np.uint8), actions=actions.astype(np.int64))
+    extra = {} if reached_exit is None else {"reached_exit": np.array(bool(reached_exit))}
+    np.savez_compressed(path, obs=obs.astype(np.uint8),
+                        actions=actions.astype(np.int64), **extra)
 
 
-def load_demos(demos_dir: str) -> Tuple[np.ndarray, np.ndarray]:
-    """Concatenate every .npz demo in a dir into (obs, actions). Empty -> (0-len arrays)."""
+def load_demos(demos_dir: str, only_success: bool = False) -> Tuple[np.ndarray, np.ndarray]:
+    """Concatenate every .npz demo in a dir into (obs, actions). Empty -> (0-len arrays).
+
+    only_success=True keeps ONLY demos flagged reached_exit=True (BC's whole premise: imitate
+    a SUCCESS). Demos with no flag (older recordings) are treated as unknown and kept, with a
+    warning — re-record them with the updated record_demo to get the flag."""
     files = sorted(glob.glob(os.path.join(demos_dir, "*.npz")))
     obs_chunks, act_chunks = [], []
+    kept, skipped, unflagged = 0, 0, 0
     for f in files:
         with np.load(f) as d:
-            if "obs" in d and "actions" in d and len(d["actions"]) > 0:
-                obs_chunks.append(d["obs"])
-                act_chunks.append(d["actions"])
+            if "obs" not in d or "actions" not in d or len(d["actions"]) == 0:
+                continue
+            if only_success and "reached_exit" in d:
+                if not bool(d["reached_exit"]):
+                    skipped += 1
+                    continue
+            elif only_success:
+                unflagged += 1  # no flag → can't verify; keep but warn
+            obs_chunks.append(d["obs"])
+            act_chunks.append(d["actions"])
+            kept += 1
+    if only_success:
+        msg = f"[bc] using {kept} demo(s)"
+        if skipped:
+            msg += f", skipped {skipped} that didn't reach the exit"
+        if unflagged:
+            msg += f"; {unflagged} have no exit flag (re-record for verification)"
+        print(msg)
     if not obs_chunks:
         return np.empty((0,), dtype=np.uint8), np.empty((0,), dtype=np.int64)
     return np.concatenate(obs_chunks, axis=0), np.concatenate(act_chunks, axis=0)
@@ -74,9 +100,11 @@ def bc_cross_entropy(logits, targets):
 # ---------------------------------------------------------------------------
 
 def behavioral_clone(cfg, demos_dir: str, epochs: int = 10, batch_size: int = 64,
-                     lr: float = 3e-4) -> Optional[str]:
+                     lr: float = 3e-4, only_success: bool = False) -> Optional[str]:
     """Supervised-train the PPO policy to imitate the demos; save it as this vault's brain
-    so `train --resume` continues from it. Returns the saved path (or None if no demos)."""
+    so `train --resume` continues from it. Returns the saved path (or None if no demos).
+
+    only_success=True trains ONLY on demos that reached the exit (BC's premise: clone a win)."""
     import torch
     from stable_baselines3 import PPO
     from stable_baselines3.common.vec_env import DummyVecEnv, VecFrameStack, VecTransposeImage
@@ -84,7 +112,7 @@ def behavioral_clone(cfg, demos_dir: str, epochs: int = 10, batch_size: int = 64
     from doom.campaign import campaign_metadata, make_campaign_env
     from rl.algo import brain_prefix
 
-    obs, actions = load_demos(demos_dir)
+    obs, actions = load_demos(demos_dir, only_success=only_success)
     if len(actions) == 0:
         print(f"[bc] no demos found in {demos_dir}")
         return None
@@ -167,10 +195,13 @@ def main() -> None:
     p.add_argument("--demos", default=None, help="Demos dir (default: <memory>/demos).")
     p.add_argument("--epochs", type=int, default=10)
     p.add_argument("--batch-size", type=int, default=64)
+    p.add_argument("--only-success", action="store_true",
+                   help="Train ONLY on demos that reached the exit (BC's premise: clone a win).")
     args = p.parse_args()
     cfg = Config()
     demos_dir = args.demos or os.path.join(cfg.memory_dir, "demos")
-    behavioral_clone(cfg, demos_dir, epochs=args.epochs, batch_size=args.batch_size)
+    behavioral_clone(cfg, demos_dir, epochs=args.epochs, batch_size=args.batch_size,
+                     only_success=args.only_success)
 
 
 if __name__ == "__main__":

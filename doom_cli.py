@@ -1131,6 +1131,8 @@ def cmd_bc(a) -> int:
     cmd = [PY, "-m", "rl.bc", "--epochs", str(a.epochs)]
     if a.demos:
         cmd += ["--demos", a.demos]
+    if getattr(a, "only_success", False):
+        cmd.append("--only-success")
     return run(cmd, title="🎓 Behavioral cloning — learning from human demos")
 
 
@@ -1416,6 +1418,8 @@ def build_parser() -> argparse.ArgumentParser:
     bc_p = sub.add_parser("bc", help="Behavioral cloning from human SPECTATOR demos")
     bc_p.add_argument("--demos", default=None, help="Demos dir (default: <memory>/demos)")
     bc_p.add_argument("--epochs", type=int, default=10)
+    bc_p.add_argument("--only-success", dest="only_success", action="store_true",
+                      help="Clone ONLY demos that reached the exit (recommended — BC's premise).")
     bc_p.set_defaults(fn=cmd_bc)
 
     # eureka and research are removed from the parser (Phase 0 cut — still runnable
