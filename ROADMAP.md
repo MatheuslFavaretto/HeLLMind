@@ -6,6 +6,17 @@ the real gap — most "cognition" machinery already exists; it needs a stronger 
 
 ---
 
+## 🟢 MILESTONE HIT (2026-06-05) — first exit-rate > 0
+
+The roadmap's headline goal is **done**: on ViZDoom's `my_way_home`, a PPO agent reaches the
+exit in **93%** of episodes (901k steps, 0% deaths). More compute lifted it 50% → 93% (401k →
+901k) — proof that *it's compute, not features*. Combat is proven too (`deadly_corridor`: 81%
+shooting accuracy; QR-DQN: 2 kills/ep, 0% deaths). **The remaining wall is the full freedoom2
+MAP01 + compute** — 1M steps explores only 4% of the large, enemy-harassed level. Skills proven
+in isolation; the full map needs the cloud budget. Full table: `reports/CURRICULUM_RESULTS.md`.
+
+---
+
 ## 🔴 P0 — Make the agent ACTUALLY PLAY (the real problem)
 
 Watching the bot: it ignores enemies, doesn't shoot, bangs on closed doors. Root causes found:
