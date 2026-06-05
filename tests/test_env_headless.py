@@ -33,9 +33,25 @@ def test_scenario_env_contract():
             doom = info.get("doom")
             assert doom is not None and "deltas" in doom and "levels" in doom
             if terminated or truncated:
+                # Regression: scenario terminals are 3-way (death / timeout / exit). Reaching
+                # the goal early (e.g. my_way_home) must label "exit", NOT "timeout" — that
+                # mislabel hid the project's first exit-rate > 0.
+                assert doom["terminal"] in ("death", "timeout", "exit")
                 env.reset()
     finally:
         env.close()
+
+
+def test_classify_terminal_three_way():
+    """Regression: reaching the goal early (not dead, before the timeout) = 'exit', NOT
+    'timeout'. That mislabel hid the project's first exit-rate > 0 on my_way_home."""
+    from doom.env import classify_terminal
+    assert classify_terminal(is_dead=True, episode_time=10, episode_timeout=2100) == "death"
+    assert classify_terminal(is_dead=False, episode_time=10, episode_timeout=2100) == "exit"
+    assert classify_terminal(is_dead=False, episode_time=2100, episode_timeout=2100) == "timeout"
+    assert classify_terminal(is_dead=False, episode_time=2500, episode_timeout=2100) == "timeout"
+    # No timeout configured (0) → ending alive is always a goal-reach, never a timeout.
+    assert classify_terminal(is_dead=False, episode_time=999, episode_timeout=0) == "exit"
 
 
 # --------------------------- campaign env ---------------------------

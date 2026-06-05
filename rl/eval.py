@@ -50,15 +50,22 @@ def evaluate(cfg: Config, path: str, button_names: list, episodes: int = 20,
     ground that lets a brain whose argmax collapsed still act on its learned distribution
     (e.g. τ=0.5 explores without freezing). Feed-forward policies only."""
     venv = build_vec_env(cfg)  # n_envs forced to 1 by the caller
-    from rl.algo import algo_class
-    # Detect a recurrent brain from its tagged name so eval "just works" on any checkpoint,
-    # even when the caller forgot to set USE_LSTM (a feed-forward load would crash on it).
+    from rl.algo import algo_class_from_path
     import os
-    use_lstm = cfg.use_lstm or "_lstm" in os.path.basename(path)
+    AlgoClass = algo_class_from_path(path)
+    use_lstm = "_lstm" in os.path.basename(path).lower()
     if temperature is not None and use_lstm:
         print("[eval] temperature sampling is feed-forward only; ignoring for the LSTM brain.")
         temperature = None
-    model = algo_class(use_lstm).load(path, env=venv)
+    model = AlgoClass.load(path, env=venv)
+    # Tempered sampling needs a STOCHASTIC policy (PPO's Categorical via get_distribution).
+    # QR-DQN is value-based — its "policy" is argmax over Q-values, with no action
+    # distribution — so temperature can't apply. Fall back to deterministic (the honest
+    # measure for DQN: it has no argmax-collapse pathology that temperature would dodge).
+    if temperature is not None and not hasattr(model.policy, "get_distribution"):
+        print("[eval] temperature sampling needs a stochastic policy; this brain is "
+              "value-based (QR-DQN) — using deterministic argmax instead.")
+        temperature = None
     tracker = StatsTracker(button_names=button_names)
     # When rendering, throttle to ~real time so the window is actually watchable
     # (otherwise ViZDoom blasts through hundreds of fps and the episodes flash by).
@@ -141,6 +148,9 @@ def main() -> None:
                         "the best actions but avoids the argmax-collapse. Overrides --stochastic.")
     p.add_argument("--overlay", action="store_true",
                    help="Show HUD + minimap overlay in a separate cv2 window (needs opencv-python).")
+    p.add_argument("--algo", default="ppo", choices=["ppo", "dqn"],
+                   help="Which brain family to evaluate: ppo (default) or dqn (QR-DQN). "
+                        "Selects the checkpoint prefix when --path is not given.")
     args = p.parse_args()
 
     cfg = Config()
@@ -153,12 +163,19 @@ def main() -> None:
     from rl.algo import brain_prefix
     if cfg.campaign:
         meta = campaign_metadata(cfg.wad_path, cfg.maps[0], strafe=cfg.strafe)
-        name_prefix = brain_prefix("campaign", meta["num_actions"], cfg.use_lstm,
-                                   cfg.spatial_memory, cfg.depth_perception, cfg.automap, cfg.frame_stack, cfg.game_vars)
     else:
         meta = probe_env_metadata(cfg.scenario, cfg.frame_skip, cfg.resolution)
-        name_prefix = brain_prefix(cfg.scenario, meta["num_actions"], cfg.use_lstm,
-                                   cfg.spatial_memory, cfg.depth_perception, cfg.automap, cfg.frame_stack, cfg.game_vars)
+    # The brain name differs by algorithm: QR-DQN uses the qrdqn_ prefix (with the same obs
+    # tags), PPO/RecurrentPPO use brain_prefix. Picking the wrong one means eval looks for a
+    # checkpoint that doesn't exist → "No checkpoint found" (the DQN auto-loop's eval failure).
+    if args.algo == "dqn":
+        from rl.train_dqn import _dqn_prefix
+        name_prefix = _dqn_prefix(meta["num_actions"], cfg.game_vars, cfg)
+    else:
+        task = "campaign" if cfg.campaign else cfg.scenario
+        name_prefix = brain_prefix(task, meta["num_actions"], cfg.use_lstm,
+                                   cfg.spatial_memory, cfg.depth_perception, cfg.automap,
+                                   cfg.frame_stack, cfg.game_vars)
     button_names = meta["button_names"]
 
     path = args.path or _latest_checkpoint(cfg, name_prefix)

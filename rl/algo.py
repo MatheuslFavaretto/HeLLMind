@@ -1,20 +1,39 @@
-"""Algorithm selection: standard PPO (feed-forward) or RecurrentPPO (LSTM).
+"""Algorithm selection: PPO (feed-forward), RecurrentPPO (LSTM), or QR-DQN (off-policy).
 
-An LSTM policy carries hidden state across steps, so the agent can act on temporal
-context a single frame doesn't reveal (e.g. "I just came from there"). It's opt-in via
-`USE_LSTM` because the saved brain's format differs: an LSTM brain and a feed-forward
-brain are NOT interchangeable. The checkpoint name is tagged (`..._lstm`) so a resume
-never tries to load one into the other.
+LSTM: carries hidden state across steps (temporal context). Tagged `_lstm` in checkpoints.
+QR-DQN: off-policy, distributional DQN with replay buffer (V2 Phase 1). Tagged `qrdqn_`
+  prefix instead of `ppo_`. Auto-detected from the checkpoint filename by algo_class_from_path.
 
-`predict()` has the same signature on both classes (the extra `state`/`episode_start`
-are simply unused by PPO), so callers can drive either with one recurrent-safe loop.
+`predict()` has the same signature on all classes (extra `state`/`episode_start` are
+simply unused by PPO/QR-DQN), so callers can drive any of them with one loop.
 """
+import os
 from typing import Tuple, Type
 
 
 def algo_class(use_lstm: bool) -> Type:
-    """The SB3 algorithm class to use."""
+    """PPO or RecurrentPPO — for checkpoints that were trained with rl.train."""
     if use_lstm:
+        from sb3_contrib import RecurrentPPO
+        return RecurrentPPO
+    from stable_baselines3 import PPO
+    return PPO
+
+
+def algo_class_from_path(path: str) -> Type:
+    """Auto-detect the correct SB3 class from the checkpoint filename.
+
+    qrdqn_* → QRDQN (sb3_contrib)
+    *_lstm*  → RecurrentPPO (sb3_contrib)
+    else     → PPO (stable_baselines3)
+
+    Use this in eval / autonomous so they work on any checkpoint without a manual flag.
+    """
+    name = os.path.basename(path).lower()
+    if name.startswith("qrdqn"):
+        from sb3_contrib import QRDQN
+        return QRDQN
+    if "_lstm" in name:
         from sb3_contrib import RecurrentPPO
         return RecurrentPPO
     from stable_baselines3 import PPO

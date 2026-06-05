@@ -52,20 +52,23 @@ def score(m: dict) -> float:
 
 # Reward knobs the supervisor is allowed to move, with hard bounds (the guardrails).
 BOUNDS = {
-    "COVERAGE_REWARD":       (0.0, 4.0),
-    "EXIT_REWARD":           (0.0, 500.0),
-    "HIT_REWARD":            (0.5, 5.0),
+    # V2 Phase 0: COVERAGE cap lowered (was 4.0). With KILL_REWARD=10 the heuristic
+    # must not bump exploration above 1.5 or it floods out the combat signal again.
+    "COVERAGE_REWARD":       (0.0, 1.5),
+    "EXIT_REWARD":           (0.0, 1500.0),
+    "HIT_REWARD":            (1.0, 10.0),   # raised floor/ceil to match new combat scale
     "MISS_PENALTY":          (0.0, 0.3),
     "DAMAGE_TAKEN_PENALTY":  (0.0, 0.5),
-    "DEATH_PENALTY":         (1.0, 20.0),
-    "FRONTIER_REWARD":       (0.0, 0.2),  # anti-circle/exploration lever
-    "EPISODE_TIMEOUT":       (1050, 8400),  # ticks — 30s to 240s at 35fps
-    # Expanded levers so the loop can tune more failure modes (each still bounded):
-    "ENGAGEMENT_REWARD":     (0.0, 0.1),   # anti-passivity (face/approach enemies)
-    "ENT_COEF":              (0.005, 0.08),  # the argmax-collapse lever (un-freeze policy)
-    "RND_SCALE":             (0.0, 1.0),   # curiosity strength
-    "GOEXPLORE_GOAL_PROB":   (0.0, 0.8),   # how often to return-then-explore
-    "COMBAT_EXPLORE_FACTOR": (0.1, 1.0),   # how hard to damp the off-mode objective
+    "DEATH_PENALTY":         (2.0, 25.0),   # raised floor/ceil
+    "FRONTIER_REWARD":       (0.0, 0.2),
+    "EPISODE_TIMEOUT":       (1050, 8400),
+    "ENGAGEMENT_REWARD":     (0.0, 0.2),    # raised ceil (was 0.1)
+    "ENT_COEF":              (0.005, 0.08),  # PPO un-freeze lever
+    "DQN_EPS_FINAL":         (0.02, 0.3),   # QR-DQN un-freeze lever (ε-greedy floor)
+    "RND_SCALE":             (0.0, 0.5),    # capped: curiosity must not dominate combat
+    "GOEXPLORE_GOAL_PROB":   (0.0, 0.8),
+    "COMBAT_EXPLORE_FACTOR": (0.05, 0.5),   # lowered floor: can suppress exploration harder
+    "KILL_REWARD":           (2.0, 20.0),   # added: auto-loop can tune the primary lever
 }
 
 # writer.suggest speaks in lowercase knobs; map them onto the supervisor's env vars.
@@ -78,14 +81,21 @@ LLM_KNOB_TO_ENV = {
 }
 
 
-def propose(env: dict, m: dict) -> tuple[dict, str]:
+def propose(env: dict, m: dict, algo: str = "ppo") -> tuple[dict, str]:
     """Heuristic 'understanding -> action': nudge the knob that targets the weakest
-    metric, within bounds. Returns (new_env, human-readable reason)."""
+    metric, within bounds. Returns (new_env, human-readable reason).
+
+    `algo` selects the policy-exploration lever: PPO un-freezes via ENT_COEF (entropy),
+    QR-DQN via DQN_EPS_FINAL (ε-greedy floor). Bumping the wrong one is a silent no-op."""
     new = dict(env)
+    # The "un-freeze a collapsed policy" knob differs by algorithm.
+    unfreeze_knob = "DQN_EPS_FINAL" if algo == "dqn" else "ENT_COEF"
 
     def bump(key, factor=None, add=None):
         lo, hi = BOUNDS[key]
-        v = float(new.get(key, 0.0))
+        # Seed a missing knob from its lower bound so a *factor on an absent key isn't a no-op
+        # (e.g. DQN_EPS_FINAL isn't in the seed env, so v would start at 0 → stays 0).
+        v = float(new.get(key, lo))
         v = v * factor if factor is not None else v + add
         new[key] = round(max(lo, min(hi, v)), 4)
 
@@ -129,12 +139,12 @@ def propose(env: dict, m: dict) -> tuple[dict, str]:
     combat_passive = (engagement is not None and saw_enemies and engagement < 0.3) \
         or (kills < 0.5 and timeout_rate < 0.6)
     if combat_passive:
-        bump("ENT_COEF", factor=1.3)
+        bump(unfreeze_knob, factor=1.3)
         bump("ENGAGEMENT_REWARD", factor=1.5)
         why = (f"combat_engagement={engagement:.0%} (sees enemies, won't shoot)"
                if engagement is not None and saw_enemies else f"kills/ep={kills:.2f}")
-        return new, (f"passive in combat ({why}) -> un-freeze policy: ENT_COEF to "
-                     f"{new['ENT_COEF']}, ENGAGEMENT_REWARD to {new['ENGAGEMENT_REWARD']}")
+        return new, (f"passive in combat ({why}) -> un-freeze policy: {unfreeze_knob} to "
+                     f"{new[unfreeze_knob]}, ENGAGEMENT_REWARD to {new['ENGAGEMENT_REWARD']}")
     if explored < 0.5:
         bump("COVERAGE_REWARD", factor=1.3)
         return new, f"explored only {explored:.0%} -> raise COVERAGE_REWARD to {new['COVERAGE_REWARD']}"
@@ -197,12 +207,13 @@ def llm_propose(cfg: Config, env: dict, m: dict) -> Optional[tuple[dict, str]]:
     return new, f"LLM: {res.summary.strip()[:120]} ({', '.join(applied)})"
 
 
-def propose_next(cfg: Config, env: dict, m: dict, use_llm: bool) -> tuple[dict, str]:
+def propose_next(cfg: Config, env: dict, m: dict, use_llm: bool,
+                 algo: str = "ppo") -> tuple[dict, str]:
     """Pick the next reward config. The heuristic always runs (it owns exploration and
     is the fallback); the persistent MEMORY refines combat on top (targets the real death
     mode across all runs, and never repeats a change a past experiment disproved); when
     --llm is on, the LLM refines combat too."""
-    new, reason = propose(env, m)
+    new, reason = propose(env, m, algo=algo)
     # Memory-informed: draw on the whole persistent history, not just this iteration's eval.
     try:
         from writer.memory_policy import recall_proposal
@@ -226,18 +237,31 @@ def _subprocess_env(env: dict) -> dict:
     return {**os.environ, **{k: str(v) for k, v in env.items()}}
 
 
-def train_chunk(env: dict, doom_map: str, steps: int, fresh: bool) -> None:
-    cmd = [PY, "-m", "rl.train", "--maps", doom_map,
-           "--n-envs", str(env.get("N_ENVS", "4")), "--timesteps", str(steps)]
-    cmd.append("--fresh" if fresh else "--resume")
+def train_chunk(env: dict, doom_map: str, steps: int, fresh: bool,
+                algo: str = "ppo") -> None:
+    n_envs = str(env.get("N_ENVS") or os.getenv("N_ENVS", "8"))
+    if algo == "dqn":
+        # train_dqn resumes the latest checkpoint by DEFAULT (no --resume flag exists).
+        # Only --fresh is meaningful. n-envs is inherited from N_ENVS in the subprocess
+        # env, but we pass it explicitly so the log shows the real value.
+        cmd = [PY, "-m", "rl.train_dqn",
+               "--map", doom_map, "--timesteps", str(steps), "--n-envs", n_envs]
+        if fresh:
+            cmd.append("--fresh")
+    else:
+        cmd = [PY, "-m", "rl.train", "--maps", doom_map,
+               "--n-envs", n_envs, "--timesteps", str(steps)]
+        cmd.append("--fresh" if fresh else "--resume")
     subprocess.run(cmd, env=_subprocess_env(env), check=True)
 
 
-def eval_brain(env: dict, episodes: int, temperature: Optional[float] = None) -> dict:
-    cmd = [PY, "-m", "rl.eval", "--episodes", str(episodes), "--json"]
+def eval_brain(env: dict, episodes: int, temperature: Optional[float] = None,
+               algo: str = "ppo") -> dict:
+    cmd = [PY, "-m", "rl.eval", "--episodes", str(episodes), "--json", "--algo", algo]
     # Score the TEMPERED policy, not the raw argmax: this agent's argmax collapses to a
     # passive action while the learned distribution explores+fights. Scoring argmax would
     # make the supervisor optimise a frozen policy. T (e.g. 0.5) measures real capability.
+    # (QR-DQN ignores temperature — it's value-based; the loop passes None for dqn.)
     if temperature is not None:
         cmd += ["--temperature", str(temperature)]
     out = subprocess.run(
@@ -624,12 +648,18 @@ def main() -> None:
     p.add_argument("--llm", action="store_true",
                    help="Let the offline reward-suggestions LLM refine the combat knobs "
                         "(needs Ollama + enough events); falls back to the heuristic.")
+    p.add_argument("--graph", action="store_true",
+                   help="Use the LangGraph coach (V2 Phase 4): explicit observe→diagnose→"
+                        "hypothesize→propose→validate graph instead of the heuristic cascade.")
     p.add_argument("--resume", action="store_true",
                    help="(default behaviour — kept for back-compat) Continue the prior session.")
     p.add_argument("--fast", action="store_true",
                    help="Throughput mode WITHOUT disabling any perception: scale the parallel "
                         "envs to your CPU cores (ViZDoom is CPU-bound, so this is the free "
                         "speedup). Everything the agent sees stays on.")
+    p.add_argument("--algo", default="ppo", choices=["ppo", "dqn"],
+                   help="RL algorithm: ppo (default, on-policy) or dqn (QR-DQN, off-policy "
+                        "with replay buffer — more sample-efficient, V2 default).")
     args = p.parse_args()
 
     cfg = Config()
@@ -659,12 +689,20 @@ def main() -> None:
     strafe   = args.strafe or cfg.strafe
     automap  = args.automap or cfg.automap
     gamevars = args.game_vars or cfg.game_vars
-    cfg.game_vars = gamevars  # so brain_prefix / build_vec_env pick it up
+    # Write the resolved perception flags back to cfg so brain_prefix / _dqn_prefix /
+    # build_vec_env all derive the SAME brain name (the DQN prefix reads them off cfg).
+    cfg.game_vars = gamevars
+    cfg.spatial_memory = spatial
+    cfg.depth_perception = depth
+    cfg.automap = automap
+    cfg.strafe = strafe
 
     # NOTE: perception/action flags change the obs shape / action count, but the brain NAME
     # now ENCODES all of them (e.g. `..._a15_sp`), so the lookup below finds the exact
     # compatible brain — no blanket force-fresh needed (an unconditional one was a bug that
     # discarded a resumable brain). Resume is the DEFAULT; only --fresh/--clear starts over.
+
+    algo = getattr(args, "algo", "ppo")
 
     # Auto-fresh ONLY when no compatible brain exists yet (a truly new family) — otherwise
     # continue training the existing brain. Derives the exact brain family name from the
@@ -674,8 +712,12 @@ def main() -> None:
         from doom.campaign import campaign_metadata
         from rl.algo import brain_prefix
         meta = campaign_metadata(cfg.wad_path, doom_map, strafe=strafe)
-        name_prefix = brain_prefix("campaign", meta["num_actions"], cfg.use_lstm,
-                                   spatial, depth, automap, cfg.frame_stack, cfg.game_vars)
+        if algo == "dqn":
+            from rl.train_dqn import _dqn_prefix
+            name_prefix = _dqn_prefix(meta["num_actions"], cfg.game_vars, cfg)
+        else:
+            name_prefix = brain_prefix("campaign", meta["num_actions"], cfg.use_lstm,
+                                       spatial, depth, automap, cfg.frame_stack, cfg.game_vars)
         ckpt_dir = cfg.checkpoint_dir
         has_brain = bool(
             os.path.exists(os.path.join(ckpt_dir, f"{name_prefix}_final.zip"))
@@ -732,6 +774,17 @@ def main() -> None:
     except Exception as e:
         print(f"[autonomous] learned config unavailable ({type(e).__name__}); skipping.")
 
+    # LangGraph coach (V2 Phase 4): explicit observe→diagnose→hypothesize→propose→validate graph.
+    # Falls back to the legacy heuristic if --graph is not passed or import fails.
+    _coach = None
+    if getattr(args, "graph", False):
+        try:
+            from rl.coach_graph import CoachGraph
+            _coach = CoachGraph(cfg, use_llm=args.llm, algo=algo)
+            print("[autonomous] using LangGraph coach (graph mode)")
+        except Exception as exc:
+            print(f"[autonomous] LangGraph coach unavailable ({exc}); using heuristic.")
+
     history = []
     best_score = -1e9
     start_iter = 0
@@ -750,23 +803,32 @@ def main() -> None:
     # So resuming a session that already has N iters and asking for 8 runs 8 MORE — otherwise
     # `range(start_iter, iterations)` would be empty once start_iter caught up (did nothing).
     end_iter = start_iter + args.iterations
-    scoring = (f"tempered T={cfg.eval_temperature}" if cfg.eval_temperature > 0
-               else "argmax")
+    # QR-DQN is value-based → scored by deterministic argmax (temperature can't apply).
+    scoring = ("deterministic argmax" if algo == "dqn"
+               else (f"tempered T={cfg.eval_temperature}" if cfg.eval_temperature > 0
+                     else "argmax"))
     print(f"[autonomous] {args.iterations} new iterations (iters {start_iter}→{end_iter - 1}) "
           f"× {args.steps} steps on {doom_map} "
-          f"({'LLM-refined' if args.llm else 'heuristic'} reward proposals; scoring={scoring})")
+          f"({'LLM-refined' if args.llm else 'heuristic'} reward proposals; "
+          f"algo={algo}; scoring={scoring})")
     for i in range(start_iter, end_iter):
         fresh = args.fresh and i == 0
-        reason = "baseline" if i == 0 else history[-1].get("_next_reason", "adjust")
+        # Guard history[-1]: if iter 0 itself FAILED (e.g. a crashed eval), history is still
+        # empty when i advances — accessing history[-1] then would abort the whole loop with
+        # an IndexError (the opposite of the graceful-continue we want).
+        reason = ("baseline" if i == 0 or not history
+                  else history[-1].get("_next_reason", "adjust"))
         print(f"\n===== ITER {i} ({'fresh' if fresh else 'resume'}) — {reason} =====")
         # A single iteration crash (ViZDoom hiccup, OOM, transient subprocess failure)
         # must NOT abort the whole self-improvement run — that's the opposite of autonomy.
         # Catch it, keep the best brain found so far, and continue / finish gracefully.
         try:
-            train_chunk(env, doom_map, args.steps, fresh)
-            # Score the tempered policy (cfg.eval_temperature, default 0.5) — see eval_brain.
-            temp = cfg.eval_temperature if cfg.eval_temperature > 0 else None
-            m = eval_brain(env, args.episodes, temperature=temp)
+            train_chunk(env, doom_map, args.steps, fresh, algo=algo)
+            # Score the tempered policy (PPO). QR-DQN is value-based (argmax) — temperature
+            # can't apply, so score it deterministically (its honest measure).
+            temp = (None if algo == "dqn"
+                    else (cfg.eval_temperature if cfg.eval_temperature > 0 else None))
+            m = eval_brain(env, args.episodes, temperature=temp, algo=algo)
         except (subprocess.CalledProcessError, RuntimeError) as e:
             print(f"[autonomous] iter {i} FAILED ({type(e).__name__}): {e}")
             print("[autonomous] keeping best-so-far and continuing with the last good config.")
@@ -789,7 +851,15 @@ def main() -> None:
         else:
             best_score = max(best_score, sc)
 
-        nxt, nxt_reason = propose_next(cfg, env, m, args.llm)
+        # Coach: LangGraph graph (--graph) OR the legacy heuristic cascade.
+        if getattr(args, "graph", False) and _coach is not None:
+            cr = _coach.run(metrics=m, env=env, history=history)
+            nxt, nxt_reason = cr["next_env"], cr["reason"]
+            # Print the per-node trace so the auto loop is fully observable.
+            for line in cr.get("log", []):
+                print(f"  {line}")
+        else:
+            nxt, nxt_reason = propose_next(cfg, env, m, args.llm, algo=algo)
         history.append({
             "iter": i, "metrics": m, "score": sc, "kept": kept,
             "reason": reason, "env": dict(env), "_next_reason": nxt_reason,

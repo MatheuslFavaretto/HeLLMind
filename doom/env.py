@@ -27,6 +27,17 @@ DAMAGE_TAKEN_PENALTY = 0.05
 DEATH_PENALTY = 5.0
 
 
+def classify_terminal(is_dead: bool, episode_time: int, episode_timeout: int) -> str:
+    """How an episode ended: 'death' | 'timeout' | 'exit'. An episode that ends NOT dead and
+    BEFORE the timeout limit reached the level's goal/exit (e.g. my_way_home: found home).
+    Pure so it's unit-testable without ViZDoom (the DoomGame methods are read-only C++)."""
+    if is_dead:
+        return "death"
+    if episode_timeout > 0 and episode_time >= episode_timeout:
+        return "timeout"
+    return "exit"
+
+
 class DoomEnv(gym.Env):
     """Single-process env. Use the `make_doom_env` factory with SubprocVecEnv."""
 
@@ -155,9 +166,15 @@ class DoomEnv(gym.Env):
 
         doom = {"deltas": deltas, "levels": levels, "action": int(action)}
         if done:
-            # Reliable terminal type: health reported is the pre-death frame, so use
-            # ViZDoom's is_player_dead() instead of checking health<=0.
-            doom["terminal"] = "death" if self.game.is_player_dead() else "timeout"
+            # Three-way terminal: an episode that ended NOT by death and NOT by the timeout
+            # limit reached the level's goal/exit (e.g. my_way_home: found home). Without
+            # this, reaching the exit was mislabelled "timeout" → exit_rate stuck at 0 even
+            # when the agent was solving the map. is_episode_timeout() distinguishes a real
+            # timeout from an early goal-reaching end.
+            doom["terminal"] = classify_terminal(
+                self.game.is_player_dead(),
+                self.game.get_episode_time(),
+                self.game.get_episode_timeout())
             doom["base_return"] = self._ep_base  # native episode return (no shaping)
         # Map geometry: sent ONCE (not every step — doesn't weigh on the loop).
         if self._walls_pending:

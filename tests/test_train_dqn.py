@@ -19,6 +19,42 @@ def test_dqn_prefix_encodes_gamevars():
     assert "qrdqn" in _dqn_prefix(15, True)
 
 
+def test_dqn_prefix_encodes_obs_shape_tags():
+    # Regression: a DQN brain name MUST encode the obs-shape flags (spatial/depth/automap/
+    # frame_stack), or two incompatible brains share a name and cross-load into a crash.
+    from config import Config
+    a = Config(); a.spatial_memory = True; a.depth_perception = False
+    a.automap = False; a.frame_stack = 2; a.game_vars = True
+    b = Config(); b.spatial_memory = True; b.depth_perception = True
+    b.automap = False; b.frame_stack = 2; b.game_vars = True
+    pa = _dqn_prefix(15, True, a)
+    pb = _dqn_prefix(15, True, b)
+    assert pa != pb            # depth differs → names must differ
+    assert "_sp" in pa and "_dp" not in pa
+    assert "_dp" in pb
+
+
+def test_dqn_pipeline_matches_eval_pipeline():
+    # Regression for the eval crash: train_dqn's build_env MUST produce the SAME observation
+    # space as rl.train/rl.eval's build_vec_env (VecFrameStack parity), or eval can never
+    # score a DQN brain.
+    import os
+    os.environ.update({"CAMPAIGN": "1", "MAPS": "MAP01", "GAME_VARS": "1",
+                       "SPATIAL_MEMORY": "0", "DEPTH_PERCEPTION": "0", "AUTOMAP": "0",
+                       "STRAFE": "1", "FRAME_STACK": "2",
+                       "DOCS_ENABLED": "0", "MEMORY_ENABLED": "0"})
+    from config import Config
+    from rl.train_dqn import build_env as dqn_build
+    from rl.train import build_vec_env
+    cfg = Config(); cfg.n_envs = 1; cfg.docs_enabled = False; cfg.memory_enabled = False
+    ve_dqn = dqn_build(cfg, "MAP01", 1)
+    ve_eval = build_vec_env(cfg)
+    try:
+        assert ve_dqn.observation_space == ve_eval.observation_space
+    finally:
+        ve_dqn.close(); ve_eval.close()
+
+
 def test_latest_dqn_checkpoint_returns_none_when_empty(tmp_path):
     assert _latest_dqn_checkpoint(str(tmp_path), "qrdqn_test") is None
 

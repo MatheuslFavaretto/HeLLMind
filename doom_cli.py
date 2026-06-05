@@ -21,6 +21,15 @@ PY = sys.executable
 ROOT = os.path.dirname(os.path.abspath(__file__))
 EMBER = ["#ffd000", "#ff9500", "#ff5a00", "#ff2d00", "#c41200"]
 
+# Claude-Code-style refined shell palette: ONE warm accent + muted warm greys, lots of
+# whitespace. The loud fire palette (EMBER) stays for the `-h` menu; the interactive shell
+# uses these calmer tones so it reads clean and modern like Claude Code.
+ACCENT      = "#ff7a45"   # the single accent (a warm coral-ember)
+ACCENT_DIM  = "#b85c33"   # dimmed accent for borders/secondary marks
+SHELL_TEXT  = "#e8dcc8"   # warm off-white body text
+SHELL_MUTED = "#988b78"   # muted warm grey (hints, labels)
+SHELL_BORDER = "#534637"  # subtle warm-brown border
+
 BANNER = r"""
  ██╗  ██╗███████╗██╗     ██╗     ███╗   ███╗██╗███╗   ██╗██████╗
  ██║  ██║██╔════╝██║     ██║     ████╗ ████║██║████╗  ██║██╔══██╗
@@ -30,26 +39,9 @@ BANNER = r"""
  ╚═╝  ╚═╝╚══════╝╚══════╝╚══════╝╚═╝     ╚═╝╚═╝╚═╝  ╚═══╝╚═════╝
 """
 
-# Doomguy — the marine's HUD face (STFST), the backdrop of the interactive shell. For the
-# REAL in-game face, drop a PNG at assets/doomguy.png and it renders inline on iTerm2.
-DOOMGUY = r"""
-        ▄▄▄█████████▄▄▄
-      ▟███████████████████▙
-     ████▀▀▀       ▀▀▀████
-    ███▀  ▀▄▄▄   ▄▄▄▀  ▀███
-   ███░░░░░░░░░░░░░░░░░░░███
-   ██░░░░▄▄▄▄░░░░░▄▄▄▄░░░░██
-   ██░░░▟████▙░░░▟████▙░░░██
-   ██░░░▜█▰▰█▛░░░▜█▰▰█▛░░░██
-   ██░░░░▀▀▀▀░░▟▙░▀▀▀▀░░░░██
-   ██░░░░░░░░▟████▙░░░░░░░██
-   ▜█░░░░▗▟██████████▙▖░░█▛
-    ██░░░████▘▘▘▘▘▘████░░██
-    ▜██▄░░▀▀▀▀▀▀▀▀▀▀░░▄██▛
-     ▜████▄▄▄▄▄▄▄▄▄▄████▛
-       ▀▀▀██████████▀▀▀
-"""
-DOOMGUY_IMG = "assets/doomguy.png"  # drop the real face here for inline rendering
+# For the REAL in-game Doomguy face, drop a PNG at assets/doomguy.png — it renders inline as
+# a small mark on iTerm2/Warp/WezTerm (the shell stays text-clean everywhere else).
+DOOMGUY_IMG = "assets/doomguy.png"
 
 # (group, name, one-liner, longer explanation, example)
 COMMANDS = [
@@ -168,10 +160,6 @@ COMMANDS = [
      "Trains the policy to imitate your recorded play (record_demo → bc) as a starting point "
      "for RL — the strongest lever for reaching the exit.",
      "doom-cli bc --epochs 10"),
-    ("▶ Run", "eureka", "LLM evolves the reward design across generations",
-     "Runs the Eureka loop: the LLM proposes reward functions, they're evaluated, and the best "
-     "survive — automated reward design instead of hand-tuning.",
-     "doom-cli eureka"),
     ("🔬 Research", "benchmark", "Ablation: prove each layer (RND/memory/full) adds value",
      "Trains baseline/rnd/memory/full across seeds with the SAME budget, evaluates honestly, "
      "and writes results/ (csv+json+md) with mean±std so wins aren't luck.",
@@ -180,11 +168,6 @@ COMMANDS = [
      "Computes per-map difficulty (deaths + timeouts + coverage + kills) and detects "
      "skill regression vs historical peak. Writes 40-maps/Curriculum.md.",
      "doom-cli curriculum"),
-    ("🧠 Cognition", "research", "Run the full autonomous research loop",
-     "Chains: behavior detection → hypothesis → experiment → curriculum → training. "
-     "Logs everything to the vault. The cognitive loop in one command.",
-     "doom-cli research --iterations 3 --steps 200000 --map MAP01"),
-
     ("🧠 Cognition", "perception", "Write the agent perception model note to the vault",
      "Creates 20-concepts/Concept - Agent Perception.md explaining how the agent sees "
      "the world: pixels, game vars, objects_info, what it does/doesn't know.",
@@ -211,6 +194,10 @@ COMMANDS = [
      "Removes ./.cache experiment dirs. Add --brain to also wipe the vault's brain and "
      "--memory to wipe the cognitive memory (asks for confirmation).",
      "doom-cli clean"),
+    ("🧠 Cognition", "semantic", "Semantic memory (vector DB): search past episodes by meaning",
+     "Embeds episodes as vectors (Ollama nomic-embed-text or TF-IDF fallback) and retrieves "
+     "the most similar past situations. 'recall deaths near corridor' > keyword search.",
+     "doom-cli semantic recall deaths near corridor"),
 ]
 
 GROUP_ORDER = ["▶ Run", "📊 Measure", "🔬 Research", "🧠 Cognition", "🛠 Tools"]
@@ -321,34 +308,48 @@ def _render_iterm_image(path: str, height_rows: int = 16) -> bool:
 
 
 def _doom_backdrop() -> None:
-    """Render the Doomguy backdrop (real PNG inline on iTerm2, else ASCII) + the shell title."""
-    if not _render_iterm_image(os.path.join(ROOT, DOOMGUY_IMG)):
-        art = Text()
-        lines = DOOMGUY.strip("\n").splitlines()
-        for i, line in enumerate(lines):
-            art.append(line + "\n", style=f"bold {EMBER[min(i // 3, len(EMBER) - 1)]}")
-        console.print(Align.center(art))
-    console.print(Align.center(Text.from_markup(
-        "[bold #ffd000]HeLLMind[/bold #ffd000] [dim]interactive shell · "
-        "rip and tear through the commands[/dim]")))
+    """Minimal backdrop (Claude-Code-clean). On iTerm2/Warp the real Doomguy PNG renders
+    inline as a small mark; everywhere else we stay text-only and let the welcome card carry
+    the brand — no giant ASCII art (keeps the shell calm and modern)."""
     console.print()
+    _render_iterm_image(os.path.join(ROOT, DOOMGUY_IMG), height_rows=8)
 
 
 def _shell_welcome() -> None:
-    """A Claude-Code-style welcome card: the Doomguy, a greeting, and the key tips."""
+    """A Claude-Code-style welcome card: a calm rounded box, one accent, muted hints."""
     from rich import box
     from config import Config
     cfg = Config()
+    maps = ", ".join(cfg.maps[:3]) + ("…" if len(cfg.maps) > 3 else "")
+    # Which brain is in the vault right now (a small "you're set up" signal). Show the brain
+    # FAMILY (strip the _<steps>_steps / _final suffix) so it stays short and on one line.
+    brain = "—"
+    try:
+        import glob as _g
+        import re as _re
+        cks = _g.glob(os.path.join(cfg.checkpoint_dir, "*.zip"))
+        if cks:
+            name = os.path.basename(max(cks, key=os.path.getmtime)).replace(".zip", "")
+            brain = _re.sub(r"_(\d+_steps|final)$", "", name)
+    except Exception:
+        pass
+
     body = Text.from_markup(
-        "[bold #ff5a00]✻ Welcome to HeLLMind[/bold #ff5a00]\n\n"
-        "  [#ffd000]/help[/#ffd000] for all commands   ·   "
-        "[#ffd000]/status[/#ffd000] for your setup\n"
-        "  [#ffd000]/<command>[/#ffd000] to run one   ·   "
-        "[#ffd000]/exit[/#ffd000] to quit\n\n"
-        f"  [dim]vault:[/dim] {cfg.vault_path}   [dim]·[/dim]   "
-        f"[dim]maps:[/dim] {', '.join(cfg.maps[:3])}…")
-    console.print(Panel(body, box=box.ROUNDED, border_style="#ff5a00",
+        f"[bold {ACCENT}]✻[/bold {ACCENT}] [bold {SHELL_TEXT}]HeLLMind[/bold {SHELL_TEXT}]"
+        f"  [{SHELL_MUTED}]· an RL Doom agent that documents its own learning[/{SHELL_MUTED}]\n\n"
+        f"[{SHELL_MUTED}]  Type[/{SHELL_MUTED}] [bold {ACCENT}]/[/bold {ACCENT}] "
+        f"[{SHELL_MUTED}]for the command palette, or a slash command directly.[/{SHELL_MUTED}]\n\n"
+        f"  [{ACCENT}]/diagnose[/{ACCENT}] [{SHELL_MUTED}]where to start[/{SHELL_MUTED}]"
+        f"      [{ACCENT}]/auto[/{ACCENT}] [{SHELL_MUTED}]train + improve[/{SHELL_MUTED}]\n"
+        f"  [{ACCENT}]/help[/{ACCENT}]     [{SHELL_MUTED}]all commands [/{SHELL_MUTED}]"
+        f"     [{ACCENT}]/exit[/{ACCENT}] [{SHELL_MUTED}]quit[/{SHELL_MUTED}]")
+    console.print(Panel(body, box=box.ROUNDED, border_style=SHELL_BORDER,
                         padding=(1, 2), expand=True))
+    # A subtle context line under the card (cwd-style, like Claude shows the working dir).
+    console.print(
+        f"  [{SHELL_MUTED}]vault[/{SHELL_MUTED}] [{SHELL_TEXT}]{cfg.vault_path}[/{SHELL_TEXT}]"
+        f"   [{SHELL_MUTED}]·[/{SHELL_MUTED}]   [{SHELL_MUTED}]maps[/{SHELL_MUTED}] {maps}"
+        f"   [{SHELL_MUTED}]·[/{SHELL_MUTED}]   [{SHELL_MUTED}]brain[/{SHELL_MUTED}] {brain}")
     console.print()
 
 
@@ -364,18 +365,20 @@ def _shell_palette(filter_text: str = "") -> None:
         if not rows:
             continue
         t = Table(box=box.SIMPLE, show_header=False, padding=(0, 1, 0, 2),
-                  title=f"[bold #ff9500]{group}[/bold #ff9500]", title_justify="left")
-        t.add_column(style="bold #ffd000", no_wrap=True)
-        t.add_column(style="#d8cbb8")
+                  title=f"[{SHELL_MUTED}]{group}[/{SHELL_MUTED}]", title_justify="left")
+        t.add_column(style=f"bold {ACCENT}", no_wrap=True)
+        t.add_column(style=SHELL_TEXT)
         for name, desc in rows:
             t.add_row(f"/{name}", desc)
             shown += 1
         console.print(t)
     if not shown:
-        console.print(f"  [dim]no command starts with [/dim][#ffd000]/{f}[/#ffd000]\n")
+        console.print(f"  [{SHELL_MUTED}]no command starts with[/{SHELL_MUTED}] "
+                      f"[{ACCENT}]/{f}[/{ACCENT}]\n")
         return
-    console.print("  [dim]tip: type the start of any name — [/dim]"
-                  "[#ffd000]/bench[/#ffd000][dim] runs [/dim][#ffd000]/benchmark[/#ffd000]\n")
+    console.print(f"  [{SHELL_MUTED}]type the start of any name —[/{SHELL_MUTED}] "
+                  f"[{ACCENT}]/bench[/{ACCENT}] [{SHELL_MUTED}]runs[/{SHELL_MUTED}] "
+                  f"[{ACCENT}]/benchmark[/{ACCENT}]\n")
 
 
 # Rotating one-liners shown under the input (a little personality, like Claude's tips).
@@ -390,20 +393,22 @@ _SHELL_TIPS = [
 
 
 def _shell_prompt(tip: str) -> str:
-    """A Claude-Code-style boxed input. Returns the stripped line (raises on EOF)."""
+    """A Claude-Code-style boxed input (rounded border + `>` prompt). Returns the stripped
+    line (raises on EOF). Used when prompt_toolkit isn't available."""
     width = min(console.width, 100)
     bar = "─" * (width - 2)
-    console.print(f"[#7a0a00]╭{bar}╮[/#7a0a00]")
-    line = console.input("[#7a0a00]│[/#7a0a00] [bold #ff2d00]❯[/bold #ff2d00] ")
-    console.print(f"[#7a0a00]╰{bar}╯[/#7a0a00]")
-    console.print(f"  [dim]💡 {tip}[/dim]")
+    console.print(f"[{SHELL_BORDER}]╭{bar}╮[/{SHELL_BORDER}]")
+    line = console.input(f"[{SHELL_BORDER}]│[/{SHELL_BORDER}] [bold {ACCENT}]>[/bold {ACCENT}] ")
+    console.print(f"[{SHELL_BORDER}]╰{bar}╯[/{SHELL_BORDER}]")
+    console.print(f"  [{SHELL_MUTED}]? /help · {tip}[/{SHELL_MUTED}]")
     return line.strip()
 
 
 def _make_slash_reader(tips):
     """A live Claude-CLI-style input: pressing / pops a dropdown of commands that filters as
-    you type, each with its description. Returns a `read(tip)->str` callable, or None if
-    prompt_toolkit isn't available / there's no TTY (then the shell uses the boxed fallback)."""
+    you type, each with its description. Up-arrow recalls past commands (persisted across
+    sessions), and a ghost auto-suggestion completes from history. Returns a `read(tip)->str`
+    callable, or None if prompt_toolkit isn't available / there's no TTY (boxed fallback)."""
     if not sys.stdin.isatty():
         return None
     try:
@@ -411,6 +416,8 @@ def _make_slash_reader(tips):
         from prompt_toolkit.completion import Completer, Completion
         from prompt_toolkit.formatted_text import HTML
         from prompt_toolkit.styles import Style
+        from prompt_toolkit.history import FileHistory
+        from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
     except ImportError:
         return None
 
@@ -421,63 +428,83 @@ def _make_slash_reader(tips):
             text = document.text_before_cursor
             if not text.startswith("/") or " " in text:   # only complete the command token
                 return
-            word = text[1:]
+            word = text[1:].lower()
             for name, desc in cmds:
                 if name.startswith(word):
                     yield Completion(name, start_position=-len(word),
                                      display=HTML(f"<b>/{name}</b>"), display_meta=desc)
 
     style = Style.from_dict({
-        "prompt": "#ff2d00 bold",
-        "completion-menu.completion": "bg:#2a1d10 #d8cbb8",
-        "completion-menu.completion.current": "bg:#ff5a00 #15110d bold",
-        "completion-menu.meta.completion": "bg:#1f150c #9b8e7e",
-        "completion-menu.meta.completion.current": "bg:#c41200 #ffffff",
-        "bottom-toolbar": "#9b8e7e bg:#1f150c",
+        "prompt": f"{ACCENT} bold",
+        "completion-menu.completion": "bg:#2a211a #cdbfa8",
+        "completion-menu.completion.current": f"bg:{ACCENT} #1a140e bold",
+        "completion-menu.meta.completion": "bg:#211a14 #8f8275",
+        "completion-menu.meta.completion.current": f"bg:{ACCENT_DIM} #ffffff",
+        "bottom-toolbar": f"{SHELL_MUTED} bg:#1c1611",
     })
-    session = PromptSession(completer=SlashCompleter(), complete_while_typing=True, style=style)
+    # Persist history under the memory dir so up-arrow survives across shell sessions.
+    try:
+        from config import Config
+        hist_dir = Config().memory_dir
+        os.makedirs(hist_dir, exist_ok=True)
+        history = FileHistory(os.path.join(hist_dir, "shell_history"))
+    except Exception:
+        history = None
+    session = PromptSession(completer=SlashCompleter(), complete_while_typing=True,
+                            style=style, history=history,
+                            auto_suggest=AutoSuggestFromHistory())
 
     def read(tip: str) -> str:
-        return session.prompt([("class:prompt", "❯ ")],
-                              bottom_toolbar=HTML(f" 💡 {tip}  ·  / for commands  ·  /exit to quit"))
+        # Claude-style: a clean `> ` prompt with a calm status bar underneath. The live `/`
+        # dropdown (the completer above) is the signature interaction. Inline fg colours keep
+        # the toolbar robust across prompt_toolkit versions (no class-resolution surprises).
+        a = ACCENT
+        toolbar = HTML(
+            f"  <style fg='{a}'>/</style> commands   ·   ↑ history   ·   "
+            f"<style fg='{a}'>/help</style> shortcuts   ·   "
+            f"<style fg='{a}'>/exit</style> quit"
+            f"     <style fg='#6e6457'>·  {tip}</style>")
+        return session.prompt([("class:prompt", "> ")], bottom_toolbar=toolbar)
     return read
 
 
 def cmd_shell(a) -> int:
     """A Claude-Code-style REPL: type /command to run it, /help for the menu, /exit to leave."""
-    import shlex
-    known = {c[1] for c in COMMANDS}
     import itertools
-    known = known - {"shell"}  # you're already in it
+    import shlex
+    known = {c[1] for c in COMMANDS} - {"shell"}  # you're already in it
     console.clear()
     _doom_backdrop()
     _shell_welcome()
     tips = itertools.cycle(_SHELL_TIPS)
     reader = _make_slash_reader(tips)  # live dropdown (prompt_toolkit) or None -> boxed fallback
     if reader is None:
-        console.print("  [dim](tip: `pip install prompt_toolkit` for the live / dropdown)[/dim]\n")
+        console.print(f"  [{SHELL_MUTED}](tip: `pip install prompt_toolkit` for the live "
+                      f"/ dropdown)[/{SHELL_MUTED}]\n")
     while True:
         try:
             line = (reader(next(tips)) if reader else _shell_prompt(next(tips))).strip()
         except (EOFError, KeyboardInterrupt):
-            console.print("\n[dim]rip and tear... until it is done. 👋[/dim]")
+            console.print(f"\n  [{SHELL_MUTED}]rip and tear… until it is done. 👋[/{SHELL_MUTED}]")
             return 0
         if not line:
             continue
         if not line.startswith("/"):
-            console.print("  [dim]commands start with [/dim][#ffd000]/[/#ffd000][dim] — try "
-                          "[/dim][#ffd000]/help[/#ffd000][dim] or just [/dim][#ffd000]/[/#ffd000]\n")
+            console.print(f"  [{SHELL_MUTED}]commands start with[/{SHELL_MUTED}] "
+                          f"[{ACCENT}]/[/{ACCENT}] [{SHELL_MUTED}]— try[/{SHELL_MUTED}] "
+                          f"[{ACCENT}]/help[/{ACCENT}] [{SHELL_MUTED}]or just[/{SHELL_MUTED}] "
+                          f"[{ACCENT}]/[/{ACCENT}]\n")
             continue
         try:
             parts = shlex.split(line[1:])
         except ValueError:
-            console.print("  [red]couldn't parse that line[/red]\n")
+            console.print(f"  [{ACCENT}]couldn't parse that line[/{ACCENT}]\n")
             continue
         cmd = parts[0] if parts else ""   # bare "/" -> palette
         rest = parts[1:]
         kind, payload = resolve_slash(cmd, known)
         if kind == "builtin" and payload == "exit":
-            console.print("[dim]rip and tear... until it is done. 👋[/dim]")
+            console.print(f"  [{SHELL_MUTED}]rip and tear… until it is done. 👋[/{SHELL_MUTED}]")
             return 0
         if kind == "builtin" and payload == "help":
             console.print(); menu(full=False); console.print(); continue
@@ -489,13 +516,19 @@ def cmd_shell(a) -> int:
             if len(payload) > 1:
                 # Ambiguous prefix (e.g. /be) -> show the matching commands WITH descriptions.
                 console.print(); _shell_palette(cmd); continue
-            hint = (f"  did you mean: [#ffd000]/{payload[0]}[/#ffd000]?"
-                    if payload else "  — type / to see them all")
-            console.print(f"  [red]unknown:[/red] [#ffd000]/{cmd}[/#ffd000]{hint}\n")
+            hint = (f"  [{SHELL_MUTED}]did you mean[/{SHELL_MUTED}] [{ACCENT}]/{payload[0]}[/{ACCENT}]?"
+                    if payload else f"  [{SHELL_MUTED}]— type / to see them all[/{SHELL_MUTED}]")
+            console.print(f"  [{SHELL_MUTED}]unknown:[/{SHELL_MUTED}] "
+                          f"[{ACCENT}]/{cmd}[/{ACCENT}]{hint}\n")
             continue
         # A real command: run it through the full CLI (subprocess = clean isolation).
-        console.rule(f"[bold #ff5a00]/{cmd}[/bold #ff5a00]", style="#7a0a00")
-        subprocess.run([PY, os.path.abspath(__file__), payload, *rest], cwd=ROOT)
+        console.rule(f"[{ACCENT}]/{cmd}[/{ACCENT}]", style=SHELL_BORDER)
+        try:
+            subprocess.run([PY, os.path.abspath(__file__), payload, *rest], cwd=ROOT)
+        except KeyboardInterrupt:
+            # Ctrl-C cancels the running command and returns to the shell — it must NOT
+            # crash the REPL with a traceback (the child already got the SIGINT).
+            console.print("\n  [dim]↩ command interrupted — back to the shell[/dim]")
         console.print()
 
 
@@ -618,8 +651,8 @@ def cmd_diagnose(a) -> int:
         next_cmd = "doom-cli train --map MAP01 --steps 800000 --resume"
         reason = "Exploring OK but never finds exit. Train longer + EXIT_REWARD=1000."
     else:
-        next_cmd = "doom-cli research --iterations 3 --steps 200000 --map MAP01"
-        reason = "Agent works! Run the cognitive research loop."
+        next_cmd = "doom-cli auto --iterations 6 --steps 150000 --map MAP01 --algo dqn"
+        reason = "Agent works! Run the self-improving loop (QR-DQN, sample-efficient)."
 
     console.print(Panel(
         f"[bold #ffd000]{reason}[/bold #ffd000]\n\n[white]{next_cmd}[/white]",
@@ -630,10 +663,11 @@ def cmd_diagnose(a) -> int:
 
 def cmd_dqn(a) -> int:
     """Train with QR-DQN (off-policy, replay buffer — V2 sample-efficient engine)."""
-    cmd = [PY, "-m", "rl.train_dqn",
-           "--timesteps", str(a.steps), "--n-envs", str(a.n_envs)]
+    cmd = [PY, "-m", "rl.train_dqn", "--timesteps", str(a.steps)]
     if a.map:
         cmd += ["--map", a.map]
+    if getattr(a, "n_envs", None) is not None:
+        cmd += ["--n-envs", str(a.n_envs)]  # explicit override only
     if getattr(a, "fresh", False):
         cmd.append("--fresh")
     label = f"🧠 QR-DQN · {a.steps:,} steps · map {a.map or 'default'}"
@@ -729,11 +763,17 @@ def cmd_auto(a) -> int:
     # --resume is now the DEFAULT in rl.autonomous; no need to pass it.
     if getattr(a, "fast", False):
         cmd.append("--fast")
+    if getattr(a, "graph", False):
+        cmd.append("--graph")
     if a.llm:
         cmd.append("--llm")
+    _algo = getattr(a, "algo", "ppo")
+    if _algo != "ppo":
+        cmd += ["--algo", _algo]
     env = {"USE_LSTM": "1"} if a.lstm else None
+    _algo_tag = f" · {_algo.upper()}" if _algo != "ppo" else ""
     return run(cmd, env, title=f"🤖 Autonomous loop · {a.iterations} iters × {a.steps:,} steps"
-                               f"{' · LLM' if a.llm else ''}{' · LSTM' if a.lstm else ''}")
+                               f"{_algo_tag}{' · LLM' if a.llm else ''}{' · LSTM' if a.lstm else ''}")
 
 
 def cmd_notes(a) -> int:
@@ -827,21 +867,6 @@ def cmd_curriculum(a) -> int:
     if a.note:
         cmd.append("--note")
     return run(cmd, title="📚 Curriculum: difficulty scores + forgetting alerts")
-
-
-def cmd_research(a) -> int:
-    cmd = [PY, "-m", "rl.research_agent",
-           "--iterations", str(a.iterations),
-           "--steps", str(a.steps),
-           "--episodes", str(a.episodes)]
-    if a.map:
-        cmd += ["--map", a.map]
-    if a.fresh:
-        cmd.append("--fresh")
-    if a.dry_run:
-        cmd.append("--dry-run")
-    return run(cmd, title=f"🤖 Research Agent · {a.iterations} iter × {a.steps:,} steps"
-                          f"{' [DRY RUN]' if a.dry_run else ''}")
 
 
 def cmd_db(a) -> int:
@@ -956,7 +981,7 @@ def cmd_learned(a) -> int:
     rec = LearnedConfig(cfg.memory_dir).load()
     if not rec:
         console.print(Panel("No proven reward knobs yet — run experiments that get an "
-                            "'improved' verdict (doom-cli experiment / research).",
+                            "'improved' verdict (doom-cli experiment).",
                             title="🧠 learned config", border_style=EMBER[3]))
         return 0
     console.print(Panel(f"{len(rec)} reward knob(s) the agent has PROVEN help — applied on "
@@ -1109,14 +1134,6 @@ def cmd_bc(a) -> int:
     return run(cmd, title="🎓 Behavioral cloning — learning from human demos")
 
 
-def cmd_eureka(a) -> int:
-    cmd = [PY, "-m", "rl.eureka", "--generations", str(a.generations),
-           "--pop", str(a.pop), "--steps", str(a.steps), "--episodes", str(a.episodes)]
-    if a.map:
-        cmd += ["--map", a.map]
-    return run(cmd, title="🧬 Eureka — evolving the reward design (LLM-guided)")
-
-
 def cmd_audit(a) -> int:
     cmd = [PY, "-m", "rl.audit"]
     if a.run:
@@ -1166,6 +1183,16 @@ def cmd_recall(a) -> int:
         console.print(f"  {icon} [bold]{r['title']}[/bold]")
         console.print(f"     {r['body'][:120]}")
     return 0
+
+
+def cmd_semantic(a) -> int:
+    subcmd = getattr(a, "subcmd", None) or "stats"
+    cmd = [PY, "-m", "writer.semantic_memory", subcmd]
+    if subcmd == "recall":
+        cmd += (a.query or [])
+        if getattr(a, "top_k", None):
+            cmd += ["--top-k", str(a.top_k)]
+    return run(cmd, title=f"🔎 Semantic memory · {subcmd}")
 
 
 def cmd_clean(a) -> int:
@@ -1298,7 +1325,8 @@ def build_parser() -> argparse.ArgumentParser:
     dqn_p = sub.add_parser("dqn", help="Train with QR-DQN (off-policy, replay buffer — V2 engine)")
     dqn_p.add_argument("--map", default=None)
     dqn_p.add_argument("--steps", type=int, default=500_000)
-    dqn_p.add_argument("--n-envs", dest="n_envs", type=int, default=1)
+    dqn_p.add_argument("--n-envs", dest="n_envs", type=int, default=None,
+                       help="Parallel envs (default: N_ENVS from .env / config).")
     dqn_p.add_argument("--fresh", action="store_true")
     dqn_p.set_defaults(fn=cmd_dqn)
 
@@ -1336,6 +1364,10 @@ def build_parser() -> argparse.ArgumentParser:
                     help="Throughput: scale parallel envs to your CPU cores. Disables NOTHING.")
     au.add_argument("--llm", action="store_true", help="LLM-refined reward proposals.")
     au.add_argument("--lstm", action="store_true", help="RecurrentPPO/LSTM policy.")
+    au.add_argument("--graph", action="store_true",
+                    help="LangGraph coach (V2): observe→diagnose→hypothesize→propose graph.")
+    au.add_argument("--algo", default="ppo", choices=["ppo", "dqn"],
+                    help="RL algorithm: ppo (default) or dqn (QR-DQN, off-policy + replay buffer).")
     au.set_defaults(fn=cmd_auto)
 
     sub.add_parser("shell", help="Interactive chat-style REPL (type /command to run)").set_defaults(fn=cmd_shell)
@@ -1386,22 +1418,28 @@ def build_parser() -> argparse.ArgumentParser:
     bc_p.add_argument("--epochs", type=int, default=10)
     bc_p.set_defaults(fn=cmd_bc)
 
-    eu = sub.add_parser("eureka", help="LLM-guided evolutionary reward search")
-    eu.add_argument("--generations", type=int, default=3)
-    eu.add_argument("--pop", type=int, default=4, help="Candidates per generation")
-    eu.add_argument("--steps", type=int, default=50000, help="Train steps per candidate")
-    eu.add_argument("--episodes", type=int, default=10)
-    eu.add_argument("--map", default=None)
-    eu.set_defaults(fn=cmd_eureka)
+    # eureka and research are removed from the parser (Phase 0 cut — still runnable
+    # directly via python -m rl.eureka / python -m rl.research_agent).
 
     cl = sub.add_parser("clean"); cl.add_argument("--brain", action="store_true")
     cl.add_argument("--memory", action="store_true"); cl.set_defaults(fn=cmd_clean)
 
-    cur2 = sub.add_parser("curriculum2", help="Progressive curriculum: navigate → survive → full (V2 Phase 2)")
+    sem = sub.add_parser("semantic",
+                         help="Semantic memory (vector DB): embed events, search by meaning")
+    sem.add_argument("subcmd", nargs="?", default="stats",
+                     choices=["recall", "index", "stats"],
+                     help="recall QUERY | index | stats")
+    sem.add_argument("query", nargs="*", help="Free-text query (for recall)")
+    sem.add_argument("--top-k", type=int, default=5, dest="top_k")
+    sem.set_defaults(fn=cmd_semantic)
+
+    cur2 = sub.add_parser("curriculum2",
+                           help="Progressive curriculum: my_way_home → deadly_corridor → MAP01 (V2 Phase 2)")
     cur2.add_argument("--map", default="MAP01")
     cur2.add_argument("--steps", type=int, default=150000, help="Steps per stage.")
     cur2.add_argument("--algo", default="ppo", choices=["ppo", "dqn"])
-    cur2.add_argument("--stages", default="navigate,survive,full")
+    cur2.add_argument("--stages", default="mywh,corridor,navigate,full",
+                      help="Stages: mywh,corridor (built-in scenarios) + navigate,survive,full (campaign).")
     cur2.set_defaults(fn=lambda a: __import__("subprocess").run(
         [__import__("sys").executable, "-m", "rl.progressive_curriculum",
          "--map", a.map, "--steps-per-stage", str(a.steps),
@@ -1450,14 +1488,7 @@ def build_parser() -> argparse.ArgumentParser:
     cur.add_argument("--note", action="store_true", help="Write vault note.")
     cur.set_defaults(fn=cmd_curriculum)
 
-    res = sub.add_parser("research")
-    res.add_argument("--iterations", type=int, default=3)
-    res.add_argument("--steps", type=int, default=200000)
-    res.add_argument("--episodes", type=int, default=15)
-    res.add_argument("--map", default=None)
-    res.add_argument("--fresh", action="store_true")
-    res.add_argument("--dry-run", action="store_true")
-    res.set_defaults(fn=cmd_research)
+    # research removed from parser (Phase 0 cut — run via python -m rl.research_agent).
 
     return p
 

@@ -73,6 +73,27 @@ def test_propose_targets_passivity_with_entropy():
     assert "ENT_COEF" in reason
 
 
+def test_propose_passivity_uses_epsilon_for_dqn():
+    # QR-DQN has NO ent_coef — bumping it would be a silent no-op. The combat-passive
+    # remedy must raise DQN_EPS_FINAL (ε-greedy floor) instead, and never touch ENT_COEF.
+    env = {"ENT_COEF": "0.03", "ENGAGEMENT_REWARD": "0.01", "EPISODE_TIMEOUT": "2100"}
+    new, reason = propose(env, {"explored_fraction": 0.3, "death_rate": 0.1,
+                                "kills_per_episode": 0.2, "timeout_rate": 0.1},
+                          algo="dqn")
+    assert "DQN_EPS_FINAL" in new and float(new["DQN_EPS_FINAL"]) >= 0.02
+    assert float(new["ENT_COEF"]) == 0.03   # untouched — it's a PPO-only knob
+    assert "DQN_EPS_FINAL" in reason and "ENT_COEF" not in reason
+
+
+def test_propose_dqn_eps_stays_within_bounds():
+    # The ε floor must never exceed its bound (0.3) even after repeated bumps.
+    from rl.autonomous import BOUNDS
+    env = {"DQN_EPS_FINAL": "0.29", "ENGAGEMENT_REWARD": "0.01", "EPISODE_TIMEOUT": "2100"}
+    new, _ = propose(env, {"explored_fraction": 0.3, "death_rate": 0.1,
+                           "kills_per_episode": 0.2, "timeout_rate": 0.1}, algo="dqn")
+    assert float(new["DQN_EPS_FINAL"]) <= BOUNDS["DQN_EPS_FINAL"][1]
+
+
 def test_score_caps_kills_so_camper_loses_to_explorer():
     # Regression: kills/ep is unbounded, so an un-normalised 0.5*kills once let a
     # spawn-camper (many kills, no exploration) outscore a real explorer.
