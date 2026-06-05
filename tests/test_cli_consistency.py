@@ -8,7 +8,7 @@ import doom_cli
 
 def _parser_commands() -> set:
     src = Path(doom_cli.__file__).read_text(encoding="utf-8")
-    return set(re.findall(r'add_parser\(\s*"([a-z_]+)"', src))
+    return set(re.findall(r'add_parser\(\s*"([a-z_0-9]+)"', src))
 
 
 def test_every_command_has_a_help_card():

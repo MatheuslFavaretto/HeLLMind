@@ -40,7 +40,8 @@ def _tempered_actions(model, obs, temperature: float) -> np.ndarray:
 
 
 def evaluate(cfg: Config, path: str, button_names: list, episodes: int = 20,
-             deterministic: bool = True, temperature: Optional[float] = None) -> dict:
+             deterministic: bool = True, temperature: Optional[float] = None,
+             overlay: bool = False) -> dict:
     """Run `episodes` and return a metrics summary.
 
     `deterministic=True` (default) takes the argmax action — the honest measure of what the
@@ -63,11 +64,23 @@ def evaluate(cfg: Config, path: str, button_names: list, episodes: int = 20,
     # (otherwise ViZDoom blasts through hundreds of fps and the episodes flash by).
     step_delay = (cfg.frame_skip / 35.0) if cfg.render else 0.0
 
+    # Overlay window (watch --overlay): renders HUD + minimap in a cv2 window.
+    # ViZDoom's own window already opens when cfg.render=True; the overlay is a
+    # SECOND annotated window that shows the agent's obs + health/ammo bars.
+    _win = None
+    if overlay and cfg.render:
+        try:
+            import cv2 as _cv2
+            _win = "HeLLMind — overlay"
+            _cv2.namedWindow(_win, _cv2.WINDOW_NORMAL)
+            _cv2.resizeWindow(_win, 420, 440)
+        except ImportError:
+            _win = None
+            print("[eval] install opencv-python for the overlay (pip install opencv-python)")
+
     obs = venv.reset()
     done_count = 0
-    # Recurrent-safe loop: carry the LSTM hidden state and flag episode boundaries so it
-    # resets per episode. For feed-forward PPO these args are simply unused (state stays
-    # None), so the same loop drives both policies.
+    # Recurrent-safe loop: carry the LSTM hidden state and flag episode boundaries.
     lstm_states = None
     episode_starts = np.ones((venv.num_envs,), dtype=bool)
     while done_count < episodes:
@@ -81,8 +94,34 @@ def evaluate(cfg: Config, path: str, button_names: list, episodes: int = 20,
         episode_starts = dones
         tracker.update(infos, np.asarray(action))
         done_count += sum(1 for i in infos if i.get("episode"))
+        # Draw the overlay window every step
+        if _win is not None:
+            try:
+                import cv2 as _cv2
+                from doom.overlay import draw_hud, draw_minimap
+                img_obs = obs["image"] if isinstance(obs, dict) else obs
+                frame = np.asarray(img_obs)[0, :, :, 0]   # first channel, env 0
+                bgr = _cv2.cvtColor(
+                    _cv2.resize(frame, (420, 420), interpolation=_cv2.INTER_NEAREST),
+                    _cv2.COLOR_GRAY2BGR)
+                doom_i = (infos[0].get("doom") or {}) if infos else {}
+                lvl = doom_i.get("levels", {})
+                if lvl:
+                    draw_hud(bgr,
+                             min(1.0, float(lvl.get("health", 0)) / 100.0),
+                             min(1.0, float(lvl.get("ammo2", 0)) / 50.0))
+                _cv2.imshow(_win, bgr)
+                if _cv2.waitKey(1) & 0xFF == ord("q"):
+                    break
+            except Exception:
+                pass
         if step_delay:
             time.sleep(step_delay)
+    if _win is not None:
+        try:
+            import cv2 as _cv2; _cv2.destroyAllWindows()
+        except Exception:
+            pass
     venv.close()
     return tracker.snapshot(0)
 
@@ -100,6 +139,8 @@ def main() -> None:
     p.add_argument("--temperature", type=float, default=None,
                    help="Tempered sampling (e.g. 0.5): scales logits by 1/T. Sharpens toward "
                         "the best actions but avoids the argmax-collapse. Overrides --stochastic.")
+    p.add_argument("--overlay", action="store_true",
+                   help="Show HUD + minimap overlay in a separate cv2 window (needs opencv-python).")
     args = p.parse_args()
 
     cfg = Config()
@@ -133,7 +174,8 @@ def main() -> None:
     print(f"[eval] {path} | {args.episodes} {mode} episodes")
 
     s = evaluate(cfg, path, button_names, args.episodes,
-                 deterministic=not args.stochastic, temperature=args.temperature)
+                 deterministic=not args.stochastic, temperature=args.temperature,
+                 overlay=getattr(args, "overlay", False))
     print("\n== Evaluation ==")
     print(f"  episodes:        {int(s['episodes'])}")
     print(f"  RAW reward/ep:   {s['mean_base_reward']:.2f}   (native scenario, fair for A/B)")

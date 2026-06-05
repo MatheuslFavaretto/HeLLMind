@@ -57,7 +57,11 @@ COMMANDS = [
      "Runs 10 eval episodes, detects behavior patterns (circling/passive/low-exploration) "
      "from telemetry, and prints the exact next test to run. Start here every session.",
      "doom-cli diagnose"),
-    ("▶ Run", "train", "Train the agent (auto-resumes this vault's brain)",
+    ("▶ Run", "dqn", "Train with QR-DQN — off-policy, replay buffer (V2 engine)",
+     "Sample-efficient alternative to PPO: a replay buffer lets the agent learn from past "
+     "experiences, not just fresh rollouts. Much faster to reach non-zero exit-rate.",
+     "doom-cli dqn --map MAP01 --steps 500000"),
+    ("▶ Run", "train", "Train the agent with PPO (auto-resumes this vault's brain)",
      "Runs PPO on ViZDoom. By default it RESUMES the brain stored in the vault "
      "(same vault = keeps learning). Use --fresh to start over, --spatial for the "
      "memory channel, --lstm for a RecurrentPPO/LSTM policy, --no-docs to skip notes.",
@@ -185,6 +189,10 @@ COMMANDS = [
      "Creates 20-concepts/Concept - Agent Perception.md explaining how the agent sees "
      "the world: pixels, game vars, objects_info, what it does/doesn't know.",
      "doom-cli perception"),
+    ("▶ Run", "curriculum2", "Progressive curriculum: my_way_home → deadly_corridor → MAP01",
+     "The V2 curriculum trains the individual skills first (find-exit, then survive+navigate) "
+     "before combining them on full maps — the approach that gets exit-rate off zero.",
+     "doom-cli curriculum2 --steps 150000"),
     ("▶ Run", "shell", "Interactive chat-style REPL with the Doomguy backdrop",
      "Starts a chat-like prompt: type /command to run it, /help for the menu, /exit to leave. "
      "Unknown commands get suggestions. The whole CLI, one slash away.",
@@ -344,15 +352,28 @@ def _shell_welcome() -> None:
     console.print()
 
 
-def _shell_palette() -> None:
-    """A compact command palette — every command, grouped, scannable in one glance."""
+def _shell_palette(filter_text: str = "") -> None:
+    """A Claude-style slash menu: each command with its description, grouped. An optional
+    filter narrows it (so typing /be then the menu shows only matching commands)."""
+    from rich import box
+    f = filter_text.lstrip("/").strip().lower()
+    shown = 0
     for group in GROUP_ORDER:
-        names = [c[1] for c in COMMANDS if c[0] == group and c[1] != "shell"]
-        if not names:
+        rows = [(c[1], c[2]) for c in COMMANDS
+                if c[0] == group and c[1] != "shell" and (not f or c[1].startswith(f))]
+        if not rows:
             continue
-        chips = "  ".join(f"[#ffd000]/{n}[/#ffd000]" for n in names)
-        console.print(f"  [bold #ff9500]{group}[/bold #ff9500]")
-        console.print(f"    {chips}")
+        t = Table(box=box.SIMPLE, show_header=False, padding=(0, 1, 0, 2),
+                  title=f"[bold #ff9500]{group}[/bold #ff9500]", title_justify="left")
+        t.add_column(style="bold #ffd000", no_wrap=True)
+        t.add_column(style="#d8cbb8")
+        for name, desc in rows:
+            t.add_row(f"/{name}", desc)
+            shown += 1
+        console.print(t)
+    if not shown:
+        console.print(f"  [dim]no command starts with [/dim][#ffd000]/{f}[/#ffd000]\n")
+        return
     console.print("  [dim]tip: type the start of any name — [/dim]"
                   "[#ffd000]/bench[/#ffd000][dim] runs [/dim][#ffd000]/benchmark[/#ffd000]\n")
 
@@ -379,6 +400,49 @@ def _shell_prompt(tip: str) -> str:
     return line.strip()
 
 
+def _make_slash_reader(tips):
+    """A live Claude-CLI-style input: pressing / pops a dropdown of commands that filters as
+    you type, each with its description. Returns a `read(tip)->str` callable, or None if
+    prompt_toolkit isn't available / there's no TTY (then the shell uses the boxed fallback)."""
+    if not sys.stdin.isatty():
+        return None
+    try:
+        from prompt_toolkit import PromptSession
+        from prompt_toolkit.completion import Completer, Completion
+        from prompt_toolkit.formatted_text import HTML
+        from prompt_toolkit.styles import Style
+    except ImportError:
+        return None
+
+    cmds = [(c[1], c[2]) for c in COMMANDS if c[1] != "shell"]
+
+    class SlashCompleter(Completer):
+        def get_completions(self, document, complete_event):
+            text = document.text_before_cursor
+            if not text.startswith("/") or " " in text:   # only complete the command token
+                return
+            word = text[1:]
+            for name, desc in cmds:
+                if name.startswith(word):
+                    yield Completion(name, start_position=-len(word),
+                                     display=HTML(f"<b>/{name}</b>"), display_meta=desc)
+
+    style = Style.from_dict({
+        "prompt": "#ff2d00 bold",
+        "completion-menu.completion": "bg:#2a1d10 #d8cbb8",
+        "completion-menu.completion.current": "bg:#ff5a00 #15110d bold",
+        "completion-menu.meta.completion": "bg:#1f150c #9b8e7e",
+        "completion-menu.meta.completion.current": "bg:#c41200 #ffffff",
+        "bottom-toolbar": "#9b8e7e bg:#1f150c",
+    })
+    session = PromptSession(completer=SlashCompleter(), complete_while_typing=True, style=style)
+
+    def read(tip: str) -> str:
+        return session.prompt([("class:prompt", "❯ ")],
+                              bottom_toolbar=HTML(f" 💡 {tip}  ·  / for commands  ·  /exit to quit"))
+    return read
+
+
 def cmd_shell(a) -> int:
     """A Claude-Code-style REPL: type /command to run it, /help for the menu, /exit to leave."""
     import shlex
@@ -389,9 +453,12 @@ def cmd_shell(a) -> int:
     _doom_backdrop()
     _shell_welcome()
     tips = itertools.cycle(_SHELL_TIPS)
+    reader = _make_slash_reader(tips)  # live dropdown (prompt_toolkit) or None -> boxed fallback
+    if reader is None:
+        console.print("  [dim](tip: `pip install prompt_toolkit` for the live / dropdown)[/dim]\n")
     while True:
         try:
-            line = _shell_prompt(next(tips))
+            line = (reader(next(tips)) if reader else _shell_prompt(next(tips))).strip()
         except (EOFError, KeyboardInterrupt):
             console.print("\n[dim]rip and tear... until it is done. 👋[/dim]")
             return 0
@@ -419,8 +486,11 @@ def cmd_shell(a) -> int:
         if kind == "builtin" and payload == "clear":
             console.clear(); _doom_backdrop(); _shell_welcome(); continue
         if kind == "suggest":
-            hint = (f"  did you mean: {', '.join('/' + n for n in payload)}?"
-                    if payload else "  — type /help to see them all")
+            if len(payload) > 1:
+                # Ambiguous prefix (e.g. /be) -> show the matching commands WITH descriptions.
+                console.print(); _shell_palette(cmd); continue
+            hint = (f"  did you mean: [#ffd000]/{payload[0]}[/#ffd000]?"
+                    if payload else "  — type / to see them all")
             console.print(f"  [red]unknown:[/red] [#ffd000]/{cmd}[/#ffd000]{hint}\n")
             continue
         # A real command: run it through the full CLI (subprocess = clean isolation).
@@ -558,6 +628,18 @@ def cmd_diagnose(a) -> int:
     return 0
 
 
+def cmd_dqn(a) -> int:
+    """Train with QR-DQN (off-policy, replay buffer — V2 sample-efficient engine)."""
+    cmd = [PY, "-m", "rl.train_dqn",
+           "--timesteps", str(a.steps), "--n-envs", str(a.n_envs)]
+    if a.map:
+        cmd += ["--map", a.map]
+    if getattr(a, "fresh", False):
+        cmd.append("--fresh")
+    label = f"🧠 QR-DQN · {a.steps:,} steps · map {a.map or 'default'}"
+    return run(cmd, title=label)
+
+
 def cmd_train(a) -> int:
     env = {"DOCS_ENABLED": "0" if a.no_docs else "1"}
     if a.envs:
@@ -596,9 +678,12 @@ def cmd_watch(a) -> int:
     # Pass --temperature 0 to watch the raw argmax.
     if a.temperature and a.temperature > 0:
         cmd += ["--temperature", str(a.temperature)]
+    if getattr(a, "overlay", False):
+        cmd.append("--overlay")
     env = {"USE_LSTM": "1"} if a.lstm else None
     label = "argmax" if (a.temperature == 0) else f"tempered T={a.temperature}"
-    return run(cmd, env, title=f"🎮 Watching the brain play · {a.episodes} eps · {label}")
+    overlay_note = " + overlay" if getattr(a, "overlay", False) else ""
+    return run(cmd, env, title=f"🎮 Watching · {a.episodes} eps · {label}{overlay_note}")
 
 
 def cmd_eval(a) -> int:
@@ -943,7 +1028,10 @@ def cmd_benchmark(a) -> int:
            "--seeds", a.seeds, "--episodes", str(a.episodes), "--n-envs", str(a.n_envs)]
     if a.configs:
         cmd += ["--configs", a.configs]
-    return run(cmd, title="📊 Ablation benchmark: does each layer add value?")
+    if getattr(a, "algo", "ppo") != "ppo":
+        cmd += ["--algo", a.algo]
+    algo_label = "QR-DQN" if getattr(a, "algo", "ppo") == "dqn" else "PPO"
+    return run(cmd, title=f"📊 Ablation benchmark [{algo_label}]: does each layer add value?")
 
 
 def cmd_timeline(a) -> int:
@@ -1207,10 +1295,19 @@ def build_parser() -> argparse.ArgumentParser:
     t.add_argument("--rnd", action="store_true", help="Enable RND intrinsic curiosity (USE_RND=1).")
     t.set_defaults(fn=cmd_train)
 
+    dqn_p = sub.add_parser("dqn", help="Train with QR-DQN (off-policy, replay buffer — V2 engine)")
+    dqn_p.add_argument("--map", default=None)
+    dqn_p.add_argument("--steps", type=int, default=500_000)
+    dqn_p.add_argument("--n-envs", dest="n_envs", type=int, default=1)
+    dqn_p.add_argument("--fresh", action="store_true")
+    dqn_p.set_defaults(fn=cmd_dqn)
+
     w = sub.add_parser("watch"); w.add_argument("--episodes", type=int, default=3)
     w.add_argument("--path"); w.add_argument("--lstm", action="store_true")
     w.add_argument("--temperature", type=float, default=0.5,
                    help="Tempered sampling for watching (default 0.5). Use 0 for raw argmax.")
+    w.add_argument("--overlay", action="store_true",
+                   help="Show HUD (health/ammo bars) + minimap overlay (needs opencv-python).")
     w.set_defaults(fn=cmd_watch)
 
     e = sub.add_parser("eval"); e.add_argument("--episodes", type=int, default=10)
@@ -1280,6 +1377,8 @@ def build_parser() -> argparse.ArgumentParser:
     bm.add_argument("--seeds", default="42,123"); bm.add_argument("--episodes", type=int, default=20)
     bm.add_argument("--n-envs", dest="n_envs", type=int, default=4)
     bm.add_argument("--configs", default=None)
+    bm.add_argument("--algo", default="ppo", choices=["ppo", "dqn"],
+                    help="Algorithm to benchmark (ppo=default, dqn=QR-DQN V2 engine).")
     bm.set_defaults(fn=cmd_benchmark)
 
     bc_p = sub.add_parser("bc", help="Behavioral cloning from human SPECTATOR demos")
@@ -1297,6 +1396,17 @@ def build_parser() -> argparse.ArgumentParser:
 
     cl = sub.add_parser("clean"); cl.add_argument("--brain", action="store_true")
     cl.add_argument("--memory", action="store_true"); cl.set_defaults(fn=cmd_clean)
+
+    cur2 = sub.add_parser("curriculum2", help="Progressive curriculum: navigate → survive → full (V2 Phase 2)")
+    cur2.add_argument("--map", default="MAP01")
+    cur2.add_argument("--steps", type=int, default=150000, help="Steps per stage.")
+    cur2.add_argument("--algo", default="ppo", choices=["ppo", "dqn"])
+    cur2.add_argument("--stages", default="navigate,survive,full")
+    cur2.set_defaults(fn=lambda a: __import__("subprocess").run(
+        [__import__("sys").executable, "-m", "rl.progressive_curriculum",
+         "--map", a.map, "--steps-per-stage", str(a.steps),
+         "--algo", a.algo, "--stages", a.stages],
+        cwd=ROOT).returncode)
 
     m = sub.add_parser("maps"); m.add_argument("maps", nargs="+"); m.set_defaults(fn=cmd_maps)
 

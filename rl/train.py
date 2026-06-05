@@ -173,6 +173,18 @@ def _resolve_resume(cfg: Config, args: argparse.Namespace, name_prefix: str) -> 
     return _latest_checkpoint(cfg, name_prefix)  # default: continue where it stopped
 
 
+def _best_device() -> str:
+    """Pick the best available compute device: CUDA > MPS (Apple Silicon) > CPU.
+    SB3's 'auto' doesn't select MPS on M-series Macs — we pick it explicitly so the M5
+    GPU is actually used instead of leaving it idle."""
+    import torch
+    if torch.cuda.is_available():
+        return "cuda"
+    if torch.backends.mps.is_available():
+        return "mps"
+    return "cpu"
+
+
 def _lr_setting(cfg: Config):
     """Learning-rate value or a linear-decay-to-0 schedule (a float `base` is captured, not
     the cfg, so it stays picklable for SB3 save/load)."""
@@ -278,9 +290,11 @@ def main() -> None:
 
     # By DEFAULT, reuse this vault's brain (don't restart from scratch).
     resume_path = _resolve_resume(cfg, args, name_prefix)
+    device = _best_device()
     if resume_path:
-        print(f"[brain] reusing this vault's learning: {resume_path}")
-        model = AlgoClass.load(resume_path, env=venv, tensorboard_log=cfg.tensorboard_log)
+        print(f"[brain] reusing this vault's learning: {resume_path}  [device={device}]")
+        model = AlgoClass.load(resume_path, env=venv, device=device,
+                               tensorboard_log=cfg.tensorboard_log)
         reset_timesteps = False
         # Restore the reward-normalization running stats so the reward scale is continuous
         # across resumes (otherwise each chunk re-warms the return std from scratch).
@@ -315,9 +329,11 @@ def main() -> None:
             learning_rate=_lr_setting(cfg),
             clip_range=cfg.clip_range,
             seed=cfg.seed,
+            device=device,
             tensorboard_log=cfg.tensorboard_log,
             verbose=1,
         )
+        print(f"[brain] compute: {device}")
         reset_timesteps = True
 
     # `--timesteps` is ALWAYS the number of steps to train NOW. On resume, SB3 itself adds
