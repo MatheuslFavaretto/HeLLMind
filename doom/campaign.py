@@ -38,6 +38,12 @@ CAMPAIGN_BUTTONS = [
     vzd.Button.SELECT_NEXT_WEAPON,   # switch weapons (creates weapon variety)
     vzd.Button.MOVE_LEFT,            # strafe left  (opt-in actions; harmless if unused)
     vzd.Button.MOVE_RIGHT,           # strafe right
+    # Direct weapon-slot select — NOT policy actions; auto-best-weapon injects the right one
+    # each frame (like auto-USE). Harmless if unused. Kept LAST so existing action/button
+    # indices are unchanged.
+    vzd.Button.SELECT_WEAPON1, vzd.Button.SELECT_WEAPON2, vzd.Button.SELECT_WEAPON3,
+    vzd.Button.SELECT_WEAPON4, vzd.Button.SELECT_WEAPON5, vzd.Button.SELECT_WEAPON6,
+    vzd.Button.SELECT_WEAPON7,
 ]
 
 # Curated COMBINED actions (each presses MULTIPLE buttons at once). A naive one-hot space
@@ -144,6 +150,9 @@ class CampaignDoomEnv(gym.Env):
         self._auto_use = bool(r.get("auto_use", 0.0))
         self._use_idx: Optional[int] = None  # set once the button layout is built
         self._use_held = False  # tracks USE state across steps so auto-USE can PULSE (edges)
+        # Auto-best-weapon: each frame, force-select the strongest owned weapon so the agent
+        # always fights with its best gun (it shouldn't have to learn weapon management).
+        self._auto_best_weapon = bool(r.get("auto_best_weapon", 0.0))
         # Discovery reward: pay the first sighting of each new object per episode.
         self._discovery_reward = float(r.get("discovery_reward", 0.0))
         self._seen_objects: set = set()
@@ -286,6 +295,8 @@ class CampaignDoomEnv(gym.Env):
             self.button_names.append(label)
             self._action_attacks.append(bool(vec[bidx["ATTACK"]]))
         self._use_idx = bidx.get("USE")  # for auto-USE (open doors on contact)
+        # auto-best-weapon: button index per weapon slot, so we can force-select the best gun.
+        self._weapon_btn = {s: bidx.get(f"SELECT_WEAPON{s}") for s in range(1, 8)}
 
         self.action_space = spaces.Discrete(len(self.actions))
         channels = (1 + (1 if self._spatial else 0) + (1 if self._depth else 0)
@@ -542,6 +553,17 @@ class CampaignDoomEnv(gym.Env):
             self._mark_visit(self._last_vars["position_x"], self._last_vars["position_y"])
         return self._get_obs(), {"map": self._current_map}
 
+    def _best_weapon_slot(self) -> int:
+        """The strongest weapon the agent OWNS, by slot. Doom slots roughly rank by power
+        (3 shotgun > 2 pistol > 1 fist), and 4-7 (chaingun/rocket/plasma/BFG) higher still.
+        We pick the highest owned slot — "use the best gun you have". 0 = unknown/none owned."""
+        from instrumentation.game_vars import WEAPON_VARS
+        if not self._last_vars:
+            return 0
+        owned = [s for s in range(1, 8)
+                 if float(self._last_vars.get(WEAPON_VARS[s - 1], 0.0)) > 0.0]
+        return max(owned) if owned else 0
+
     def step(
         self, action: int
     ) -> Tuple[np.ndarray, float, bool, bool, Dict[str, Any]]:
@@ -555,6 +577,16 @@ class CampaignDoomEnv(gym.Env):
             buttons = list(buttons)
             buttons[self._use_idx] = 0 if self._use_held else 1
         self._use_held = bool(buttons[self._use_idx]) if self._use_idx is not None else False
+        # Auto-best-weapon: force-select the strongest owned weapon so the agent always fights
+        # with its best gun (e.g. switch off the pistol once it has a shotgun). Idempotent —
+        # selecting the already-equipped slot is a no-op, so holding is fine here (unlike USE).
+        if self._auto_best_weapon:
+            best = self._best_weapon_slot()
+            cur = int(self._last_vars.get("selected_weapon", 0)) if self._last_vars else 0
+            btn = self._weapon_btn.get(best) if best else None
+            if btn is not None and best != cur:
+                buttons = list(buttons)
+                buttons[btn] = 1
         base_reward = self.game.make_action(buttons, self.frame_skip)
         self._ep_base += base_reward
         self._ep_ticks += self.frame_skip

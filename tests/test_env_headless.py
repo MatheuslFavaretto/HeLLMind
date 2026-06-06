@@ -104,6 +104,27 @@ def test_auto_use_pulses_not_holds():
 
 @pytest.mark.skipif(not __import__("os").path.exists(default_wad()),
                     reason="freedoom2.wad not bundled")
+def test_auto_best_weapon_picks_highest_owned_slot():
+    # "Always use the best weapon": auto-best-weapon must select the HIGHEST owned slot. At
+    # spawn the agent owns only the pistol (slot 2); grabbing a shotgun (slot 3) must win.
+    env = CampaignDoomEnv(wad_path=default_wad(), doom_map="MAP01",
+                          rewards={"auto_best_weapon": 1.0})
+    try:
+        env.reset(seed=0)
+        env.step(0)
+        assert env._best_weapon_slot() == 2          # spawn: pistol only
+        # Simulate picking up a shotgun (slot 3) — best must jump to 3.
+        env._last_vars["weapon3"] = 1.0
+        assert env._best_weapon_slot() == 3
+        # And a chaingun (slot 4) outranks the shotgun.
+        env._last_vars["weapon4"] = 1.0
+        assert env._best_weapon_slot() == 4
+    finally:
+        env.close()
+
+
+@pytest.mark.skipif(not __import__("os").path.exists(default_wad()),
+                    reason="freedoom2.wad not bundled")
 def test_campaign_weapon_variety_seeds_spawn_weapon():
     # With the variety reward on, the spawn weapon must be pre-seeded so it doesn't
     # pay out every episode just for holding the starting pistol.

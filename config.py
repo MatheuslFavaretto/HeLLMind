@@ -127,6 +127,10 @@ class Config:
     # signal -> it gets stuck banging on closed doors (observed). On by default; the agent
     # still chooses where to GO, this just stops doors from being a dead end.
     auto_use: bool = os.getenv("AUTO_USE", "1") in ("1", "true", "True")
+    # Auto-best-weapon: each frame, force-select the strongest owned weapon so the agent
+    # always fights with its best gun (e.g. swap off the pistol once it grabs a shotgun)
+    # instead of having to learn weapon management. On by default.
+    auto_best_weapon: bool = os.getenv("AUTO_BEST_WEAPON", "1") in ("1", "true", "True")
     discovery_reward: float = float(os.getenv("DISCOVERY_REWARD", "0.0"))
     bestiary_reward: bool = os.getenv("BESTIARY_REWARD", "0") in ("1", "true", "True")
     # Spatial memory: feed the agent a 2nd obs channel of where it has already been
@@ -218,6 +222,7 @@ class Config:
             "combat_explore_split": float(self.combat_explore_split),
             "combat_explore_factor": self.combat_explore_factor,
             "auto_use": float(self.auto_use),
+            "auto_best_weapon": float(self.auto_best_weapon),
             "discovery_reward": self.discovery_reward,
             "weapon_variety_reward": self.weapon_variety_reward,
             "use_rnd":  float(self.use_rnd),
