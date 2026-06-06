@@ -105,6 +105,7 @@ def brain_prefix(task: str, num_actions: int, use_lstm: bool,
             f"{semantic_tag(semantic_channel)}")
 
 
-def describe(use_lstm: bool) -> Tuple[str, str]:
-    """(algo name, policy name) for logging."""
-    return ("RecurrentPPO" if use_lstm else "PPO"), policy_name(use_lstm)
+def describe(use_lstm: bool, game_vars: bool = False) -> Tuple[str, str]:
+    """(algo name, policy name) for logging. game_vars → MultiInputPolicy (matches the real
+    policy the trainer builds; without it the log misreports CnnPolicy)."""
+    return ("RecurrentPPO" if use_lstm else "PPO"), policy_name(use_lstm, game_vars)

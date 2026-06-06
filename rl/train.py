@@ -316,7 +316,7 @@ def main() -> None:
         else:
             print(f"[brain] no brain in this vault ({cfg.checkpoint_dir}) — "
                   "starting from zero.")
-        algo_label, pol = describe(cfg.use_lstm)
+        algo_label, pol = describe(cfg.use_lstm, cfg.game_vars)
         print(f"[brain] policy: {algo_label} / {pol}")
         model = AlgoClass(
             policy=policy_name(cfg.use_lstm, cfg.game_vars),
