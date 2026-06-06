@@ -598,6 +598,7 @@ class CampaignDoomEnv(gym.Env):
         engage_bonus = 0.0  # reward keeping a visible enemy centred (labels buffer)
         discovery_bonus = 0.0  # reward the first sighting of a new object this episode
         self._enemies_in_view = 0  # telemetry: how many enemies the agent can see now
+        self._visible_objects = []  # detector overlay: every visible object (normalised bbox)
         if not done:
             raw = self._read_raw_vars()
             deltas = {n: max(0.0, raw[n] - self._last_vars[n]) for n in MONOTONIC}
@@ -635,11 +636,16 @@ class CampaignDoomEnv(gym.Env):
                                 int(deltas.get("killcount", 0)))
             # Labels buffer: ground-truth on-screen enemy detection + engagement reward.
             if self._use_labels:
-                from doom.entities import visible_enemies, visible_object_names
+                from doom.entities import (visible_enemies, visible_object_names,
+                                           visible_objects)
                 st = self.game.get_state()
                 labels = getattr(st, "labels", None) if st else None
                 view = visible_enemies(labels, screen_width=float(self.width))
                 self._enemies_in_view = view["count"]
+                # Every visible object (normalised bbox + category) for the detector overlay.
+                sw = float(self.game.get_screen_width() or self.width)
+                sh = float(self.game.get_screen_height() or self.height)
+                self._visible_objects = visible_objects(labels, sw, sh)
                 if self._engagement_reward and view["nearest_centered"] is not None:
                     # 1.0 when an enemy is dead-centred, 0 at the screen edge.
                     engage_bonus = self._engagement_reward * (1.0 - view["nearest_centered"])
@@ -753,6 +759,7 @@ class CampaignDoomEnv(gym.Env):
         }
         if self._use_labels:
             doom["enemies_in_view"] = int(self._enemies_in_view)  # ground-truth on-screen count
+            doom["objects"] = self._visible_objects  # detector overlay: boxes around everything
             if self._combat_explore_split:
                 doom["mode"] = "combat" if self._enemies_in_view > 0 else "explore"
         if done:

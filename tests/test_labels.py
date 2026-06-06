@@ -1,13 +1,44 @@
 """Tests for doom.entities.visible_enemies — ground-truth on-screen enemy detection."""
-from doom.entities import MONSTERS, visible_enemies
+from doom.entities import MONSTERS, classify_object, visible_enemies, visible_objects
 
 
 class _Label:
     """Mimics a ViZDoom Label object (object_name + screen bbox)."""
-    def __init__(self, object_name, x=0.0, width=0.0):
+    def __init__(self, object_name, x=0.0, width=0.0, y=0.0, height=0.0):
         self.object_name = object_name
         self.x = x
         self.width = width
+        self.y = y
+        self.height = height
+
+
+def test_classify_object_categories():
+    # The detector overlay colours boxes by category — these must be right.
+    assert classify_object("DoomImp") == "enemy"
+    assert classify_object("ShotgunGuy") == "enemy"        # a monster, not a weapon
+    assert classify_object("Shotgun") == "weapon"          # NOT projectile (has "Shot")
+    assert classify_object("Chaingun") == "weapon"
+    assert classify_object("Medikit") == "health"
+    assert classify_object("Clip") == "ammo"
+    assert classify_object("RedCard") == "key"
+    assert classify_object("GreenArmor") == "armor"
+    assert classify_object("DoomImpBall") == "projectile"
+    assert classify_object("DoomPlayer") == "self"
+    assert classify_object("") == "item"
+
+
+def test_visible_objects_normalises_bbox_and_skips_self():
+    labels = [
+        _Label("DoomImp", x=80, width=40, y=60, height=80),
+        _Label("Shotgun", x=160, width=20, y=100, height=20),
+        _Label("DoomPlayer", x=0, width=10, y=0, height=10),   # self → skipped
+    ]
+    objs = visible_objects(labels, screen_w=320.0, screen_h=200.0)
+    assert len(objs) == 2                                   # self dropped
+    imp = next(o for o in objs if o["name"] == "DoomImp")
+    assert imp["category"] == "enemy"
+    assert imp["x"] == 80 / 320 and imp["w"] == 40 / 320    # normalised [0,1]
+    assert {o["category"] for o in objs} == {"enemy", "weapon"}
 
 
 def _a_monster():

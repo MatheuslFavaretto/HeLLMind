@@ -105,13 +105,15 @@ def evaluate(cfg: Config, path: str, button_names: list, episodes: int = 20,
         if _win is not None:
             try:
                 import cv2 as _cv2
-                from doom.overlay import draw_hud, draw_minimap
+                from doom.overlay import draw_hud, draw_object_boxes
                 img_obs = obs["image"] if isinstance(obs, dict) else obs
                 frame = np.asarray(img_obs)[0, :, :, 0]   # first channel, env 0
                 bgr = _cv2.cvtColor(
                     _cv2.resize(frame, (420, 420), interpolation=_cv2.INTER_NEAREST),
                     _cv2.COLOR_GRAY2BGR)
                 doom_i = (infos[0].get("doom") or {}) if infos else {}
+                # Squares around EVERY object the agent sees (the on-screen detector).
+                draw_object_boxes(bgr, doom_i.get("objects"), 420, 420)
                 lvl = doom_i.get("levels", {})
                 if lvl:
                     draw_hud(bgr,

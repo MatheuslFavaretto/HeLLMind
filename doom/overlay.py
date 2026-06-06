@@ -79,6 +79,38 @@ def draw_enemy_boxes(img: np.ndarray, labels, screen_w: int, screen_h: int,
     return img
 
 
+# Box colour per object category (BGR for cv2). Enemies red, pickups by kind.
+_CATEGORY_COLOR = {
+    "enemy":      (0,   45, 255),   # red
+    "projectile": (0,  128, 255),   # orange-red
+    "weapon":     (0,  208, 255),   # gold
+    "ammo":       (60, 180, 255),   # amber
+    "health":     (80, 220,  80),   # green
+    "armor":      (220, 180, 60),   # teal-blue
+    "key":        (255, 80, 200),   # magenta
+    "powerup":    (255, 200, 0),    # cyan
+    "item":       (200, 200, 200),  # grey
+}
+
+
+def draw_object_boxes(img: np.ndarray, objects, render_w: int, render_h: int) -> np.ndarray:
+    """Draw a labelled square around EVERY object the agent sees (the on-screen detector).
+    `objects` are dicts with NORMALISED bbox [0,1] + category/name (from info['doom']['objects']),
+    so they scale to any window size. Colour-coded by category."""
+    if not _CV2 or not objects:
+        return img
+    for o in objects:
+        cat = o.get("category", "item")
+        color = _CATEGORY_COLOR.get(cat, _CATEGORY_COLOR["item"])
+        x1 = int(o["x"] * render_w);            y1 = int(o["y"] * render_h)
+        x2 = int((o["x"] + o["w"]) * render_w); y2 = int((o["y"] + o["h"]) * render_h)
+        cv2.rectangle(img, (x1, y1), (x2, y2), color, 2)
+        name = str(o.get("name", "")).replace("Doom", "")
+        cv2.putText(img, name, (x1, max(y1 - 4, 10)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1, cv2.LINE_AA)
+    return img
+
+
 def draw_minimap(img: np.ndarray, automap: np.ndarray,
                  size: int = 96, margin: int = 4) -> np.ndarray:
     """Overlay the automap (explored top-down map) in the top-right corner."""

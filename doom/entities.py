@@ -35,6 +35,64 @@ def is_monster(name: str) -> bool:
     return name in MONSTERS
 
 
+# Object categories for the on-screen detector overlay (squares around everything the agent
+# sees), colour-coded by what they ARE. Matched by substring so Freedoom variants still hit.
+_CATEGORY_KEYWORDS = [
+    ("weapon", ("Shotgun", "Chaingun", "RocketLauncher", "PlasmaRifle", "BFG",
+                "Chainsaw", "SuperShotgun")),
+    ("health", ("Medikit", "Stimpack", "HealthBonus", "Soulsphere", "Megasphere", "Berserk")),
+    ("armor",  ("Armor", "GreenArmor", "BlueArmor", "MegaArmor")),
+    ("ammo",   ("Clip", "Shell", "RocketAmmo", "RocketBox", "Cell", "Ammo", "Cartridge")),
+    ("key",    ("Card", "Skull", "Key")),
+    ("powerup",("Invulnerability", "Invisibility", "RadSuit", "Allmap", "Infrared",
+                "Backpack")),
+]
+
+
+def classify_object(name: str) -> str:
+    """Category of a visible object for the detector overlay: enemy / weapon / health /
+    armor / ammo / key / powerup / self / item. Drives the box colour + label."""
+    if not name:
+        return "item"
+    if name in MONSTERS:
+        return "enemy"
+    if name == "DoomPlayer":
+        return "self"
+    # Narrow projectile check FIRST among in-flight shots (but BEFORE keyword match so a
+    # fireball isn't miscategorised) — must not catch weapons like "Shotgun" (has "Shot").
+    if name in PROJECTILE_CASTER or name.endswith("Ball") or "Tracer" in name:
+        return "projectile"
+    # Pickups by keyword. Weapons checked here, so "Shotgun" → weapon (not projectile).
+    for cat, keys in _CATEGORY_KEYWORDS:
+        if any(k in name for k in keys):
+            return cat
+    return "item"
+
+
+def visible_objects(labels, screen_w: float, screen_h: float):
+    """Every visible labelled object as a dict with NORMALISED bbox [0,1] + category, so the
+    overlay can scale it to any render size. Skips the agent's own body (DoomPlayer self)."""
+    out = []
+    for lab in (labels or []):
+        name = getattr(lab, "object_name", None) or (
+            lab.get("object_name") if isinstance(lab, dict) else None)
+        if not name:
+            continue
+        cat = classify_object(name)
+        if cat == "self":
+            continue
+        gx = getattr(lab, "x", None);  gx = lab.get("x", 0) if gx is None else gx
+        gy = getattr(lab, "y", None);  gy = lab.get("y", 0) if gy is None else gy
+        gw = getattr(lab, "width", None);  gw = lab.get("width", 0) if gw is None else gw
+        gh = getattr(lab, "height", None); gh = lab.get("height", 0) if gh is None else gh
+        out.append({
+            "name": name, "category": cat,
+            "x": float(gx) / screen_w, "y": float(gy) / screen_h,
+            "w": float(gw) / screen_w, "h": float(gh) / screen_h,
+        })
+    return out
+
+
 def is_projectile(name: str) -> bool:
     return name in PROJECTILE_CASTER
 
