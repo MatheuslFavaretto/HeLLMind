@@ -364,6 +364,12 @@ def main() -> None:
             "enemies_seen_per_episode": float(s.get("enemies_seen_per_episode", 0.0)),
             "hits_taken_per_episode": float(s.get("hits_taken_per_episode", 0.0)),
             "heals_consumed": float(s.get("heals_consumed", 0.0)),
+            # Skill-curriculum scoreboard: aim quality + spray + conversion + circling + reward mix.
+            "aim_offset": float(s.get("aim_offset", 0.0)),
+            "wasted_shot_rate": float(s.get("wasted_shot_rate", 0.0)),
+            "kill_conversion": float(s.get("kill_conversion", 0.0)),
+            "revisit_rate": float(s.get("revisit_rate", 0.0)),
+            "reward_breakdown": s.get("reward_breakdown", {}),
             "mean_base_reward": float(s["mean_base_reward"]),
             "mean_episode_length": float(s["mean_episode_length"]),
             # Combat vs exploration regime — so the coach tunes each one separately.
