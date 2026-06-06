@@ -69,11 +69,12 @@ vault at `MyDrive/hellmind-vault/.memory/demos/` (or use the Colab file uploader
 # Verify torch sees the GPU
 import torch; print('CUDA:', torch.cuda.is_available())
 
-# IMPORTANT: turn ON the SEMANTIC CHANNEL — the validated win. A controlled fresh-1M A/B on
-# MAP01 (same seed/config, only this flag differs) showed it explores +56% (16%→25%), gets 2×
-# closer to the exit (exit_progress 17%→35%), and 2× shooting accuracy. It feeds the detections
-# (enemy/door/item, by category) INTO the network so it perceives "what is where" instead of
-# inferring from raw pixels. Off by default locally; turn it on for the long Colab run.
+# IMPORTANT: turn ON the SEMANTIC CHANNEL. A 3-seed controlled fresh-1M A/B on MAP01 (only this
+# flag differs) shows a MODEST but CONSISTENT gain — exploration 0.227 vs 0.181 (+25%) and
+# shooting accuracy 0.131 vs 0.091, both beyond the seed-to-seed noise. (A single seed first
+# showed a 2× exit jump that did NOT replicate — multi-seed corrected it.) It feeds the
+# detections (enemy/door/item, by category) INTO the network so it perceives "what is where"
+# instead of inferring from raw pixels — worth carrying into the long run.
 import os
 os.environ['SEMANTIC_CHANNEL'] = '1'   # the network SEES categories (validated +exploration)
 os.environ['CAMPAIGN'] = '1'

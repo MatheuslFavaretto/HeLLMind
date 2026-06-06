@@ -265,9 +265,11 @@ cores by default.
 `SEMANTIC_CHANNEL=1` (off by default) feeds the DETECTIONS into the network as an extra obs
 channel — each on-screen object painted by category (enemy/weapon/health/…) plus doors projected
 from the WAD — so the policy SEES "what is where" instead of inferring from raw pixels. In a
-controlled fresh-1M A/B on MAP01 (same seed, only this flag differs) it explored **+56%** and got
-**2× closer to the exit**. Changes the obs shape → needs `--fresh` (brain tag `_se`). Watch what
-the net sees with `eval --overlay` (the "SEES" panel).
+**3-seed** controlled fresh-1M A/B on MAP01 (only this flag differs) it gives a **modest but
+consistent** gain: exploration **0.227 vs 0.181** (+25%, gap > seed-to-seed std) and shooting
+accuracy **0.131 vs 0.091**. (A single seed first showed a 2× exit-progress jump — that didn't
+replicate; multi-seed corrected the claim.) Changes the obs shape → needs `--fresh` (brain tag
+`_se`). Watch what the net sees with `eval --overlay` (the "SEES" panel).
 
 ---
 

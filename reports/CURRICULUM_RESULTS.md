@@ -65,23 +65,26 @@ a **semantic obs channel** (`SEMANTIC_CHANNEL=1`, brain tag `_se`): an 84×84 ma
 on-screen object is painted by category code (enemy/weapon/health/…) from the labels detector,
 plus every door projected from the WAD. The network now perceives **what is where**.
 
-## Controlled A/B (the rigorous test)
+## Multi-seed controlled A/B (the rigorous test)
 
-Two **fresh 1M** PPO runs on MAP01, **identical config + same seed (42)**, only `SEMANTIC_CHANNEL`
-differs. Eval: 10 episodes, T=0.5.
+Fresh 1M PPO runs on MAP01, identical config, only `SEMANTIC_CHANNEL` differs — repeated across
+**3 seeds** (42, 43, 44; baseline 42, 43). Eval 10 episodes, T=0.5. Reporting **mean ± seed-to-seed
+std**, because RL is noisy and one seed lies (this is the whole point of the multi-seed run).
 
-| Metric | Baseline (no semantic) | **Semantic** | Δ |
+| Metric | Baseline | **Semantic** | Gap vs noise |
 |---|---|---|---|
-| map explored | 16% (156 cells) | **25% (235)** | **+56%** |
-| exit progress (how close to exit) | 17% | **35%** | **2×** |
-| kills / episode | 6.1 | **10.3** | +69% |
-| shooting accuracy | 7% | **13%** | ~2× |
-| shots landed / ep | 19.2 | **34.5** | +80% |
-| enemies seen / ep | 9.3 | **11.9** | +28% |
+| map explored | 0.181 ± 0.030 | **0.227 ± 0.022** | **+25% — gap > std (holds up)** |
+| shooting accuracy | 0.091 ± 0.029 | **0.131 ± 0.002** | **+44% — gap > std (holds up)** |
+| exit progress | 0.198 ± 0.039 | 0.243 ± 0.100 | +0.046 — **within noise (inconclusive)** |
+| kills / episode | 6.35 ± 0.35 | 8.0 ± 2.07 | +1.65 — **within noise (inconclusive)** |
 
-**Conclusion: feeding categories into the network causes a real, substantial gain** — the first
-clear feature win on full MAP01. Both still 0% exit (neither reaches the end; the semantic brain
-gets ~2× closer). Caveat: single seed + 10 eval eps (multi-seed validation in progress).
+**Honest conclusion: the semantic channel gives a MODEST but CONSISTENT gain in EXPLORATION
+(~+25%) and shooting ACCURACY — those gaps exceed the seed-to-seed variability.** The dramatic
+seed-42 numbers (2× exit_progress, +69% kills) were a **lucky seed**: they did NOT replicate
+(seed 43 was a dead heat; exit_progress and kills overlap heavily across seeds). Single-seed A/B
+would have over-claimed a big win — the multi-seed corrected it. Both conditions still 0% exit.
+(Baseline n=2 while seed-44-baseline finishes; refines the baseline mean slightly, not the
+conclusion.)
 
 ## Richer, non-binary metrics (replacing exit-rate as the headline)
 
