@@ -132,3 +132,14 @@ def test_map_doors_finds_real_doors():
     doors = map_doors(wad, "MAP01")
     assert 5 <= len(doors) <= 40            # the real handful, not the 103 geometry false-positives
     assert map_doors(wad, "NOPE") == ()     # missing map → graceful empty
+
+
+def test_vision_steer_goes_to_open_space():
+    from doom.campaign import vision_steer
+    N, FWD, TL, TR = 10, 0, 2, 3
+    fwd = vision_steer([0]*N, 0.2, 0.9, 0.2, FWD, TL, TR)   # centre open
+    assert fwd[FWD] == 1 and fwd[TL] == 0 and fwd[TR] == 0
+    left = vision_steer([0]*N, 0.9, 0.1, 0.1, FWD, TL, TR)  # left open, centre walled
+    assert left[TL] == 1 and left[TR] == 0
+    right = vision_steer([0]*N, 0.1, 0.1, 0.9, FWD, TL, TR)
+    assert right[TR] == 1 and right[TL] == 0

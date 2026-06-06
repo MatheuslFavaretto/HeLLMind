@@ -141,6 +141,36 @@ def steer_toward(buttons, px, py, angle_deg, tx, ty, fwd, turn_left, turn_right,
     return out
 
 
+def vision_steer(buttons, left_open, center_open, right_open, fwd, turn_left, turn_right,
+                 min_forward: float = 0.30):
+    """Vision-first navigation (pure, unit-testable): steer toward the MOST OPEN direction the
+    agent can see (openness 0..1 per third of its view, from the depth buffer). This follows
+    corridors and avoids walls — unlike steering at a map coordinate, which walks into the wall
+    between agent and target. Goes FORWARD when the centre is open; otherwise turns toward the
+    more open side. Returns a NEW button vector."""
+    out = list(buttons)
+    best = max(left_open, center_open, right_open)
+    # Centre clear enough → push straight ahead.
+    if center_open >= best * 0.85 and center_open > min_forward:
+        if fwd is not None:
+            out[fwd] = 1
+    elif left_open >= right_open:
+        if turn_left is not None:
+            out[turn_left] = 1
+        if turn_right is not None:
+            out[turn_right] = 0
+        if fwd is not None and left_open > min_forward:
+            out[fwd] = 1
+    else:
+        if turn_right is not None:
+            out[turn_right] = 1
+        if turn_left is not None:
+            out[turn_left] = 0
+        if fwd is not None and right_open > min_forward:
+            out[fwd] = 1
+    return out
+
+
 def mode_scales(enemies_in_view: int, split_on: bool, factor: float):
     """Combat/exploration decoupling weights (pure, so it's unit-testable without ViZDoom).
 
@@ -327,8 +357,10 @@ class CampaignDoomEnv(gym.Env):
         game.set_available_game_variables(TRACKED_VARS)
         game.set_sectors_info_enabled(True)  # map geometry for the real minimap
         game.set_objects_info_enabled(True)  # actor names/positions -> factual bestiary
-        if self._depth:
-            game.set_depth_buffer_enabled(True)  # per-pixel distance -> 3D structure channel
+        if self._depth or self._auto_door_nav:
+            # depth buffer: needed as an obs channel (_depth) AND for vision-based auto-nav
+            # (steer toward the most OPEN direction the agent can see, not a coordinate).
+            game.set_depth_buffer_enabled(True)  # per-pixel distance -> 3D structure
         if self._automap:
             game.set_automap_buffer_enabled(True)  # native top-down explored map channel
             game.set_automap_mode(vzd.AutomapMode.OBJECTS)  # walls + objects, no HUD clutter
@@ -638,38 +670,56 @@ class CampaignDoomEnv(gym.Env):
                  if float(self._last_vars.get(WEAPON_VARS[s - 1], 0.0)) > 0.0]
         return max(owned) if owned else 0
 
+    def _depth_openness(self):
+        """(left, centre, right) openness in [0,1] from the depth buffer's middle band — how
+        FAR the agent can see in each third of its view (1 = wide open, 0 = wall in your face).
+        None if depth isn't available."""
+        st = self.game.get_state()
+        depth = getattr(st, "depth_buffer", None) if st else None
+        if depth is None:
+            return None
+        h, w = depth.shape[:2]
+        band = depth[h // 3: 2 * h // 3, :]            # middle band (skip floor/ceiling)
+        w3 = max(1, w // 3)
+        return (float(band[:, :w3].mean()) / 255.0,
+                float(band[:, w3:2 * w3].mean()) / 255.0,
+                float(band[:, 2 * w3:].mean()) / 255.0)
+
     def _door_nav_buttons(self, buttons):
-        """Steer toward the nearest not-yet-reached door; sweep to escape when wall-stuck.
-        Crude potential-field navigation — no pathfinding, but it gets the agent flowing toward
-        doors (which auto-USE then opens). Holds fire while navigating."""
+        """VISION-FIRST navigation: steer toward the most OPEN direction the agent can SEE
+        (depth buffer), so it follows corridors instead of walking into the wall between it and
+        a door's coordinate. Only when a not-yet-reached door is CLOSE and roughly AHEAD does it
+        push toward that door (auto-USE then opens it). Holds fire while navigating."""
         px = float(self._last_vars.get("position_x", 0.0))
         py = float(self._last_vars.get("position_y", 0.0))
         ang = float(self._last_vars.get("angle", 0.0))
-        # Mark doors we're standing at as reached (auto-USE has opened them), then target the
-        # nearest one we haven't reached yet.
+        out = list(buttons)
+        if self._attack_btn_idx is not None:
+            out[self._attack_btn_idx] = 0          # don't shoot while navigating
+        # Mark doors we're at as reached (auto-USE opened them).
         reach = self._goal_radius if self._goal_radius else 96.0
         for i, (dx, dy) in enumerate(self._doors):
             if (dx - px) ** 2 + (dy - py) ** 2 <= reach * reach:
                 self._reached_doors.add(i)
         targets = [(i, d) for i, d in enumerate(self._doors) if i not in self._reached_doors]
-        out = list(buttons)
-        if self._attack_btn_idx is not None:
-            out[self._attack_btn_idx] = 0          # don't shoot while navigating
-        if not targets:                            # all doors reached → let exploration roam
-            return out
-        i, (tx, ty) = min(targets, key=lambda t: (t[1][0]-px)**2 + (t[1][1]-py)**2)
-        self._nav_target = (tx, ty)
-        # Wall-stuck escape: if we've barely moved for a few steps, sweep-turn to find a way
-        # around instead of pushing into the wall toward the door.
-        if self._nomove_steps >= 3 and self._turn_right_idx is not None:
-            out[self._turn_right_idx] = 1
-            if self._turn_left_idx is not None:
-                out[self._turn_left_idx] = 0
-            if self._fwd_idx is not None:
-                out[self._fwd_idx] = 1
-            return out
-        return steer_toward(out, px, py, ang, tx, ty, self._fwd_idx,
-                            self._turn_left_idx, self._turn_right_idx)
+        # If a door is CLOSE and roughly in front (line of sight), approach it to trigger USE —
+        # a closed door looks like a wall to the depth sensor, so vision alone would avoid it.
+        if targets:
+            i, (tx, ty) = min(targets, key=lambda t: (t[1][0]-px)**2 + (t[1][1]-py)**2)
+            self._nav_target = (tx, ty)
+            import math
+            dist = math.hypot(tx - px, ty - py)
+            bearing = math.degrees(math.atan2(ty - py, tx - px))
+            rel = abs((bearing - ang + 180.0) % 360.0 - 180.0)
+            if dist < 180.0 and rel < 45.0:
+                return steer_toward(out, px, py, ang, tx, ty, self._fwd_idx,
+                                    self._turn_left_idx, self._turn_right_idx)
+        # Otherwise: go where it's OPEN (the user's "prioritise the field of vision first").
+        openness = self._depth_openness()
+        if openness is not None:
+            return vision_steer(out, openness[0], openness[1], openness[2],
+                                self._fwd_idx, self._turn_left_idx, self._turn_right_idx)
+        return out
 
     def step(
         self, action: int
