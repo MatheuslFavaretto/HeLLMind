@@ -247,6 +247,11 @@ class CampaignDoomEnv(gym.Env):
         self._auto_aim = bool(r.get("auto_aim", 0.0))
         self._auto_door_nav = bool(r.get("auto_door_nav", 0.0))
         self._visible_objects = []  # last frame's detected objects (used to aim this frame)
+        # Combat priority/persistence: hunt the nearest living monster (even just off-screen)
+        # before heading for a door, so the agent finishes a fight instead of abandoning it.
+        self._nearest_monster_dist = 1e9
+        self._nearest_monster_xy = None
+        self._combat_cooldown = 0   # steps to keep hunting after last seeing an enemy
         # Discovery reward: pay the first sighting of each new object per episode.
         self._discovery_reward = float(r.get("discovery_reward", 0.0))
         self._seen_objects: set = set()
@@ -653,6 +658,9 @@ class CampaignDoomEnv(gym.Env):
         self._visible_objects = []  # no stale detections from the previous episode
         self._reached_doors = set()  # re-target all doors fresh each episode
         self._nomove_steps = 0
+        self._combat_cooldown = 0
+        self._nearest_monster_xy = None
+        self._nearest_monster_dist = 1e9
         self._goal_xy = None
         self._goal_reached = False
         self._prev_goal_dist = None
@@ -759,16 +767,34 @@ class CampaignDoomEnv(gym.Env):
             if btn is not None and best != cur:
                 buttons = list(buttons)
                 buttons[btn] = 1
-        # Auto-aim combat assist: orient toward the nearest visible enemy and gate the trigger,
-        # using LAST frame's detections (enemies don't teleport, so a 1-frame lag is fine).
+        # COMBAT FIRST, then the door. Priority: visible enemy → fight; recently-seen enemy
+        # still nearby → HUNT it (turn to re-acquire) before navigating; area clear → door-nav.
         enemies = [o for o in self._visible_objects if o.get("category") == "enemy"]
+        HUNT_RADIUS = 700.0
+        if enemies:
+            self._combat_cooldown = 10          # keep hunting for a bit after it leaves view
+        elif self._combat_cooldown > 0:
+            self._combat_cooldown -= 1
+        hunting = (not enemies and self._combat_cooldown > 0
+                   and self._nearest_monster_xy is not None
+                   and self._nearest_monster_dist < HUNT_RADIUS)
         if enemies and self._auto_aim and self._attack_btn_idx is not None:
             # Enemy in view → combat assist (turn to it, fire when centred).
             buttons = aim_assist(buttons, enemies, self._turn_left_idx,
                                  self._turn_right_idx, self._attack_btn_idx)
+        elif hunting and self._auto_aim:
+            # Enemy just left view but is still close → TURN toward it to re-acquire (hold fire
+            # until it's back on screen). Finishes the fight instead of walking off to a door.
+            mx, my = self._nearest_monster_xy
+            buttons = steer_toward(buttons, self._last_vars["position_x"],
+                                   self._last_vars["position_y"],
+                                   float(self._last_vars.get("angle", 0.0)), mx, my,
+                                   self._fwd_idx, self._turn_left_idx, self._turn_right_idx)
+            if self._attack_btn_idx is not None:
+                buttons = list(buttons); buttons[self._attack_btn_idx] = 0
         elif not enemies and self._auto_door_nav and self._doors and self._last_vars:
-            # No enemy → head for the nearest not-yet-reached door so the agent flows toward
-            # objectives instead of banging walls (auto-USE opens it on contact). Holds fire.
+            # Area clear → head for the nearest not-yet-reached door (vision-first; auto-USE
+            # opens it on contact).
             buttons = self._door_nav_buttons(buttons)
         elif not enemies and self._auto_aim and self._attack_btn_idx is not None:
             buttons = aim_assist(buttons, [], self._turn_left_idx,
@@ -834,6 +860,18 @@ class CampaignDoomEnv(gym.Env):
                 sw = float(self.game.get_screen_width() or self.width)
                 sh = float(self.game.get_screen_height() or self.height)
                 self._visible_objects = visible_objects(labels, sw, sh)
+                # Nearest LIVING monster anywhere in the level (objects buffer) — so combat can
+                # hunt one that just left the agent's view instead of abandoning it for a door.
+                from doom.entities import is_monster
+                cx = raw["position_x"]; cy = raw["position_y"]
+                best_d, best_xy = 1e9, None
+                for o in (getattr(st, "objects", None) or []):
+                    if is_monster(getattr(o, "name", "")):
+                        d = (o.position_x - cx) ** 2 + (o.position_y - cy) ** 2
+                        if d < best_d:
+                            best_d, best_xy = d, (o.position_x, o.position_y)
+                self._nearest_monster_dist = best_d ** 0.5 if best_xy else 1e9
+                self._nearest_monster_xy = best_xy
                 if self._engagement_reward and view["nearest_centered"] is not None:
                     # 1.0 when an enemy is dead-centred, 0 at the screen edge.
                     engage_bonus = self._engagement_reward * (1.0 - view["nearest_centered"])
