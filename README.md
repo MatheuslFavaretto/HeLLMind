@@ -262,6 +262,13 @@ channels off gives **~1.5× faster training** if you're compute-limited (ViZDoom
 CPU-render-bound, so fewer channels = more frames/hour). `N_ENVS=8` uses 8 of the M-series' 10
 cores by default.
 
+`SEMANTIC_CHANNEL=1` (off by default) feeds the DETECTIONS into the network as an extra obs
+channel — each on-screen object painted by category (enemy/weapon/health/…) plus doors projected
+from the WAD — so the policy SEES "what is where" instead of inferring from raw pixels. In a
+controlled fresh-1M A/B on MAP01 (same seed, only this flag differs) it explored **+56%** and got
+**2× closer to the exit**. Changes the obs shape → needs `--fresh` (brain tag `_se`). Watch what
+the net sees with `eval --overlay` (the "SEES" panel).
+
 ---
 
 ## 📊 Where it stands (honest)

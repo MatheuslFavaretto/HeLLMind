@@ -309,6 +309,9 @@ def main() -> None:
             "death_rate": float(terminals.get("death", 0)) / n_eps,
             "explored_fraction": float(cov.get("explored_fraction", 0.0)),
             "cells_visited": float(cov.get("cells_visited", 0.0)),
+            "enemies_seen_per_episode": float(s.get("enemies_seen_per_episode", 0.0)),
+            "hits_taken_per_episode": float(s.get("hits_taken_per_episode", 0.0)),
+            "heals_consumed": float(s.get("heals_consumed", 0.0)),
             "mean_base_reward": float(s["mean_base_reward"]),
             "mean_episode_length": float(s["mean_episode_length"]),
             # Combat vs exploration regime — so the coach tunes each one separately.

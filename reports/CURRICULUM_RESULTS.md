@@ -54,3 +54,49 @@ trained tens of millions of steps; 1M on a laptop M5 (~30 min) isn't enough.
 
 > Reproduce any stage: `doom-cli curriculum2 --stages mywh` (or `corridor`, `navigate`).
 > Eval a stage's brain: set its scenario/map env and run `doom-cli eval --algo ppo`.
+
+---
+
+# 🧠 Semantic channel — feeding the detections INTO the network (2026-06-06)
+
+The agent's policy only ever saw raw pixels (+ depth/spatial/health) and had to INFER what a
+region was; it did not know "enemy" vs "item" vs "door" (those were human-overlay only). We added
+a **semantic obs channel** (`SEMANTIC_CHANNEL=1`, brain tag `_se`): an 84×84 map where each
+on-screen object is painted by category code (enemy/weapon/health/…) from the labels detector,
+plus every door projected from the WAD. The network now perceives **what is where**.
+
+## Controlled A/B (the rigorous test)
+
+Two **fresh 1M** PPO runs on MAP01, **identical config + same seed (42)**, only `SEMANTIC_CHANNEL`
+differs. Eval: 10 episodes, T=0.5.
+
+| Metric | Baseline (no semantic) | **Semantic** | Δ |
+|---|---|---|---|
+| map explored | 16% (156 cells) | **25% (235)** | **+56%** |
+| exit progress (how close to exit) | 17% | **35%** | **2×** |
+| kills / episode | 6.1 | **10.3** | +69% |
+| shooting accuracy | 7% | **13%** | ~2× |
+| shots landed / ep | 19.2 | **34.5** | +80% |
+| enemies seen / ep | 9.3 | **11.9** | +28% |
+
+**Conclusion: feeding categories into the network causes a real, substantial gain** — the first
+clear feature win on full MAP01. Both still 0% exit (neither reaches the end; the semantic brain
+gets ~2× closer). Caveat: single seed + 10 eval eps (multi-seed validation in progress).
+
+## Richer, non-binary metrics (replacing exit-rate as the headline)
+
+exit-rate is binary and harsh. `rl.eval` now prints a **"what happened (per episode)"** block:
+- **exit progress** — how close to the exit, now computed even WITHOUT reaching it by reading the
+  EXIT linedef straight from the WAD (`doom.wad_doors.map_exit`; metric-only, no reward change).
+- **enemies seen** (distinct), **shots fired** (+ landed/accuracy), **hits taken** (+HP damage),
+  **heals consumed** (+HP) — the real story of a run.
+
+## What did NOT help: demo retrieval (nearest-neighbour imitation)
+
+`--recall` replays the human's action from the most-similar demo frame (raw-pixel descriptor, and
+a learned-autoencoder embedding). Built + tested, but it does **not** improve exit on MAP01: the
+agent drifts off the demos' path, so the nearest demo frame isn't the right action for its actual
+situation (classic BC distribution-shift / DAgger problem). Reusable with many more demos.
+
+> Reproduce: fresh A/B → `SEMANTIC_CHANNEL=0/1 CAMPAIGN=1 MAPS=MAP01 python -m rl.train --fresh
+> --timesteps 1000000`, then `... python -m rl.eval --episodes 10 --temperature 0.5`.
