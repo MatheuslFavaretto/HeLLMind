@@ -148,9 +148,10 @@ def evaluate(cfg: Config, path: str, button_names: list, episodes: int = 20,
         if _win is not None:
             try:
                 import cv2 as _cv2
-                from doom.overlay import draw_hud, draw_object_boxes, draw_door_map
-                img_obs = obs["image"] if isinstance(obs, dict) else obs
-                frame = np.asarray(img_obs)[0, :, :, 0]   # first channel, env 0
+                from doom.overlay import (draw_hud, draw_object_boxes, draw_door_map,
+                                          draw_semantic_panel)
+                img_obs = np.asarray(obs["image"] if isinstance(obs, dict) else obs)
+                frame = img_obs[0, :, :, 0]   # first channel, env 0
                 bgr = _cv2.cvtColor(
                     _cv2.resize(frame, (420, 420), interpolation=_cv2.INTER_NEAREST),
                     _cv2.COLOR_GRAY2BGR)
@@ -159,6 +160,10 @@ def evaluate(cfg: Config, path: str, button_names: list, episodes: int = 20,
                 draw_object_boxes(bgr, doom_i.get("objects"), 420, 420)
                 # Door minimap (top-right): where the doors are + where the agent is headed.
                 draw_door_map(bgr, doom_i.get("navmap"))
+                # Semantic channel panel (bottom-right): what the NETWORK sees, if that channel
+                # is in the obs (last channel of the newest stacked frame).
+                if getattr(cfg, "semantic_channel", False):
+                    draw_semantic_panel(bgr, img_obs[0, :, :, img_obs.shape[-1] - 1])
                 lvl = doom_i.get("levels", {})
                 if lvl:
                     draw_hud(bgr,

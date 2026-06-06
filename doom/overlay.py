@@ -93,6 +93,32 @@ _CATEGORY_COLOR = {
 }
 
 
+def draw_semantic_panel(img: np.ndarray, sem: np.ndarray, size: int = 130,
+                        margin: int = 6) -> np.ndarray:
+    """Bottom-right panel showing the SEMANTIC obs channel — literally what the network now sees
+    as 'what is where': each category code recoloured (enemy=red, door=blue, health=green, …).
+    `sem` is the raw HxW uint8 channel from the obs (codes from doom.entities.SEMANTIC_CODES)."""
+    if not _CV2 or sem is None:
+        return img
+    from doom.entities import SEMANTIC_CODES
+    sem = np.asarray(sem)
+    code_color = {SEMANTIC_CODES[c]: _CATEGORY_COLOR.get(c, (200, 200, 200))
+                  for c in ("enemy", "weapon", "health", "ammo", "key", "powerup", "item")}
+    code_color[SEMANTIC_CODES["door"]] = (255, 120, 40)        # door = blue
+    panel = np.zeros((sem.shape[0], sem.shape[1], 3), dtype=np.uint8)
+    for code, col in code_color.items():
+        if code:
+            panel[sem == code] = col
+    panel = cv2.resize(panel, (size, size), interpolation=cv2.INTER_NEAREST)
+    h, w = img.shape[:2]
+    x0, y0 = w - size - margin, h - size - margin
+    img[y0:y0 + size, x0:x0 + size] = panel
+    cv2.rectangle(img, (x0, y0), (x0 + size - 1, y0 + size - 1), _BLACK, 1)
+    cv2.putText(img, "SEES", (x0, y0 - 4),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.34, (255, 255, 255), 1, cv2.LINE_AA)
+    return img
+
+
 def draw_object_boxes(img: np.ndarray, objects, render_w: int, render_h: int) -> np.ndarray:
     """Draw a labelled square around EVERY object the agent sees (the on-screen detector).
     `objects` are dicts with NORMALISED bbox [0,1] + category/name (from info['doom']['objects']),
