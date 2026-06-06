@@ -80,6 +80,30 @@ def test_campaign_env_contract_and_spatial_channel():
 
 @pytest.mark.skipif(not __import__("os").path.exists(default_wad()),
                     reason="freedoom2.wad not bundled")
+def test_auto_use_pulses_not_holds():
+    # Regression (found on watch: agent stood at a door and it never opened). Doom's USE is
+    # EDGE-triggered — holding it every frame opens a door only ONCE. auto-USE must PULSE
+    # (alternate on/off across steps) so each contact makes a fresh key-down edge.
+    env = CampaignDoomEnv(wad_path=default_wad(), doom_map="MAP01",
+                          rewards={"auto_use": 1.0})
+    try:
+        env.reset(seed=0)
+        assert env._use_idx is not None
+        # Action 0 (FWD) never presses USE, so auto-USE drives the pulse. Step a few times and
+        # collect the forced USE state — it must ALTERNATE, not stay held at 1.
+        states = []
+        for _ in range(6):
+            env.step(0)
+            states.append(bool(env._use_held))
+        assert any(states) and not all(states), f"USE didn't pulse: {states}"
+        # Specifically: consecutive steps must differ (a fresh edge each press).
+        assert any(states[i] != states[i + 1] for i in range(len(states) - 1))
+    finally:
+        env.close()
+
+
+@pytest.mark.skipif(not __import__("os").path.exists(default_wad()),
+                    reason="freedoom2.wad not bundled")
 def test_campaign_weapon_variety_seeds_spawn_weapon():
     # With the variety reward on, the spawn weapon must be pre-seeded so it doesn't
     # pay out every episode just for holding the starting pistol.

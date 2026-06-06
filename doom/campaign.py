@@ -143,6 +143,7 @@ class CampaignDoomEnv(gym.Env):
         # Auto-USE: open doors / hit switches on contact (see Config.auto_use).
         self._auto_use = bool(r.get("auto_use", 0.0))
         self._use_idx: Optional[int] = None  # set once the button layout is built
+        self._use_held = False  # tracks USE state across steps so auto-USE can PULSE (edges)
         # Discovery reward: pay the first sighting of each new object per episode.
         self._discovery_reward = float(r.get("discovery_reward", 0.0))
         self._seen_objects: set = set()
@@ -524,6 +525,7 @@ class CampaignDoomEnv(gym.Env):
                 except OSError:
                     pass
             self._ep_positions = []
+        self._use_held = False  # fresh USE-pulse state each episode
         self._goal_xy = None
         self._goal_reached = False
         self._prev_goal_dist = None
@@ -545,10 +547,14 @@ class CampaignDoomEnv(gym.Env):
     ) -> Tuple[np.ndarray, float, bool, bool, Dict[str, Any]]:
         buttons = self.actions[int(action)]
         if self._auto_use and self._use_idx is not None and not buttons[self._use_idx]:
-            # Hold USE every frame so doors open / switches fire on contact, without changing
-            # the discrete action the policy chose (copy so the stored action vector is intact).
+            # Doom's USE is EDGE-triggered: it fires on the key-DOWN transition, NOT while held.
+            # Holding USE every frame opens a door only ONCE (the engine needs a release before
+            # it re-fires), so the agent "stood at the door and it never opened" — the exact
+            # failure seen on watch. PULSE it instead (alternate on/off) so each contact makes a
+            # fresh key-down edge. Don't override an action that already chose USE (FWD+USE).
             buttons = list(buttons)
-            buttons[self._use_idx] = 1
+            buttons[self._use_idx] = 0 if self._use_held else 1
+        self._use_held = bool(buttons[self._use_idx]) if self._use_idx is not None else False
         base_reward = self.game.make_action(buttons, self.frame_skip)
         self._ep_base += base_reward
         self._ep_ticks += self.frame_skip

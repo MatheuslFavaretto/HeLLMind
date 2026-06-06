@@ -95,6 +95,35 @@ def bc_cross_entropy(logits, targets):
     return F.cross_entropy(logits, targets)
 
 
+def preprocess_demo_batch(frames_uint8, cfg, obs_space, device):
+    """Convert a batch of recorded PIXEL frames [B,H,W,C_rec] into the policy's obs tensor:
+    channels-first, padded to base_ch (zeros for unrecorded spatial/depth), tiled across the
+    frame stack, and wrapped as a Dict {image, vars} with NEUTRAL vars when game_vars is on.
+    Shared by BC training (behavioral_clone) and BC-regularized fine-tune (rl.bc_finetune)."""
+    import numpy as _np
+    import torch as _th
+    if cfg.game_vars:
+        img_space, vars_space = obs_space["image"], obs_space["vars"]
+    else:
+        img_space, vars_space = obs_space, None
+    c_total = int(img_space.shape[0])           # base_ch × frame_stack
+    base_ch = max(1, c_total // cfg.frame_stack)
+    frames = _np.asarray(frames_uint8, dtype=_np.float32)
+    frames = _np.transpose(frames, (0, 3, 1, 2))            # [B,C_rec,H,W]
+    if frames.shape[1] < base_ch:
+        pad = _np.zeros((frames.shape[0], base_ch - frames.shape[1],
+                         frames.shape[2], frames.shape[3]), dtype=frames.dtype)
+        frames = _np.concatenate([frames, pad], axis=1)
+    elif frames.shape[1] > base_ch:
+        frames = frames[:, :base_ch]
+    stacked = _np.tile(frames, (1, cfg.frame_stack, 1, 1))  # [B, base_ch*stack, H, W]
+    img_t = _th.as_tensor(stacked, device=device)
+    if vars_space is not None:
+        neutral = _np.ones((frames.shape[0], *vars_space.shape), dtype=_np.float32)
+        return {"image": img_t, "vars": _th.as_tensor(neutral, device=device)}
+    return img_t
+
+
 # ---------------------------------------------------------------------------
 # Orchestration  (build the SB3 policy, supervised-train it, save the brain)
 # ---------------------------------------------------------------------------
@@ -137,12 +166,6 @@ def behavioral_clone(cfg, demos_dir: str, epochs: int = 10, batch_size: int = 64
     # The policy obs may be an image Box OR a Dict {image, vars} (game_vars). Resolve the
     # image sub-space and the vars sub-space (if any).
     ospace = model.observation_space
-    if cfg.game_vars:
-        img_space, vars_space = ospace["image"], ospace["vars"]
-    else:
-        img_space, vars_space = ospace, None
-    c_total = int(img_space.shape[0])           # base_ch × frame_stack
-    base_ch = max(1, c_total // cfg.frame_stack)
     n = len(actions)
     idx = np.arange(n)
     for ep in range(epochs):
@@ -150,23 +173,7 @@ def behavioral_clone(cfg, demos_dir: str, epochs: int = 10, batch_size: int = 64
         total = 0.0
         for s in range(0, n, batch_size):
             b = idx[s:s + batch_size]
-            frames = obs[b].astype(np.float32)                  # [B,H,W,C_rec]
-            frames = np.transpose(frames, (0, 3, 1, 2))         # [B,C_rec,H,W]
-            if frames.shape[1] < base_ch:                       # pad unrecorded channels
-                pad = np.zeros((frames.shape[0], base_ch - frames.shape[1],
-                                frames.shape[2], frames.shape[3]), dtype=frames.dtype)
-                frames = np.concatenate([frames, pad], axis=1)  # [B, base_ch, H, W]
-            elif frames.shape[1] > base_ch:
-                frames = frames[:, :base_ch]
-            stacked = np.tile(frames, (1, cfg.frame_stack, 1, 1))  # [B, base_ch*stack, H,W]
-            img_t = torch.as_tensor(stacked, device=device)
-            if vars_space is not None:
-                # Demos lack game-vars (pixel-only); feed NEUTRAL full-health so cloning
-                # learns the visuo-motor map and RL fills in the health behaviour later.
-                neutral = np.ones((len(b), *vars_space.shape), dtype=np.float32)
-                obs_t = {"image": img_t, "vars": torch.as_tensor(neutral, device=device)}
-            else:
-                obs_t = img_t
+            obs_t = preprocess_demo_batch(obs[b], cfg, ospace, device)
             act_t = torch.as_tensor(actions[b], device=device).long()
             dist = policy.get_distribution(obs_t)
             logits = dist.distribution.logits
