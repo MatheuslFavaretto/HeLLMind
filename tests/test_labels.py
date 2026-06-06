@@ -162,3 +162,16 @@ def test_screen_x_projection():
     assert screen_x_of(0, 0, 0, -100, 0) is None              # behind
     left = screen_x_of(0, 0, 0, 100, 100)                     # 45 deg left (CCW) -> left edge
     assert left is not None and left < 0.1
+
+
+def test_map_exit_finds_exit_from_wad():
+    import os
+    from doom.wad_doors import map_exit
+    from doom.campaign import default_wad
+    wad = default_wad()
+    if not os.path.exists(wad):
+        import pytest
+        pytest.skip("freedoom2.wad not bundled")
+    ex = map_exit(wad, "MAP01")
+    assert ex is not None and len(ex) == 2        # an (x, y) exit reference
+    assert map_exit(wad, "NOPE") is None          # missing map → graceful None

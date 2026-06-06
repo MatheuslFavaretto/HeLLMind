@@ -39,10 +39,14 @@ def _lump_dir(data: bytes):
     return out
 
 
-@lru_cache(maxsize=16)
-def map_doors(wad_path: str, map_name: str) -> Tuple[Tuple[int, int], ...]:
-    """Door midpoints (x, y) in map coordinates for `map_name`. Cached per (wad, map).
-    Returns an empty tuple if the WAD/map can't be parsed (so callers degrade gracefully)."""
+# Linedef SPECIAL types that END the level (normal + secret exit, switch + walk-over). The
+# exit isn't an actor, so — like a door — we read its position straight from the map geometry.
+EXIT_SPECIALS = frozenset({11, 51, 52, 124, 197, 198})
+
+
+def _lines_with_special(wad_path: str, map_name: str, specials) -> Tuple[Tuple[int, int], ...]:
+    """Midpoints (x, y) of every linedef in `map_name` whose SPECIAL is in `specials`.
+    Empty tuple if the WAD/map can't be parsed (callers degrade gracefully)."""
     try:
         with open(wad_path, "rb") as f:
             data = f.read()
@@ -61,13 +65,28 @@ def map_doors(wad_path: str, map_name: str) -> Tuple[Tuple[int, int], ...]:
         return ()
     verts = [struct.unpack("<hh", data[vx[0] + j * 4: vx[0] + j * 4 + 4])
              for j in range(vx[1] // 4)]
-    doors: List[Tuple[int, int]] = []
+    out: List[Tuple[int, int]] = []
     for j in range(ld[1] // 14):                       # Doom-format linedef = 14 bytes
         rec = data[ld[0] + j * 14: ld[0] + j * 14 + 14]
         if len(rec) < 14:
             break
         v1, v2, _flags, special, _tag, _fr, _bk = struct.unpack("<7H", rec)
-        if special in DOOR_SPECIALS and v1 < len(verts) and v2 < len(verts):
+        if special in specials and v1 < len(verts) and v2 < len(verts):
             (x1, y1), (x2, y2) = verts[v1], verts[v2]
-            doors.append(((x1 + x2) // 2, (y1 + y2) // 2))
-    return tuple(doors)
+            out.append(((x1 + x2) // 2, (y1 + y2) // 2))
+    return tuple(out)
+
+
+@lru_cache(maxsize=16)
+def map_doors(wad_path: str, map_name: str) -> Tuple[Tuple[int, int], ...]:
+    """Door midpoints (x, y) in map coordinates for `map_name`. Cached per (wad, map)."""
+    return _lines_with_special(wad_path, map_name, DOOR_SPECIALS)
+
+
+@lru_cache(maxsize=16)
+def map_exit(wad_path: str, map_name: str):
+    """Midpoint (x, y) of the level EXIT linedef (None if none found) — the reference point for
+    'how close to the exit did the agent get', available WITHOUT ever reaching it. If a map has
+    several exit lines we return the first (they end the same level)."""
+    exits = _lines_with_special(wad_path, map_name, EXIT_SPECIALS)
+    return exits[0] if exits else None

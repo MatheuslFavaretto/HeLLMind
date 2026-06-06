@@ -340,6 +340,11 @@ class CampaignDoomEnv(gym.Env):
         if self._auto_door_nav or self._semantic:
             from doom.wad_doors import map_doors
             self._doors = list(map_doors(wad_path, doom_map))
+        # Exit position read straight from the WAD — the reference for "how close to the exit"
+        # WITHOUT ever reaching it (metric only; does NOT enable the reward shaping below).
+        from doom.wad_doors import map_exit
+        self._wad_exit_pos = map_exit(wad_path, doom_map)
+        self._exit_ref = None       # metric exit reference (memorised exit OR the WAD exit)
         self._reached_doors = set()
         self._nomove_steps = 0      # consecutive steps with ~no movement (wall-stuck)
         self._nav_target = None     # current door the agent is steering toward (for the minimap)
@@ -656,6 +661,8 @@ class CampaignDoomEnv(gym.Env):
             if self._auto_door_nav or self._semantic:  # reload door positions for the new map
                 from doom.wad_doors import map_doors
                 self._doors = list(map_doors(self._wad_path, self._current_map))
+            from doom.wad_doors import map_exit       # reload the WAD exit for the new map
+            self._wad_exit_pos = map_exit(self._wad_path, self._current_map)
         # Pull a persisted exit for this map (set by a prior run/env that reached it). Read
         # each reset so a parallel env that just discovered the exit benefits the others.
         if self._exit_pos is None and self._exit_store is not None:
@@ -676,13 +683,19 @@ class CampaignDoomEnv(gym.Env):
         self._prev_exit_dist = None
         self._spawn_exit_dist = None
         self._closest_exit_dist = None
+        # Reward shaping baseline: ONLY from a memorised (actually-reached) exit.
         if self._exit_pos is not None and self._spawn_xy is not None:
             sx, sy = self._spawn_xy
             ex, ey = self._exit_pos
             self._prev_exit_dist = ((ex - sx) ** 2 + (ey - sy) ** 2) ** 0.5
-            # Baselines for the dense exit_progress metric (how close it gets to the exit).
-            self._spawn_exit_dist = self._prev_exit_dist
-            self._closest_exit_dist = self._prev_exit_dist
+        # Metric baseline: memorised exit if known, else the WAD exit — so exit_progress works
+        # even before the exit is ever reached. Independent of the reward above.
+        self._exit_ref = self._exit_pos or self._wad_exit_pos
+        if self._exit_ref is not None and self._spawn_xy is not None:
+            sx, sy = self._spawn_xy
+            ex, ey = self._exit_ref
+            self._spawn_exit_dist = ((ex - sx) ** 2 + (ey - sy) ** 2) ** 0.5
+            self._closest_exit_dist = self._spawn_exit_dist
         # Go-Explore: archive the cells the LAST episode reached, then maybe pick a frontier
         # cell as this episode's "return" goal (dense reward guides the agent back to it).
         if self._frontier_store is not None:
@@ -982,8 +995,12 @@ class CampaignDoomEnv(gym.Env):
             if progress > 0:
                 shaped += self._exit_prox_scale * progress * 0.001  # tiny per-unit bonus
             self._prev_exit_dist = cur_dist
-            if self._closest_exit_dist is not None:
-                self._closest_exit_dist = min(self._closest_exit_dist, cur_dist)
+        # Metric ONLY (reward-independent): closest the agent got to the exit REFERENCE (WAD or
+        # memorised), tracked every step so exit_progress is meaningful even at 0% exit_rate.
+        if self._exit_ref is not None and self._closest_exit_dist is not None and not done:
+            ex, ey = self._exit_ref
+            md = ((ex - raw["position_x"]) ** 2 + (ey - raw["position_y"]) ** 2) ** 0.5
+            self._closest_exit_dist = min(self._closest_exit_dist, md)
         # Go-Explore goal shaping: dense reward for returning to this episode's frontier
         # goal. Once within reach_radius the goal is "achieved" — reward stops and the agent
         # explores OUTWARD from that far launch point (the "then explore" half).
