@@ -717,7 +717,8 @@ def main() -> None:
             name_prefix = _dqn_prefix(meta["num_actions"], cfg.game_vars, cfg)
         else:
             name_prefix = brain_prefix("campaign", meta["num_actions"], cfg.use_lstm,
-                                       spatial, depth, automap, cfg.frame_stack, cfg.game_vars)
+                                       spatial, depth, automap, cfg.frame_stack, cfg.game_vars,
+                                       getattr(cfg, "semantic_channel", False))
         ckpt_dir = cfg.checkpoint_dir
         has_brain = bool(
             os.path.exists(os.path.join(ckpt_dir, f"{name_prefix}_final.zip"))

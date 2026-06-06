@@ -160,6 +160,11 @@ class Config:
     # Labels buffer: ground-truth on-screen enemy detection (ViZDoom labels). Does NOT change
     # the obs shape — used for telemetry and an optional engagement reward. No --fresh needed.
     use_labels: bool = os.getenv("USE_LABELS", "1") in ("1", "true", "True")
+    # Semantic channel: paint the DETECTIONS into an extra obs channel the network actually sees
+    # — each on-screen object filled by category (enemy/weapon/health/…) plus projected DOORS —
+    # so the policy perceives "what" is where instead of inferring everything from raw pixels.
+    # Implies use_labels. Changes the obs shape → needs --fresh.
+    semantic_channel: bool = os.getenv("SEMANTIC_CHANNEL", "0") in ("1", "true", "True")
     # Game-vars in the policy: feed normalised HEALTH+AMMO into the network (DFP/Arnold). The
     # agent currently can't SEE its own health → keeps fighting until it dies at low HP. With
     # this it learns to retreat when weak. Makes the obs a Dict → MultiInputPolicy, needs --fresh.

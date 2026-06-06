@@ -285,7 +285,8 @@ def main() -> None:
     # cross-loads with an incompatible one (same guard idea as the action-count `a{N}`).
     from rl.algo import algo_class, brain_prefix, describe, policy_name
     name_prefix = brain_prefix(task, meta["num_actions"], cfg.use_lstm,
-                               cfg.spatial_memory, cfg.depth_perception, cfg.automap, cfg.frame_stack, cfg.game_vars)
+                               cfg.spatial_memory, cfg.depth_perception, cfg.automap, cfg.frame_stack, cfg.game_vars,
+                               getattr(cfg, "semantic_channel", False))
     AlgoClass = algo_class(cfg.use_lstm)
 
     # By DEFAULT, reuse this vault's brain (don't restart from scratch).

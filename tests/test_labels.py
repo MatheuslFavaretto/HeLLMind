@@ -143,3 +143,22 @@ def test_vision_steer_goes_to_open_space():
     assert left[TL] == 1 and left[TR] == 0
     right = vision_steer([0]*N, 0.1, 0.1, 0.9, FWD, TL, TR)
     assert right[TR] == 1 and right[TL] == 0
+
+
+def test_semantic_code_distinct_per_category():
+    from doom.entities import semantic_code
+    codes = {c: semantic_code(c) for c in
+             ("enemy", "weapon", "health", "ammo", "key", "powerup", "item", "door")}
+    assert codes["enemy"] == 255 and codes["door"] == 30
+    assert len(set(codes.values())) == len(codes)        # every category is distinguishable
+    assert semantic_code("projectile") == 0 and semantic_code("self") == 0  # not painted
+
+
+def test_screen_x_projection():
+    from doom.entities import screen_x_of
+    # agent at origin facing east (0 deg), FOV 90 -> half-FOV 45
+    assert abs(screen_x_of(0, 0, 0, 100, 0) - 0.5) < 1e-6      # dead ahead -> centre
+    assert screen_x_of(0, 0, 0, 0, 100) is None               # 90 deg left -> outside FOV
+    assert screen_x_of(0, 0, 0, -100, 0) is None              # behind
+    left = screen_x_of(0, 0, 0, 100, 100)                     # 45 deg left (CCW) -> left edge
+    assert left is not None and left < 0.1

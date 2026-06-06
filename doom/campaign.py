@@ -218,6 +218,7 @@ class CampaignDoomEnv(gym.Env):
         automap: bool = False,
         use_labels: bool = False,
         game_vars: bool = False,
+        semantic_channel: bool = False,
     ) -> None:
         super().__init__()
         self.frame_skip = frame_skip
@@ -227,7 +228,9 @@ class CampaignDoomEnv(gym.Env):
         self._depth = bool(depth_perception)  # extra obs channel: ViZDoom depth buffer
         self._strafe = bool(strafe)           # add sideways-movement actions
         self._automap = bool(automap)         # extra obs channel: native top-down automap
-        self._use_labels = bool(use_labels)   # ground-truth on-screen enemy detection
+        self._semantic = bool(semantic_channel)  # extra obs channel: detections by category
+        # The semantic channel is built from the labels detections, so it needs them on.
+        self._use_labels = bool(use_labels) or self._semantic
         self._game_vars = bool(game_vars)     # feed HEALTH/AMMO into the policy (DFP/Arnold)
         self._engagement_reward = float((rewards or {}).get("engagement_reward", 0.0))
         r = rewards or {}
@@ -331,9 +334,9 @@ class CampaignDoomEnv(gym.Env):
         self._current_map = doom_map
         self._pending_map: Optional[str] = None
         self._wad_path = wad_path
-        # Auto-door-nav state: door positions (from the WAD), which we've reached, stuck counter.
+        # Door positions (from the WAD) — needed by auto-door-nav AND the semantic channel.
         self._doors = []
-        if self._auto_door_nav:
+        if self._auto_door_nav or self._semantic:
             from doom.wad_doors import map_doors
             self._doors = list(map_doors(wad_path, doom_map))
         self._reached_doors = set()
@@ -414,8 +417,7 @@ class CampaignDoomEnv(gym.Env):
         self._fwd_idx = bidx.get("MOVE_FORWARD")  # auto-door-nav: push toward the target door
 
         self.action_space = spaces.Discrete(len(self.actions))
-        channels = (1 + (1 if self._spatial else 0) + (1 if self._depth else 0)
-                    + (1 if self._automap else 0))
+        channels = self._image_channels()   # single source of truth (incl. semantic channel)
         image_space = spaces.Box(
             low=0, high=255, shape=(self.height, self.width, channels), dtype=np.uint8
         )
@@ -480,6 +482,8 @@ class CampaignDoomEnv(gym.Env):
             channels.append(self._depth_frame(state))
         if self._automap:  # native top-down map of the explored layout
             channels.append(self._automap_frame(state))
+        if self._semantic:  # detections (objects by category + doors) painted into the view
+            channels.append(self._semantic_frame())
         return np.stack(channels, axis=2)
 
     def _gamevar_vector(self) -> np.ndarray:
@@ -499,7 +503,40 @@ class CampaignDoomEnv(gym.Env):
 
     def _image_channels(self) -> int:
         return (1 + (1 if self._spatial else 0) + (1 if self._depth else 0)
-                + (1 if self._automap else 0))
+                + (1 if self._automap else 0) + (1 if self._semantic else 0))
+
+    def _semantic_frame(self) -> np.ndarray:
+        """Detections painted into a HxW uint8 channel the policy SEES: each on-screen object
+        filled by category code (enemy/weapon/health/…), plus any unreached DOORS projected to
+        screen-x. Lets the network perceive 'what is where' instead of inferring from pixels."""
+        from doom.entities import semantic_code, screen_x_of
+        canvas = np.zeros((self.height, self.width), dtype=np.uint8)
+        # On-screen objects (normalised bbox + category already computed this step).
+        for o in self._visible_objects:
+            code = semantic_code(o.get("category", "item"))
+            if code == 0:
+                continue
+            x0 = int(o["x"] * self.width); y0 = int(o["y"] * self.height)
+            x1 = int((o["x"] + o["w"]) * self.width); y1 = int((o["y"] + o["h"]) * self.height)
+            canvas[max(0, y0):max(0, y1), max(0, x0):max(0, x1)] = code
+        # Doors (not actors): project each not-yet-reached door into the view as a vertical band.
+        if self._doors and self._last_vars:
+            px = float(self._last_vars.get("position_x", 0.0))
+            py = float(self._last_vars.get("position_y", 0.0))
+            ang = float(self._last_vars.get("angle", 0.0))
+            code = semantic_code("door")
+            half = max(2, self.width // 28)              # band half-width in pixels
+            for i, (dx, dy) in enumerate(self._doors):
+                if i in self._reached_doors:
+                    continue
+                sx = screen_x_of(px, py, ang, dx, dy)
+                if sx is None:
+                    continue
+                cx = int(sx * self.width)
+                # Don't overwrite a nearer object already painted (objects > door priority).
+                band = canvas[:, max(0, cx - half):cx + half]
+                band[band == 0] = code
+        return canvas
 
     def _depth_frame(self, state) -> np.ndarray:
         """Resized depth buffer as a uint8 channel (0 = near, 255 = far)."""
@@ -615,7 +652,7 @@ class CampaignDoomEnv(gym.Env):
             self._pending_map = None
             self._walls_pending = True  # new map -> resend the geometry
             self._exit_pos = None       # new map = unknown exit position
-            if self._auto_door_nav:     # reload door positions for the new map
+            if self._auto_door_nav or self._semantic:  # reload door positions for the new map
                 from doom.wad_doors import map_doors
                 self._doors = list(map_doors(self._wad_path, self._current_map))
         # Pull a persisted exit for this map (set by a prior run/env that reached it). Read
@@ -1069,6 +1106,7 @@ def make_campaign_env(
             automap=cfg.automap,
             use_labels=cfg.use_labels,
             game_vars=getattr(cfg, "game_vars", False),
+            semantic_channel=getattr(cfg, "semantic_channel", False),
         )
         env.reset(seed=cfg.seed + rank)
         return env

@@ -901,7 +901,8 @@ def cmd_intel(a) -> int:
         n_actions = 11
     name_prefix = brain_prefix("campaign", n_actions, cfg.use_lstm,
                                cfg.spatial_memory, cfg.depth_perception, cfg.automap,
-                               cfg.frame_stack, cfg.game_vars)
+                               cfg.frame_stack, cfg.game_vars,
+                               getattr(cfg, "semantic_channel", False))
     from rl.train import _latest_checkpoint
     brain_path = _latest_checkpoint(cfg, name_prefix)
 

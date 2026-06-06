@@ -236,7 +236,8 @@ def main() -> None:
         task = "campaign" if cfg.campaign else cfg.scenario
         name_prefix = brain_prefix(task, meta["num_actions"], cfg.use_lstm,
                                    cfg.spatial_memory, cfg.depth_perception, cfg.automap,
-                                   cfg.frame_stack, cfg.game_vars)
+                                   cfg.frame_stack, cfg.game_vars,
+                                   getattr(cfg, "semantic_channel", False))
     button_names = meta["button_names"]
 
     path = args.path or _latest_checkpoint(cfg, name_prefix)

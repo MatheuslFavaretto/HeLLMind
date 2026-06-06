@@ -49,6 +49,33 @@ _CATEGORY_KEYWORDS = [
 ]
 
 
+# Category → uint8 code painted into the SEMANTIC obs channel (the network's "what is where").
+# Spread across 0..255 so the CNN can separate them; 0 = empty. Doors get their own code.
+SEMANTIC_CODES = {
+    "enemy": 255, "weapon": 210, "health": 180, "armor": 150, "ammo": 120,
+    "key": 95, "powerup": 70, "item": 45, "door": 30, "projectile": 0, "self": 0,
+}
+
+
+def semantic_code(category: str) -> int:
+    """uint8 value for a category in the semantic channel (0 if it shouldn't be painted)."""
+    return SEMANTIC_CODES.get(category, 0)
+
+
+def screen_x_of(px: float, py: float, angle_deg: float, tx: float, ty: float,
+                fov_deg: float = 90.0):
+    """Project a world point (tx,ty) into normalised screen-x [0,1] for an agent at (px,py)
+    facing angle_deg (Doom convention: 0=east, CCW). Returns None if the point is behind the
+    agent or outside the horizontal FOV. Used to paint DOORS (which aren't actors) into the
+    semantic channel. Left of view → 0.0, right → 1.0."""
+    import math
+    bearing = math.degrees(math.atan2(ty - py, tx - px))
+    rel = (bearing - angle_deg + 180.0) % 360.0 - 180.0   # [-180,180], +=CCW=left
+    if abs(rel) > fov_deg / 2.0:
+        return None
+    return 0.5 - rel / fov_deg                            # CCW(left) → smaller x
+
+
 def classify_object(name: str) -> str:
     """Category of a visible object for the detector overlay: enemy / weapon / health /
     armor / ammo / key / powerup / self / item. Drives the box colour + label."""

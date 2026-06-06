@@ -187,7 +187,8 @@ def behavioral_clone(cfg, demos_dir: str, epochs: int = 10, batch_size: int = 64
     meta = campaign_metadata(cfg.wad_path, cfg.maps[0], strafe=cfg.strafe)
     name_prefix = brain_prefix("campaign", meta["num_actions"], cfg.use_lstm,
                                cfg.spatial_memory, cfg.depth_perception, cfg.automap,
-                               cfg.frame_stack, cfg.game_vars)
+                               cfg.frame_stack, cfg.game_vars,
+                               getattr(cfg, "semantic_channel", False))
     os.makedirs(cfg.checkpoint_dir, exist_ok=True)
     out = os.path.join(cfg.checkpoint_dir, f"{name_prefix}_final.zip")
     model.save(out)
