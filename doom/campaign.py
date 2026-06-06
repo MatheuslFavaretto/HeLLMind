@@ -92,6 +92,32 @@ def default_wad() -> str:
     return os.path.join(os.path.dirname(vzd.scenarios_path), "freedoom2.wad")
 
 
+def aim_assist(buttons, enemies, turn_left, turn_right, attack, dead_zone: float = 0.08):
+    """Auto-aim combat assist (pure, so it's unit-testable without ViZDoom). Given the visible
+    `enemies` (dicts with normalised x/w), turn the agent toward the NEAREST (biggest box) and
+    fire only when it's roughly centred; HOLD fire when no enemy is visible (so it stops
+    spraying at walls). Returns a NEW button vector."""
+    out = list(buttons)
+    if attack is None:
+        return out
+    if enemies:
+        tgt = max(enemies, key=lambda o: o.get("w", 0) * o.get("h", 0))
+        offset = (tgt.get("x", 0) + tgt.get("w", 0) / 2.0) - 0.5  # <0 left, >0 right of centre
+        if offset < -dead_zone and turn_left is not None:
+            out[turn_left] = 1
+            if turn_right is not None:
+                out[turn_right] = 0
+        elif offset > dead_zone and turn_right is not None:
+            out[turn_right] = 1
+            if turn_left is not None:
+                out[turn_left] = 0
+        else:
+            out[attack] = 1   # centred on the enemy → FIRE
+    else:
+        out[attack] = 0       # no target → hold fire (don't waste ammo on walls)
+    return out
+
+
 def mode_scales(enemies_in_view: int, split_on: bool, factor: float):
     """Combat/exploration decoupling weights (pure, so it's unit-testable without ViZDoom).
 
@@ -153,6 +179,10 @@ class CampaignDoomEnv(gym.Env):
         # Auto-best-weapon: each frame, force-select the strongest owned weapon so the agent
         # always fights with its best gun (it shouldn't have to learn weapon management).
         self._auto_best_weapon = bool(r.get("auto_best_weapon", 0.0))
+        # Auto-aim combat assist: turn toward the nearest visible enemy + hold fire unless one
+        # is roughly centred (aiming from 84x84 grey pixels is near-impossible to learn).
+        self._auto_aim = bool(r.get("auto_aim", 0.0))
+        self._visible_objects = []  # last frame's detected objects (used to aim this frame)
         # Discovery reward: pay the first sighting of each new object per episode.
         self._discovery_reward = float(r.get("discovery_reward", 0.0))
         self._seen_objects: set = set()
@@ -297,6 +327,10 @@ class CampaignDoomEnv(gym.Env):
         self._use_idx = bidx.get("USE")  # for auto-USE (open doors on contact)
         # auto-best-weapon: button index per weapon slot, so we can force-select the best gun.
         self._weapon_btn = {s: bidx.get(f"SELECT_WEAPON{s}") for s in range(1, 8)}
+        # auto-aim: turn + fire button indices (to orient toward enemies and gate the trigger).
+        self._turn_left_idx = bidx.get("TURN_LEFT")
+        self._turn_right_idx = bidx.get("TURN_RIGHT")
+        self._attack_btn_idx = bidx.get("ATTACK")
 
         self.action_space = spaces.Discrete(len(self.actions))
         channels = (1 + (1 if self._spatial else 0) + (1 if self._depth else 0)
@@ -537,6 +571,7 @@ class CampaignDoomEnv(gym.Env):
                     pass
             self._ep_positions = []
         self._use_held = False  # fresh USE-pulse state each episode
+        self._visible_objects = []  # no stale detections from the previous episode
         self._goal_xy = None
         self._goal_reached = False
         self._prev_goal_dist = None
@@ -587,6 +622,12 @@ class CampaignDoomEnv(gym.Env):
             if btn is not None and best != cur:
                 buttons = list(buttons)
                 buttons[btn] = 1
+        # Auto-aim combat assist: orient toward the nearest visible enemy and gate the trigger,
+        # using LAST frame's detections (enemies don't teleport, so a 1-frame lag is fine).
+        if self._auto_aim and self._attack_btn_idx is not None:
+            enemies = [o for o in self._visible_objects if o.get("category") == "enemy"]
+            buttons = aim_assist(buttons, enemies, self._turn_left_idx,
+                                 self._turn_right_idx, self._attack_btn_idx)
         base_reward = self.game.make_action(buttons, self.frame_skip)
         self._ep_base += base_reward
         self._ep_ticks += self.frame_skip

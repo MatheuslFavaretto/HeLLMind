@@ -102,6 +102,27 @@ def test_auto_use_pulses_not_holds():
         env.close()
 
 
+def test_aim_assist_turns_toward_enemy_and_holds_fire():
+    # Combat assist the user asked for: turn toward the nearest enemy, fire when centred,
+    # and HOLD fire when there's no target (stop spraying at walls). Pure logic.
+    from doom.campaign import aim_assist
+    N, ATK, TL, TR = 10, 4, 2, 3
+    base = [0] * N
+    left  = aim_assist(base, [{"x": 0.05, "w": 0.1, "h": 0.2}], TL, TR, ATK)
+    right = aim_assist(base, [{"x": 0.85, "w": 0.1, "h": 0.2}], TL, TR, ATK)
+    centre = aim_assist(base, [{"x": 0.46, "w": 0.08, "h": 0.2}], TL, TR, ATK)
+    assert left[TL] == 1 and left[ATK] == 0        # enemy left → turn left, don't fire yet
+    assert right[TR] == 1 and right[ATK] == 0      # enemy right → turn right
+    assert centre[ATK] == 1                        # centred → fire
+    # No enemy but the policy chose ATTACK → suppressed (no ammo wasted on walls).
+    shooting = [0] * N; shooting[ATK] = 1
+    assert aim_assist(shooting, [], TL, TR, ATK)[ATK] == 0
+    # Nearest = biggest box: a close enemy on the right wins over a tiny one on the left.
+    two = aim_assist(base, [{"x": 0.0, "w": 0.02, "h": 0.02},
+                            {"x": 0.8, "w": 0.2, "h": 0.4}], TL, TR, ATK)
+    assert two[TR] == 1
+
+
 @pytest.mark.skipif(not __import__("os").path.exists(default_wad()),
                     reason="freedoom2.wad not bundled")
 def test_auto_best_weapon_picks_highest_owned_slot():
