@@ -255,6 +255,7 @@ class CampaignDoomEnv(gym.Env):
         self._nearest_monster_dist = 1e9
         self._nearest_monster_xy = None
         self._combat_cooldown = 0   # steps to keep hunting after last seeing an enemy
+        self._enemies_seen = set()  # distinct enemy ids seen this episode
         # Discovery reward: pay the first sighting of each new object per episode.
         self._discovery_reward = float(r.get("discovery_reward", 0.0))
         self._seen_objects: set = set()
@@ -698,6 +699,7 @@ class CampaignDoomEnv(gym.Env):
         self._combat_cooldown = 0
         self._nearest_monster_xy = None
         self._nearest_monster_dist = 1e9
+        self._enemies_seen = set()   # distinct enemy ids seen this episode ("how many I saw")
         self._goal_xy = None
         self._goal_reached = False
         self._prev_goal_dist = None
@@ -854,6 +856,12 @@ class CampaignDoomEnv(gym.Env):
             dx = raw["position_x"] - self._last_vars["position_x"]
             dy = raw["position_y"] - self._last_vars["position_y"]
             deltas["distance"] = float((dx * dx + dy * dy) ** 0.5)
+            # "How many heals did I consume" — a health INCREASE means a medikit/stimpack pickup
+            # (health isn't monotonic, so it's not in the delta loop above). Sums in the tracker.
+            heal = raw["health"] - self._last_vars["health"]
+            if heal > 0:
+                deltas["heal_pickups"] = 1.0
+                deltas["heal_hp"] = float(heal)
             # Wall-stuck tracking for auto-door-nav (barely moved this step → escape next step).
             self._nomove_steps = self._nomove_steps + 1 if deltas["distance"] < 4.0 else 0
             levels = {n: raw[n] for n in LEVELS}
@@ -897,6 +905,12 @@ class CampaignDoomEnv(gym.Env):
                 sw = float(self.game.get_screen_width() or self.width)
                 sh = float(self.game.get_screen_height() or self.height)
                 self._visible_objects = visible_objects(labels, sw, sh)
+                # "How many enemies did I see" — accumulate DISTINCT enemy actor ids this episode.
+                from doom.entities import classify_object
+                for lb in (labels or []):
+                    if classify_object(getattr(lb, "object_name", "")) == "enemy":
+                        self._enemies_seen.add(getattr(lb, "object_id",
+                                                       getattr(lb, "object_name", id(lb))))
                 # Nearest LIVING monster anywhere in the level (objects buffer) — so combat can
                 # hunt one that just left the agent's view instead of abandoning it for a door.
                 from doom.entities import is_monster
@@ -1049,6 +1063,7 @@ class CampaignDoomEnv(gym.Env):
                 doom["exit_progress"] = float(max(0.0, min(1.0, frac)))
             doom["base_return"] = self._ep_base  # native episode return (no shaping)
             doom["coverage_cells"] = len(self._visited)  # for frontier curriculum
+            doom["enemies_seen"] = len(self._enemies_seen)  # distinct enemies seen this episode
             # The actual cells visited this episode -> persistent per-map heatmap memory.
             # Once per episode (off the hot path), so within the ±2% budget.
             doom["visited_cells"] = [[gx, gy] for (gx, gy) in self._visited]

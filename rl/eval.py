@@ -279,6 +279,17 @@ def main() -> None:
     if s.get("terminals"):
         print(f"  episode endings: {s['terminals']}")
     print(f"  mean ep length:  {s['mean_episode_length']:.0f} steps")
+    # "What happened this run" — richer than the binary exit_rate (the metrics you asked for).
+    n_eps = max(int(s.get("episodes", 1)), 1)
+    print("\n  -- what happened (per episode) --")
+    print(f"  exit progress:   {s.get('exit_progress', 0.0):.0%}   (how close to the level exit)")
+    print(f"  enemies seen:    {s.get('enemies_seen_per_episode', 0.0):.1f}")
+    print(f"  shots fired:     {s.get('shots_fired_per_episode', 0.0):.1f}   "
+          f"(landed {s.get('shots_hit', 0.0)/n_eps:.1f}, acc {s.get('shooting_accuracy', 0.0):.0%})")
+    print(f"  hits taken:      {s.get('hits_taken_per_episode', 0.0):.1f}   "
+          f"({s.get('damage_taken', 0.0)/n_eps:.0f} HP of damage)")
+    print(f"  heals consumed:  {s.get('heals_consumed', 0.0)/n_eps:.1f}   "
+          f"(+{s.get('health_recovered', 0.0)/n_eps:.0f} HP)")
     if "recall_hit_rate" in s:
         print(f"  demo recall:     {s['recall_hit_rate']:.0%} of steps replayed a human action "
               f"({s['recall_hits']} steps from memory)")

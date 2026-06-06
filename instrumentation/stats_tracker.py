@@ -63,6 +63,7 @@ class StatsTracker:
         self.terminals: Counter = Counter()
         self.coverage_cells_per_ep: List[int] = []  # distinct cells per episode
         self.exit_progress_per_ep: List[float] = []  # how close to the exit (dense, fairer)
+        self.enemies_seen_per_ep: List[int] = []     # distinct enemies seen per episode
         # Ordered trajectory of ONE representative env (env 0) so the minimap can draw
         # the path as a CONNECTED LINE (visit order), not just an unordered heatmap.
         # The heatmap mixes all parallel envs; an ordered line only makes sense per env.
@@ -128,6 +129,8 @@ class StatsTracker:
                         self.coverage_cells_per_ep.append(int(doom["coverage_cells"]))
                     if "exit_progress" in doom:
                         self.exit_progress_per_ep.append(float(doom["exit_progress"]))
+                    if "enemies_seen" in doom:
+                        self.enemies_seen_per_ep.append(int(doom["enemies_seen"]))
                 # env 0 finished an episode: keep its (ordered) path as the one to draw,
                 # then start a fresh trajectory for the next episode.
                 if idx == 0 and len(self._env0_path) >= 2:
@@ -194,6 +197,13 @@ class StatsTracker:
             "damage_taken": d.get("damage_taken", 0.0),
             "deaths": d.get("deathcount", 0.0),
             "items_collected": d.get("itemcount", 0.0),
+            # "What happened this run" (per the user's preferred, non-binary metrics):
+            "enemies_seen_total": float(sum(self.enemies_seen_per_ep)),
+            "enemies_seen_per_episode": _mean(self.enemies_seen_per_ep),
+            "heals_consumed": d.get("heal_pickups", 0.0),    # health pickups taken
+            "health_recovered": d.get("heal_hp", 0.0),       # total HP regained from them
+            "hits_taken_per_episode": (d.get("hits_taken", 0.0) / n_eps) if n_eps else 0.0,
+            "shots_fired_per_episode": (float(attack_count) / n_eps) if n_eps else 0.0,
             # aim (hits vs misses)
             "shots_fired": float(attack_count),
             "shots_hit": shots,
