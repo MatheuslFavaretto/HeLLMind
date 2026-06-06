@@ -136,6 +136,11 @@ class Config:
     # enemy is visible. Fixes "sprays at walls / never aims" — aiming from 84x84 grey pixels is
     # near-impossible to learn, so we assist it (like auto-USE for doors). On by default.
     auto_aim: bool = os.getenv("AUTO_AIM", "1") in ("1", "true", "True")
+    # Auto-door-nav: when NO enemy is visible, steer toward the nearest not-yet-reached door
+    # (read from the WAD) and push forward — with a wall-escape sweep when it gets stuck. Doors
+    # aren't visible like actors, but the agent doesn't need to SEE them: auto-USE opens them on
+    # contact, so this just gets it THERE. Crude potential-field nav (no full pathfinding).
+    auto_door_nav: bool = os.getenv("AUTO_DOOR_NAV", "1") in ("1", "true", "True")
     discovery_reward: float = float(os.getenv("DISCOVERY_REWARD", "0.0"))
     bestiary_reward: bool = os.getenv("BESTIARY_REWARD", "0") in ("1", "true", "True")
     # Spatial memory: feed the agent a 2nd obs channel of where it has already been
@@ -229,6 +234,7 @@ class Config:
             "auto_use": float(self.auto_use),
             "auto_best_weapon": float(self.auto_best_weapon),
             "auto_aim": float(self.auto_aim),
+            "auto_door_nav": float(self.auto_door_nav),
             "discovery_reward": self.discovery_reward,
             "weapon_variety_reward": self.weapon_variety_reward,
             "use_rnd":  float(self.use_rnd),

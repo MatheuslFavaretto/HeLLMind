@@ -108,3 +108,27 @@ def test_visible_object_names_empty():
     from doom.entities import visible_object_names
     assert visible_object_names(None) == set()
     assert visible_object_names([]) == set()
+
+
+def test_steer_toward_turns_to_target():
+    from doom.campaign import steer_toward
+    N, FWD, TL, TR = 10, 0, 2, 3
+    # facing east (0deg); target north -> turn left (ccw); target south -> turn right
+    assert steer_toward([0]*N, 0, 0, 0, 0, 100, FWD, TL, TR)[TL] == 1
+    assert steer_toward([0]*N, 0, 0, 0, 0, -100, FWD, TL, TR)[TR] == 1
+    # aligned east -> go forward, no turns
+    al = steer_toward([0]*N, 0, 0, 0, 100, 0, FWD, TL, TR)
+    assert al[FWD] == 1 and al[TL] == 0 and al[TR] == 0
+
+
+def test_map_doors_finds_real_doors():
+    import os
+    from doom.wad_doors import map_doors
+    from doom.campaign import default_wad
+    wad = default_wad()
+    if not os.path.exists(wad):
+        import pytest
+        pytest.skip("freedoom2.wad not bundled")
+    doors = map_doors(wad, "MAP01")
+    assert 5 <= len(doors) <= 40            # the real handful, not the 103 geometry false-positives
+    assert map_doors(wad, "NOPE") == ()     # missing map → graceful empty

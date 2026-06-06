@@ -105,7 +105,7 @@ def evaluate(cfg: Config, path: str, button_names: list, episodes: int = 20,
         if _win is not None:
             try:
                 import cv2 as _cv2
-                from doom.overlay import draw_hud, draw_object_boxes
+                from doom.overlay import draw_hud, draw_object_boxes, draw_door_map
                 img_obs = obs["image"] if isinstance(obs, dict) else obs
                 frame = np.asarray(img_obs)[0, :, :, 0]   # first channel, env 0
                 bgr = _cv2.cvtColor(
@@ -114,6 +114,8 @@ def evaluate(cfg: Config, path: str, button_names: list, episodes: int = 20,
                 doom_i = (infos[0].get("doom") or {}) if infos else {}
                 # Squares around EVERY object the agent sees (the on-screen detector).
                 draw_object_boxes(bgr, doom_i.get("objects"), 420, 420)
+                # Door minimap (top-right): where the doors are + where the agent is headed.
+                draw_door_map(bgr, doom_i.get("navmap"))
                 lvl = doom_i.get("levels", {})
                 if lvl:
                     draw_hud(bgr,

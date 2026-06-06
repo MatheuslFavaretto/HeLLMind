@@ -130,6 +130,56 @@ def draw_minimap(img: np.ndarray, automap: np.ndarray,
     return img
 
 
+def draw_door_map(img: np.ndarray, navmap: dict, size: int = 130, margin: int = 6) -> np.ndarray:
+    """Top-down minimap (top-right corner) plotting the DOORS, the agent (dot + facing line) and
+    the current target door. Lets you SEE where the doors are and where the agent is headed —
+    doors aren't visible like actors, so this is how the agent 'shows' them."""
+    if not _CV2 or not navmap:
+        return img
+    doors = navmap.get("doors") or []
+    agent = navmap.get("agent")
+    if not doors or not agent:
+        return img
+    import math
+    ax, ay, ang = agent
+    reached = set(navmap.get("reached") or [])
+    target = navmap.get("target")
+    xs = [d[0] for d in doors] + [ax]
+    ys = [d[1] for d in doors] + [ay]
+    lo_x, hi_x, lo_y, hi_y = min(xs), max(xs), min(ys), max(ys)
+    span = max(hi_x - lo_x, hi_y - lo_y, 1.0)
+    pad = 10
+
+    def to_px(wx, wy):
+        # map world (x right, y UP) → image (x right, y DOWN), fit into the box with padding.
+        fx = (wx - lo_x) / span
+        fy = (wy - lo_y) / span
+        return (pad + int(fx * (size - 2 * pad)),
+                size - pad - int(fy * (size - 2 * pad)))
+
+    h, w = img.shape[:2]
+    x0 = w - size - margin
+    panel = img[margin:margin + size, x0:x0 + size]
+    panel[:] = (28, 22, 16)                               # dark backdrop
+    for i, (dx, dy) in enumerate(doors):
+        px, py = to_px(dx, dy)
+        col = (90, 90, 90) if i in reached else (255, 80, 200)   # grey=opened, magenta=todo
+        cv2.rectangle(panel, (px - 3, py - 3), (px + 3, py + 3), col, -1)
+    if target:
+        tx, ty = to_px(*target)
+        cv2.circle(panel, (tx, ty), 6, (0, 208, 255), 2)         # gold ring = current target
+    apx, apy = to_px(ax, ay)
+    cv2.circle(panel, (apx, apy), 4, (80, 220, 80), -1)          # green = agent
+    # facing line (Doom angle: 0=east, ccw; image y is down → negate the y component)
+    fx = apx + int(12 * math.cos(math.radians(ang)))
+    fy = apy - int(12 * math.sin(math.radians(ang)))
+    cv2.line(panel, (apx, apy), (fx, fy), (80, 220, 80), 1)
+    cv2.rectangle(panel, (0, 0), (size - 1, size - 1), _BLACK, 1)
+    cv2.putText(img, "DOORS", (x0, margin + size + 11),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.34, (255, 80, 200), 1, cv2.LINE_AA)
+    return img
+
+
 def render_frame(state: Any, cfg, frame_obs: Optional[np.ndarray] = None,
                  render_size: tuple = (420, 420)) -> Optional[np.ndarray]:
     """Compose a full annotated frame for doom-cli watch --overlay.
