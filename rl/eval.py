@@ -295,6 +295,9 @@ def main() -> None:
     print(f"  kill conversion: {s.get('kill_conversion', 0.0):.0%}   (enemies killed of those seen)")
     if s.get("reaction_ticks"):
         print(f"  reaction:        {s.get('reaction_ticks', 0.0):.0f} ticks (enemy seen → first shot)")
+    if s.get("nearest_enemy_dist"):
+        print(f"  enemy distance:  {s.get('nearest_enemy_dist', 0.0):.0f} units avg "
+              f"(lower = lets them close in)")
 
     print("  -- MOVEMENT --")
     print(f"  explored:        {(s.get('map_coverage', {}) or {}).get('explored_fraction', 0.0):.0%}   "

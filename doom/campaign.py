@@ -1114,6 +1114,8 @@ class CampaignDoomEnv(gym.Env):
             doom["objects"] = self._visible_objects  # detector overlay: boxes around everything
             if self._last_nearest_centered is not None:
                 doom["nearest_centered"] = float(self._last_nearest_centered)  # aim quality
+            if self._nearest_monster_dist < 1e9:   # how close the nearest enemy is (positioning)
+                doom["nearest_enemy_dist"] = float(self._nearest_monster_dist)
             if self._combat_explore_split:
                 doom["mode"] = "combat" if self._enemies_in_view > 0 else "explore"
         if self._auto_door_nav and self._doors and self._last_vars:

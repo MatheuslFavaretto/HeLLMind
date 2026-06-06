@@ -75,6 +75,7 @@ class StatsTracker:
         self.best_weapon_frac_per_ep: List[float] = []  # share wielding strongest owned gun
         self.weapon_shots: Counter = Counter()       # shots fired per weapon slot
         self.weapon_hits: Counter = Counter()        # hits landed per weapon slot
+        self.nearest_enemy_samples: List[float] = []  # distance to nearest enemy (positioning)
         # Ordered trajectory of ONE representative env (env 0) so the minimap can draw
         # the path as a CONNECTED LINE (visit order), not just an unordered heatmap.
         # The heatmap mixes all parallel envs; an ordered line only makes sense per env.
@@ -95,6 +96,8 @@ class StatsTracker:
                 # Aim quality: how off-centre the nearest enemy was (only when one was visible).
                 if "nearest_centered" in doom:
                     self.nearest_centered_samples.append(float(doom["nearest_centered"]))
+                if "nearest_enemy_dist" in doom:
+                    self.nearest_enemy_samples.append(float(doom["nearest_enemy_dist"]))
                 # Reward breakdown: what's driving the agent (combat/explore/engage/...).
                 for k, v in (doom.get("reward_parts") or {}).items():
                     self.reward_parts_sum[k] = self.reward_parts_sum.get(k, 0.0) + float(v)
@@ -369,6 +372,8 @@ class StatsTracker:
         out["low_health_fraction"] = (sum(1 for h in hp if h < 30) / len(hp)) if hp else 0.0
         am = self.level_samples.get("ammo2", [])
         out["out_of_ammo_fraction"] = (sum(1 for a in am if a <= 0) / len(am)) if am else 0.0
+        if self.nearest_enemy_samples:   # mean distance to the nearest enemy (positioning)
+            out["nearest_enemy_dist"] = float(np.mean(self.nearest_enemy_samples))
         # Movement: circling — share of position samples on an already-visited cell.
         total_visits = sum(self.cell_counts.values())
         out["revisit_rate"] = ((total_visits - len(self.cell_counts)) / total_visits
