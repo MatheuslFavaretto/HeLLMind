@@ -52,15 +52,20 @@ def frame_descriptor(frame: np.ndarray) -> np.ndarray:
 class DemoRetriever:
     """Index of (frame descriptor → action) over all human demos; nearest-neighbour lookup."""
 
-    def __init__(self, demos_dir: str, skip_noop: bool = False, noop_action: int = 0):
+    def __init__(self, demos_dir: str, skip_noop: bool = False, noop_action: int = 0,
+                 encoder=None):
         """Load every .npz demo and build the descriptor matrix.
 
         skip_noop drops frames whose action is `noop_action` (the human idling) so retrieval
-        suggests an ACTIVE move rather than freezing — off by default (keep it faithful)."""
-        self.descriptors = np.zeros((0, GRID * GRID), dtype=np.float32)
+        suggests an ACTIVE move rather than freezing — off by default (keep it faithful).
+        encoder: an optional FrameEncoder (learned embedding). When given, frames are embedded
+        with it instead of the coarse pixel descriptor — better at matching 'same situation'."""
+        self.encoder = encoder
         self.actions = np.zeros((0,), dtype=np.int64)
+        self.descriptors = np.zeros((0, GRID * GRID), dtype=np.float32)
         self.n_demos = 0
         descs, acts = [], []
+        embed = (lambda f: encoder.embed(f)) if encoder is not None else frame_descriptor
         for path in sorted(glob.glob(os.path.join(demos_dir, "*.npz"))):
             try:
                 d = np.load(path)
@@ -76,7 +81,7 @@ class DemoRetriever:
             for i in range(len(a)):
                 if skip_noop and a[i] == noop_action:
                     continue
-                descs.append(frame_descriptor(obs[i]))
+                descs.append(embed(obs[i]))
                 acts.append(int(a[i]))
         if descs:
             self.descriptors = np.stack(descs).astype(np.float32)
@@ -92,7 +97,7 @@ class DemoRetriever:
         the caller should then defer to the policy."""
         if len(self) == 0:
             return None, 0.0
-        q = frame_descriptor(frame)                      # L2-normalised
+        q = self.encoder.embed(frame) if self.encoder is not None else frame_descriptor(frame)
         sims = self.descriptors @ q                      # cosine sim (both normalised)
         j = int(np.argmax(sims))
         best = float(sims[j])

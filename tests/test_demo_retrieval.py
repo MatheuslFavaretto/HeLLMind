@@ -72,3 +72,35 @@ def test_empty_dir_is_safe(tmp_path):
     r = DemoRetriever(str(tmp_path))
     assert len(r) == 0
     assert r.retrieve(np.zeros((84, 84, 1), dtype=np.uint8), 0.9) == (None, 0.0)
+
+
+def test_frame_encoder_trains_and_embeds(tmp_path):
+    import numpy as np
+    pytest.importorskip("torch")
+    from rl.frame_encoder import train_frame_encoder, FrameEncoder, EMBED_DIM
+    # Two distinct structured frames, flagged successful.
+    f1 = np.zeros((84, 84, 1), dtype=np.uint8); f1[:42] = 200
+    f2 = np.zeros((84, 84, 1), dtype=np.uint8); f2[:, :42] = 200
+    obs = np.repeat(np.stack([f1, f2]), 8, axis=0)         # 16 frames
+    _write_demo(tmp_path / "d.npz", obs, [0, 1] * 8)
+    out = train_frame_encoder(str(tmp_path), out_path=str(tmp_path / "enc.pt"),
+                              epochs=2, batch_size=8)
+    enc = FrameEncoder(out)
+    v = enc.embed(f1)
+    assert v.shape == (EMBED_DIM,)
+    assert np.isclose(np.linalg.norm(v), 1.0, atol=1e-4)   # L2-normalised
+
+
+def test_retriever_uses_encoder(tmp_path):
+    import numpy as np
+    pytest.importorskip("torch")
+    from rl.frame_encoder import train_frame_encoder, FrameEncoder
+    f1 = np.zeros((84, 84, 1), dtype=np.uint8); f1[:42] = 200
+    f2 = np.zeros((84, 84, 1), dtype=np.uint8); f2[:, :42] = 200
+    obs = np.repeat(np.stack([f1, f2]), 8, axis=0)
+    _write_demo(tmp_path / "d.npz", obs, [3, 7] * 8)
+    out = train_frame_encoder(str(tmp_path), out_path=str(tmp_path / "enc.pt"),
+                              epochs=2, batch_size=8)
+    r = DemoRetriever(str(tmp_path), encoder=FrameEncoder(out))
+    assert r.descriptors.shape[1] == 64                    # learned-embedding width, not 144
+    assert len(r) == 16

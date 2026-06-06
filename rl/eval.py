@@ -86,13 +86,16 @@ def evaluate(cfg: Config, path: str, button_names: list, episodes: int = 20,
     _pix_ch = None
     if recall:
         from rl.demo_retrieval import DemoRetriever
+        from rl.frame_encoder import load_encoder_if_present
         demos_dir = os.path.join(cfg.memory_dir, "demos")
-        retriever = DemoRetriever(demos_dir, skip_noop=recall_skip_noop)
+        encoder = load_encoder_if_present(cfg.memory_dir)  # learned embedding if trained
+        retriever = DemoRetriever(demos_dir, skip_noop=recall_skip_noop, encoder=encoder)
         if len(retriever) == 0:
             print(f"[eval] --recall: no usable demos in {demos_dir}; ignoring recall.")
             retriever = None
         else:
-            print(f"[eval] recall ON: {len(retriever)} demo frames "
+            kind = "learned-embedding" if encoder is not None else "pixel-descriptor"
+            print(f"[eval] recall ON: {len(retriever)} demo frames, {kind} "
                   f"(threshold {recall_threshold:.2f}"
                   f"{', skip no-op' if recall_skip_noop else ''})")
 
