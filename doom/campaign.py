@@ -712,22 +712,25 @@ class CampaignDoomEnv(gym.Env):
             if (dx - px) ** 2 + (dy - py) ** 2 <= reach * reach:
                 self._reached_doors.add(i)
         targets = [(i, d) for i, d in enumerate(self._doors) if i not in self._reached_doors]
-        if targets:
+        openness = self._depth_openness()
+        # Door-at-contact: ONLY push forward into a blockage when that blockage IS a door — i.e.
+        # the view ahead is BLOCKED (centre closed) AND a known unreached door is right there
+        # (close + dead-ahead). A corner has a blockage too but NO door right there, so it falls
+        # through to vision and gets turned around — this is the fix for "banged the corner
+        # before the door". We never steer at a far door coordinate (that caused the banging).
+        if targets and openness is not None:
             i, (tx, ty) = min(targets, key=lambda t: (t[1][0]-px)**2 + (t[1][1]-py)**2)
             self._nav_target = (tx, ty)
-            # ONLY when basically touching a door AND dead-ahead, nudge forward to trigger USE.
-            # (Steering at the door's coordinate from afar is what walked it into walls/corners —
-            # so we DON'T do that anymore; vision drives, this is just the final contact poke.)
             import math
             dist = math.hypot(tx - px, ty - py)
             bearing = math.degrees(math.atan2(ty - py, tx - px))
             rel = abs((bearing - ang + 180.0) % 360.0 - 180.0)
-            if dist < reach * 1.5 and rel < 22.0 and self._fwd_idx is not None:
-                out[self._fwd_idx] = 1
+            blocked_ahead = openness[1] <= 0.22
+            if blocked_ahead and dist < reach * 1.2 and rel < 22.0 and self._fwd_idx is not None:
+                out[self._fwd_idx] = 1           # the wall in front is the door → open it
                 return out
-        # Otherwise: VISION drives — go where it's OPEN (corridors), turn off a wall, never
-        # push into a coordinate behind a wall. This is "prioritise the field of vision first".
-        openness = self._depth_openness()
+        # Otherwise: VISION drives — go where it's OPEN (corridors), turn off a wall/corner,
+        # never push into a coordinate behind a wall. "Prioritise the field of vision first."
         if openness is not None:
             return vision_steer(out, openness[0], openness[1], openness[2],
                                 self._fwd_idx, self._turn_left_idx, self._turn_right_idx)
