@@ -290,6 +290,13 @@ def main() -> None:
           f"({s.get('damage_taken', 0.0)/n_eps:.0f} HP of damage)")
     print(f"  heals consumed:  {s.get('heals_consumed', 0.0)/n_eps:.1f}   "
           f"(+{s.get('health_recovered', 0.0)/n_eps:.0f} HP)")
+    # Combat efficiency + survival movement (the 'aim better / dodge / don't die' signals).
+    spk = s.get("shots_per_kill", 0.0)
+    print(f"  combat efficiency: {spk:.1f} shots/kill, "
+          f"{s.get('damage_taken_per_kill', 0.0):.0f} HP taken/kill")
+    dist = s.get("action_distribution", {}) or {}
+    dodge = sum(v for k, v in dist.items() if any(t in k for t in ("SL", "SR", "BACK")))
+    print(f"  dodge/retreat:   {dodge:.0%} of actions (strafe/back — survival movement)")
     if "recall_hit_rate" in s:
         print(f"  demo recall:     {s['recall_hit_rate']:.0%} of steps replayed a human action "
               f"({s['recall_hits']} steps from memory)")

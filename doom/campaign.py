@@ -75,6 +75,15 @@ STRAFE_ACTIONS = [
     (["MOVE_RIGHT"], "SR"),
     (["MOVE_FORWARD", "MOVE_LEFT"], "FWD+SL"),
     (["MOVE_FORWARD", "MOVE_RIGHT"], "FWD+SR"),
+    # Combat-survival combos (2026-06): dodge/retreat WHILE shooting — so the agent can learn to
+    # NOT die in a fight without the old passive "back-and-spray" collapse (the dodge/retreat
+    # here keep ATTACK pressed = still engaged). Plain BACK is for low-health retreat — safe now
+    # because the agent sees its HEALTH (game_vars) and the engagement+death rewards punish pure
+    # fleeing. This is why the base set above omits backward; here it returns, reward-guarded.
+    (["MOVE_LEFT", "ATTACK"], "SL+ATK"),    # circle-strafe left, firing
+    (["MOVE_RIGHT", "ATTACK"], "SR+ATK"),   # circle-strafe right, firing
+    (["MOVE_BACKWARD"], "BACK"),            # retreat (when low on health)
+    (["MOVE_BACKWARD", "ATTACK"], "BACK+ATK"),  # fighting retreat
 ]
 
 

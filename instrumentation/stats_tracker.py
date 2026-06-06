@@ -204,6 +204,12 @@ class StatsTracker:
             "health_recovered": d.get("heal_hp", 0.0),       # total HP regained from them
             "hits_taken_per_episode": (d.get("hits_taken", 0.0) / n_eps) if n_eps else 0.0,
             "shots_fired_per_episode": (float(attack_count) / n_eps) if n_eps else 0.0,
+            # Combat efficiency: shots spent per kill (lower = better aim/ammo discipline) and
+            # damage soaked per kill (lower = survives the fight better). inf-safe.
+            "shots_per_kill": (float(attack_count) / d.get("killcount", 0.0))
+            if d.get("killcount", 0.0) > 0 else 0.0,
+            "damage_taken_per_kill": (d.get("damage_taken", 0.0) / d.get("killcount", 0.0))
+            if d.get("killcount", 0.0) > 0 else 0.0,
             # aim (hits vs misses)
             "shots_fired": float(attack_count),
             "shots_hit": shots,

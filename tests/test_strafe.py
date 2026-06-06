@@ -9,7 +9,8 @@ def test_base_action_count_unchanged():
 
 def test_strafe_appends_actions():
     acts = campaign_actions(True)
-    assert len(acts) == len(CAMPAIGN_ACTIONS) + len(STRAFE_ACTIONS) == 15
+    # 11 base + 8 advanced-movement (4 strafe + 4 combat-survival: dodge/retreat) = 19.
+    assert len(acts) == len(CAMPAIGN_ACTIONS) + len(STRAFE_ACTIONS) == 19
 
 
 def test_strafe_actions_are_appended_after_base():
@@ -18,9 +19,19 @@ def test_strafe_actions_are_appended_after_base():
     assert acts[: len(CAMPAIGN_ACTIONS)] == CAMPAIGN_ACTIONS
 
 
-def test_strafe_uses_only_strafe_buttons():
+def test_strafe_uses_advanced_movement():
+    # The set is sideways (strafe) OR backward movement — the dodging/retreat the turn-only
+    # base set can't express. Every combo must involve one of those movement buttons.
     for combo, label in STRAFE_ACTIONS:
-        assert any(b in ("MOVE_LEFT", "MOVE_RIGHT") for b in combo)
+        assert any(b in ("MOVE_LEFT", "MOVE_RIGHT", "MOVE_BACKWARD") for b in combo), label
+
+
+def test_combat_survival_combos_keep_firing():
+    # The dodge/retreat-while-firing combos must press ATTACK (so retreat stays ENGAGED — not
+    # the old passive back-and-spray). BACK alone is the only no-attack retreat.
+    labels = {label: combo for combo, label in STRAFE_ACTIONS}
+    for lab in ("SL+ATK", "SR+ATK", "BACK+ATK"):
+        assert "ATTACK" in labels[lab]
 
 
 def test_strafe_brain_name_distinct_from_base():
