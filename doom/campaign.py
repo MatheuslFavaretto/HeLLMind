@@ -264,7 +264,9 @@ class CampaignDoomEnv(gym.Env):
         self._nearest_monster_dist = 1e9
         self._nearest_monster_xy = None
         self._combat_cooldown = 0   # steps to keep hunting after last seeing an enemy
-        self._enemies_seen = set()  # distinct enemy ids seen this episode
+        self._seen_by_cat = {}      # category -> set of distinct actor ids seen this episode
+        self._enemies_seen = set()  # distinct enemy ids (alias of _seen_by_cat["enemy"])
+        self._last_nearest_centered = None  # aim quality: nearest enemy's off-centre [0,1]
         # Discovery reward: pay the first sighting of each new object per episode.
         self._discovery_reward = float(r.get("discovery_reward", 0.0))
         self._seen_objects: set = set()
@@ -721,7 +723,9 @@ class CampaignDoomEnv(gym.Env):
         self._combat_cooldown = 0
         self._nearest_monster_xy = None
         self._nearest_monster_dist = 1e9
-        self._enemies_seen = set()   # distinct enemy ids seen this episode ("how many I saw")
+        self._seen_by_cat = {}       # distinct ids seen per category, fresh each episode
+        self._enemies_seen = set()
+        self._last_nearest_centered = None
         self._goal_xy = None
         self._goal_reached = False
         self._prev_goal_dist = None
@@ -927,12 +931,18 @@ class CampaignDoomEnv(gym.Env):
                 sw = float(self.game.get_screen_width() or self.width)
                 sh = float(self.game.get_screen_height() or self.height)
                 self._visible_objects = visible_objects(labels, sw, sh)
-                # "How many enemies did I see" — accumulate DISTINCT enemy actor ids this episode.
+                # Perception telemetry: accumulate DISTINCT actor ids seen this episode, PER
+                # category (enemy/weapon/health/ammo/key/item) — "what did it identify".
                 from doom.entities import classify_object
                 for lb in (labels or []):
-                    if classify_object(getattr(lb, "object_name", "")) == "enemy":
-                        self._enemies_seen.add(getattr(lb, "object_id",
-                                                       getattr(lb, "object_name", id(lb))))
+                    cat = classify_object(getattr(lb, "object_name", ""))
+                    if cat in ("self", "projectile"):
+                        continue
+                    oid = getattr(lb, "object_id", getattr(lb, "object_name", id(lb)))
+                    self._seen_by_cat.setdefault(cat, set()).add(oid)
+                self._enemies_seen = self._seen_by_cat.get("enemy", set())
+                # Aim quality: how off-centre the nearest enemy is (0 = dead-centre, 1 = edge).
+                self._last_nearest_centered = view["nearest_centered"]
                 # Nearest LIVING monster anywhere in the level (objects buffer) — so combat can
                 # hunt one that just left the agent's view instead of abandoning it for a door.
                 from doom.entities import is_monster
@@ -1063,6 +1073,8 @@ class CampaignDoomEnv(gym.Env):
         if self._use_labels:
             doom["enemies_in_view"] = int(self._enemies_in_view)  # ground-truth on-screen count
             doom["objects"] = self._visible_objects  # detector overlay: boxes around everything
+            if self._last_nearest_centered is not None:
+                doom["nearest_centered"] = float(self._last_nearest_centered)  # aim quality
             if self._combat_explore_split:
                 doom["mode"] = "combat" if self._enemies_in_view > 0 else "explore"
         if self._auto_door_nav and self._doors and self._last_vars:
@@ -1090,6 +1102,11 @@ class CampaignDoomEnv(gym.Env):
             doom["base_return"] = self._ep_base  # native episode return (no shaping)
             doom["coverage_cells"] = len(self._visited)  # for frontier curriculum
             doom["enemies_seen"] = len(self._enemies_seen)  # distinct enemies seen this episode
+            # Distinct objects identified per category (enemy/weapon/health/ammo/key/item) +
+            # doors reached — the "did it identify items/enemies/doors" telemetry.
+            doom["seen_counts"] = {c: len(ids) for c, ids in self._seen_by_cat.items()}
+            doom["doors_reached"] = len(self._reached_doors)
+            doom["doors_total"] = len(self._doors)
             # The actual cells visited this episode -> persistent per-map heatmap memory.
             # Once per episode (off the hot path), so within the ±2% budget.
             doom["visited_cells"] = [[gx, gy] for (gx, gy) in self._visited]

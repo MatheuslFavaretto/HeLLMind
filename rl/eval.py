@@ -279,24 +279,41 @@ def main() -> None:
     if s.get("terminals"):
         print(f"  episode endings: {s['terminals']}")
     print(f"  mean ep length:  {s['mean_episode_length']:.0f} steps")
-    # "What happened this run" — richer than the binary exit_rate (the metrics you asked for).
+    # "What happened this run" — grouped panels so you can see WHAT to adjust (per episode).
     n_eps = max(int(s.get("episodes", 1)), 1)
-    print("\n  -- what happened (per episode) --")
-    print(f"  exit progress:   {s.get('exit_progress', 0.0):.0%}   (how close to the level exit)")
-    print(f"  enemies seen:    {s.get('enemies_seen_per_episode', 0.0):.1f}")
-    print(f"  shots fired:     {s.get('shots_fired_per_episode', 0.0):.1f}   "
-          f"(landed {s.get('shots_hit', 0.0)/n_eps:.1f}, acc {s.get('shooting_accuracy', 0.0):.0%})")
-    print(f"  hits taken:      {s.get('hits_taken_per_episode', 0.0):.1f}   "
-          f"({s.get('damage_taken', 0.0)/n_eps:.0f} HP of damage)")
-    print(f"  heals consumed:  {s.get('heals_consumed', 0.0)/n_eps:.1f}   "
-          f"(+{s.get('health_recovered', 0.0)/n_eps:.0f} HP)")
-    # Combat efficiency + survival movement (the 'aim better / dodge / don't die' signals).
-    spk = s.get("shots_per_kill", 0.0)
-    print(f"  combat efficiency: {spk:.1f} shots/kill, "
-          f"{s.get('damage_taken_per_kill', 0.0):.0f} HP taken/kill")
     dist = s.get("action_distribution", {}) or {}
-    dodge = sum(v for k, v in dist.items() if any(t in k for t in ("SL", "SR", "BACK")))
-    print(f"  dodge/retreat:   {dodge:.0%} of actions (strafe/back — survival movement)")
+
+    def _share(*tokens):
+        return sum(v for k, v in dist.items() if any(t in k for t in tokens))
+
+    print("\n  -- AIM (did it learn to shoot well?) --")
+    print(f"  accuracy:        {s.get('shooting_accuracy', 0.0):.0%}   "
+          f"(landed {s.get('shots_hit', 0.0)/n_eps:.1f} of {s.get('shots_fired_per_episode', 0.0):.1f} shots/ep)")
+    print(f"  shots per kill:  {s.get('shots_per_kill', 0.0):.1f}   (lower = better aim/discipline)")
+    print(f"  aim offset:      {s.get('aim_offset', 0.0):.2f}   (0=enemy dead-centre, 1=screen edge)")
+    print(f"  wasted shots:    {s.get('wasted_shot_rate', 0.0):.0%}   (fired with NO enemy on screen)")
+
+    print("  -- MOVEMENT --")
+    print(f"  explored:        {(s.get('map_coverage', {}) or {}).get('explored_fraction', 0.0):.0%}   "
+          f"({s.get('distance_per_episode', 0.0):.0f} units/ep)")
+    print(f"  idle/stuck:      {s.get('idle_rate', 0.0):.0%} of steps barely moved")
+    print(f"  style:           fwd {_share('FWD'):.0%} · turn {_share('TL','TR','TURN'):.0%} · "
+          f"strafe {_share('SL','SR','MOVE_LEFT','MOVE_RIGHT'):.0%} · back {_share('BACK'):.0%}")
+
+    print("  -- WEAPONS --")
+    print(f"  distinct used:   {s.get('distinct_weapons_used', 0.0):.0f}   "
+          f"(switches {s.get('weapon_switches_per_episode', 0.0):.1f}/ep)")
+
+    print("  -- PERCEPTION (what it identified) --")
+    seen = s.get("objects_seen_per_episode", {}) or {}
+    if seen:
+        order = ["enemy", "weapon", "health", "ammo", "key", "item"]
+        parts = [f"{c} {seen[c]:.1f}" for c in order if c in seen]
+        print(f"  objects seen/ep: {' · '.join(parts)}")
+    print(f"  doors reached:   {s.get('doors_reached_per_episode', 0.0):.1f}/ep   "
+          f"exit progress {s.get('exit_progress', 0.0):.0%}")
+    print(f"  survival:        {s.get('hits_taken_per_episode', 0.0):.1f} hits taken "
+          f"({s.get('damage_taken', 0.0)/n_eps:.0f} HP), {s.get('heals_consumed', 0.0)/n_eps:.1f} heals")
     if "recall_hit_rate" in s:
         print(f"  demo recall:     {s['recall_hit_rate']:.0%} of steps replayed a human action "
               f"({s['recall_hits']} steps from memory)")

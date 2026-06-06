@@ -64,6 +64,11 @@ class StatsTracker:
         self.coverage_cells_per_ep: List[int] = []  # distinct cells per episode
         self.exit_progress_per_ep: List[float] = []  # how close to the exit (dense, fairer)
         self.enemies_seen_per_ep: List[int] = []     # distinct enemies seen per episode
+        # Richer telemetry (aim / movement / weapons / perception).
+        self.nearest_centered_samples: List[float] = []  # aim quality: enemy off-centre [0,1]
+        self.idle_steps = 0                          # steps with ~no movement (stuck/idle)
+        self.seen_counts_per_ep: List[Dict[str, int]] = []  # distinct objects seen, by category
+        self.doors_reached_per_ep: List[int] = []    # doors opened/reached per episode
         # Ordered trajectory of ONE representative env (env 0) so the minimap can draw
         # the path as a CONNECTED LINE (visit order), not just an unordered heatmap.
         # The heatmap mixes all parallel envs; an ordered line only makes sense per env.
@@ -78,6 +83,12 @@ class StatsTracker:
             if doom is not None:
                 for k, v in doom["deltas"].items():
                     self.delta_sums[k] = self.delta_sums.get(k, 0.0) + float(v)
+                # Idle/stuck: a step that barely moved (movement-quality signal).
+                if float(doom["deltas"].get("distance", 1.0)) < 4.0:
+                    self.idle_steps += 1
+                # Aim quality: how off-centre the nearest enemy was (only when one was visible).
+                if "nearest_centered" in doom:
+                    self.nearest_centered_samples.append(float(doom["nearest_centered"]))
                 for n in LEVELS:
                     if n in doom["levels"]:  # tolerate vars a synthetic/old info omits
                         self.level_samples[n].append(doom["levels"][n])
@@ -131,6 +142,10 @@ class StatsTracker:
                         self.exit_progress_per_ep.append(float(doom["exit_progress"]))
                     if "enemies_seen" in doom:
                         self.enemies_seen_per_ep.append(int(doom["enemies_seen"]))
+                    if "seen_counts" in doom:
+                        self.seen_counts_per_ep.append(dict(doom["seen_counts"]))
+                    if "doors_reached" in doom:
+                        self.doors_reached_per_ep.append(int(doom["doors_reached"]))
                 # env 0 finished an episode: keep its (ordered) path as the one to draw,
                 # then start a fresh trajectory for the next episode.
                 if idx == 0 and len(self._env0_path) >= 2:
@@ -210,6 +225,17 @@ class StatsTracker:
             if d.get("killcount", 0.0) > 0 else 0.0,
             "damage_taken_per_kill": (d.get("damage_taken", 0.0) / d.get("killcount", 0.0))
             if d.get("killcount", 0.0) > 0 else 0.0,
+            # AIM: how off-centre enemies were (lower=better aim), and the share of shots fired
+            # with NO enemy on screen (spray discipline — high = tighten the trigger).
+            "aim_offset": _mean(self.nearest_centered_samples),
+            "wasted_shot_rate": ((self.attack_steps - self.combat_attack_steps)
+                                 / self.attack_steps) if self.attack_steps else 0.0,
+            # MOVEMENT: share of steps barely moving (stuck/idle).
+            "idle_rate": (self.idle_steps / self.steps_in_window) if self.steps_in_window else 0.0,
+            # WEAPONS: how many distinct weapons it wielded and how often it switched.
+            **self._weapon_choice_metrics(n_eps),
+            # PERCEPTION: distinct objects identified per category + doors reached, per episode.
+            **self._perception_metrics(),
             # aim (hits vs misses)
             "shots_fired": float(attack_count),
             "shots_hit": shots,
@@ -306,6 +332,29 @@ class StatsTracker:
             "explored_fraction": float(min(1.0, n_cells / bbox_cells)),
             "source": "bbox",
         }
+
+    def _weapon_choice_metrics(self, n_eps: int) -> Dict[str, float]:
+        """WEAPONS: how many distinct slots it wielded + how often it switched (NEXTW use)."""
+        s = self.level_samples.get("selected_weapon", [])
+        if not s:
+            return {"distinct_weapons_used": 0.0, "weapon_switches_per_episode": 0.0}
+        switches = sum(1 for i in range(1, len(s)) if int(s[i]) != int(s[i - 1]))
+        return {
+            "distinct_weapons_used": float(len(set(int(x) for x in s))),
+            "weapon_switches_per_episode": (switches / n_eps) if n_eps else 0.0,
+        }
+
+    def _perception_metrics(self) -> Dict[str, Any]:
+        """PERCEPTION: distinct objects IDENTIFIED per category + doors reached, per episode."""
+        out: Dict[str, Any] = {}
+        if self.seen_counts_per_ep:
+            cats = set().union(*[set(d) for d in self.seen_counts_per_ep])
+            out["objects_seen_per_episode"] = {
+                c: float(np.mean([d.get(c, 0) for d in self.seen_counts_per_ep])) for c in cats
+            }
+        if self.doors_reached_per_ep:
+            out["doors_reached_per_episode"] = float(np.mean(self.doors_reached_per_ep))
+        return out
 
     def _weapon_distribution(self) -> Dict[str, float]:
         """Fraction of time with each selected weapon (ViZDoom slot)."""
