@@ -101,6 +101,13 @@ def propose(env: dict, m: dict, algo: str = "ppo") -> tuple[dict, str]:
 
     timeout_rate = m.get("timeout_rate", 0.0)
     explored = m.get("explored_fraction", 0.0)
+    # Rich-metric diagnosis (the panels): what's the reward ACTUALLY rewarding, is it spraying,
+    # is it circling? These let the loop auto-make the fix we made by hand.
+    rb = m.get("reward_breakdown", {}) or {}
+    explore_share = rb.get("explore", 0.0)       # fraction of reward from exploration
+    wasted = m.get("wasted_shot_rate", 0.0)      # shots fired with NO enemy on screen
+    aim_off = m.get("aim_offset", 0.0)           # nearest enemy off-centre (1=edge)
+    revisit = m.get("revisit_rate", 0.0)         # circling (revisited cells)
 
     # Timeout diagnosis: if > 80% of episodes time out AND exploration is low, the
     # episode is too short to let the agent find anything interesting — extend it.
@@ -109,9 +116,11 @@ def propose(env: dict, m: dict, algo: str = "ppo") -> tuple[dict, str]:
         return new, (f"timeout_rate={timeout_rate:.0%}, explored={explored:.0%} → "
                      f"episode too short — raise EPISODE_TIMEOUT to {int(new['EPISODE_TIMEOUT'])}")
 
-    if explored < 0.10:
-        # Very low exploration: push on EVERY exploration lever — coverage, frontier, and the
-        # curiosity/return-then-explore knobs — to break out of the spawn room.
+    if explored < 0.10 and explore_share < 0.6:
+        # Very low exploration AND the reward isn't already explore-dominated: push on EVERY
+        # exploration lever to break out of the spawn room. (If explore_share is already high,
+        # pouring in MORE explore reward is the trap we hit by hand — fall through to the spray
+        # rule below instead.)
         bump("COVERAGE_REWARD", factor=1.4)
         bump("FRONTIER_REWARD", factor=1.5)
         bump("RND_SCALE", factor=1.3)
@@ -129,6 +138,26 @@ def propose(env: dict, m: dict, algo: str = "ppo") -> tuple[dict, str]:
         bump("DEATH_PENALTY", factor=1.2)
         return new, (f"death_rate {m.get('death_rate',0):.0%} -> raise DAMAGE_TAKEN_PENALTY "
                      f"to {new['DAMAGE_TAKEN_PENALTY']}, DEATH_PENALTY to {new['DEATH_PENALTY']}")
+    # SPRAY / reward-imbalance (rich metrics): it fires with no target (wasted_shot_rate high)
+    # AND/OR the reward is dominated by EXPLORATION while it isn't aiming (aim_offset high) — the
+    # exact miscalibration that makes it spray instead of aim. Cut the exploration pull, sharpen
+    # the trigger + aim. This is the hand-made fix, automated.
+    if wasted > 0.4 or (explore_share > 0.6 and aim_off > 0.5):
+        bump("COVERAGE_REWARD", factor=0.5)
+        bump("RND_SCALE", factor=0.5)
+        bump("FRONTIER_REWARD", factor=0.5)
+        bump("MISS_PENALTY", add=0.04)
+        bump("ENGAGEMENT_REWARD", factor=1.4)
+        return new, (f"spraying (wasted {wasted:.0%}, reward {explore_share:.0%} explore, "
+                     f"aim_offset {aim_off:.2f}) -> cut exploration + sharpen trigger/aim: "
+                     f"COVERAGE_REWARD {new['COVERAGE_REWARD']}, MISS_PENALTY {new['MISS_PENALTY']}, "
+                     f"ENGAGEMENT_REWARD {new['ENGAGEMENT_REWARD']}")
+    # Circling: covers little but revisits a lot — anti-circle levers (frontier + curiosity).
+    if revisit > 0.85 and explored < 0.3 and explore_share < 0.6:
+        bump("FRONTIER_REWARD", factor=1.5)
+        bump("RND_SCALE", factor=1.3)
+        return new, (f"circling (revisit {revisit:.0%}, explored {explored:.0%}) -> anti-circle: "
+                     f"FRONTIER_REWARD {new['FRONTIER_REWARD']}, RND_SCALE {new['RND_SCALE']}")
     # COMBAT regime diagnosis (separate from exploration): the agent SEES enemies but won't
     # shoot (combat_engagement low) or barely kills -> the deterministic policy has frozen.
     # Un-freeze it (entropy) and pay it to face enemies. Uses the per-mode telemetry when

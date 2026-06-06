@@ -346,6 +346,14 @@ def main() -> None:
         print(f"  demo recall:     {s['recall_hit_rate']:.0%} of steps replayed a human action "
               f"({s['recall_hits']} steps from memory)")
 
+    # Export the full metrics to Prometheus (push-gateway / textfile) if configured — for
+    # Grafana time-series of the agent improving across runs. No-op unless the env vars are set.
+    try:
+        from instrumentation.prometheus_exporter import export_metrics
+        export_metrics(s, job="hellmind_eval")
+    except Exception as _e:
+        print(f"[prometheus] export skipped: {_e}")
+
     if args.json:
         import json
         cov = s.get("map_coverage", {}) or {}
