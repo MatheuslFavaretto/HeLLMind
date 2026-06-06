@@ -292,17 +292,30 @@ def main() -> None:
     print(f"  shots per kill:  {s.get('shots_per_kill', 0.0):.1f}   (lower = better aim/discipline)")
     print(f"  aim offset:      {s.get('aim_offset', 0.0):.2f}   (0=enemy dead-centre, 1=screen edge)")
     print(f"  wasted shots:    {s.get('wasted_shot_rate', 0.0):.0%}   (fired with NO enemy on screen)")
+    print(f"  kill conversion: {s.get('kill_conversion', 0.0):.0%}   (enemies killed of those seen)")
+    if s.get("reaction_ticks"):
+        print(f"  reaction:        {s.get('reaction_ticks', 0.0):.0f} ticks (enemy seen → first shot)")
 
     print("  -- MOVEMENT --")
     print(f"  explored:        {(s.get('map_coverage', {}) or {}).get('explored_fraction', 0.0):.0%}   "
-          f"({s.get('distance_per_episode', 0.0):.0f} units/ep)")
-    print(f"  idle/stuck:      {s.get('idle_rate', 0.0):.0%} of steps barely moved")
+          f"({s.get('distance_per_episode', 0.0):.0f} units/ep, frontier {s.get('frontier_reach', 0.0):.0f})")
+    print(f"  idle/stuck:      {s.get('idle_rate', 0.0):.0%} of steps   "
+          f"revisit {s.get('revisit_rate', 0.0):.0%} (circling)")
     print(f"  style:           fwd {_share('FWD'):.0%} · turn {_share('TL','TR','TURN'):.0%} · "
           f"strafe {_share('SL','SR','MOVE_LEFT','MOVE_RIGHT'):.0%} · back {_share('BACK'):.0%}")
 
     print("  -- WEAPONS --")
     print(f"  distinct used:   {s.get('distinct_weapons_used', 0.0):.0f}   "
-          f"(switches {s.get('weapon_switches_per_episode', 0.0):.1f}/ep)")
+          f"(switches {s.get('weapon_switches_per_episode', 0.0):.1f}/ep, "
+          f"best-gun {s.get('best_weapon_fraction', 0.0):.0%} of the time)")
+    # Per-weapon detail: WHICH gun, HOW LONG (% of time wielded) and HOW WELL (accuracy).
+    wu = s.get("weapons_used", {}) or {}            # slot -> fraction of time
+    abw = s.get("accuracy_by_weapon", {}) or {}     # slot -> hit rate
+    if wu:
+        for slot in sorted(wu, key=lambda k: -wu[k]):   # most-used first
+            acc = abw.get(slot)
+            acc_s = f", {acc:.0%} acc" if acc is not None else ""
+            print(f"    {slot.replace('slot_', 'weapon ')}: {wu[slot]:.0%} of time{acc_s}")
 
     print("  -- PERCEPTION (what it identified) --")
     seen = s.get("objects_seen_per_episode", {}) or {}
@@ -310,10 +323,22 @@ def main() -> None:
         order = ["enemy", "weapon", "health", "ammo", "key", "item"]
         parts = [f"{c} {seen[c]:.1f}" for c in order if c in seen]
         print(f"  objects seen/ep: {' · '.join(parts)}")
+    print(f"  pickup conv.:    {s.get('pickup_conversion', 0.0):.0%}   (items grabbed of those seen)")
     print(f"  doors reached:   {s.get('doors_reached_per_episode', 0.0):.1f}/ep   "
           f"exit progress {s.get('exit_progress', 0.0):.0%}")
-    print(f"  survival:        {s.get('hits_taken_per_episode', 0.0):.1f} hits taken "
-          f"({s.get('damage_taken', 0.0)/n_eps:.0f} HP), {s.get('heals_consumed', 0.0)/n_eps:.1f} heals")
+
+    print("  -- SURVIVAL & POLICY --")
+    print(f"  survival:        {s.get('hits_taken_per_episode', 0.0):.1f} hits ({s.get('damage_taken', 0.0)/n_eps:.0f} HP), "
+          f"{s.get('heals_consumed', 0.0)/n_eps:.1f} heals, {s.get('low_health_fraction', 0.0):.0%} time low HP, "
+          f"{s.get('out_of_ammo_fraction', 0.0):.0%} dry")
+    rb = s.get("reward_breakdown", {}) or {}
+    if rb:
+        order = ["combat", "engage", "explore", "move", "damage", "base"]
+        print("  reward from:     " + " · ".join(f"{k} {rb[k]:+.0%}"
+                                                 for k in order if k in rb)
+              + "   (what it optimises)")
+    print(f"  decisiveness:    {s.get('action_entropy_normalized', 0.0):.2f} "
+          f"action-entropy (0=fixed, 1=random)")
     if "recall_hit_rate" in s:
         print(f"  demo recall:     {s['recall_hit_rate']:.0%} of steps replayed a human action "
               f"({s['recall_hits']} steps from memory)")

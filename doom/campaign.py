@@ -267,6 +267,11 @@ class CampaignDoomEnv(gym.Env):
         self._seen_by_cat = {}      # category -> set of distinct actor ids seen this episode
         self._enemies_seen = set()  # distinct enemy ids (alias of _seen_by_cat["enemy"])
         self._last_nearest_centered = None  # aim quality: nearest enemy's off-centre [0,1]
+        self._last_reward_parts = {}        # reward breakdown by component (telemetry)
+        self._enemy_seen_tick = None        # tick the current enemy-presence began (reaction)
+        self._reaction_ticks = []           # reaction times (ticks enemy-seen → first shot)
+        self._best_weapon_steps = 0         # steps wielding the strongest owned weapon
+        self._weapon_choice_steps = 0       # steps where it owned any real weapon
         # Discovery reward: pay the first sighting of each new object per episode.
         self._discovery_reward = float(r.get("discovery_reward", 0.0))
         self._seen_objects: set = set()
@@ -726,6 +731,10 @@ class CampaignDoomEnv(gym.Env):
         self._seen_by_cat = {}       # distinct ids seen per category, fresh each episode
         self._enemies_seen = set()
         self._last_nearest_centered = None
+        self._enemy_seen_tick = None
+        self._reaction_ticks = []
+        self._best_weapon_steps = 0
+        self._weapon_choice_steps = 0
         self._goal_xy = None
         self._goal_reached = False
         self._prev_goal_dist = None
@@ -874,6 +883,7 @@ class CampaignDoomEnv(gym.Env):
         frontier_bonus = 0.0  # reward NET outward progress (can't be farmed by circling)
         engage_bonus = 0.0  # reward keeping a visible enemy centred (labels buffer)
         discovery_bonus = 0.0  # reward the first sighting of a new object this episode
+        rnd_bonus = 0.0  # intrinsic curiosity (RND) — init so the reward breakdown is defined
         self._enemies_in_view = 0  # telemetry: how many enemies the agent can see now
         self._visible_objects = []  # detector overlay: every visible object (normalised bbox)
         if not done:
@@ -1004,6 +1014,18 @@ class CampaignDoomEnv(gym.Env):
         if self._rnd and not done:
             rnd_bonus = self._rnd.bonus(raw["position_x"], raw["position_y"])
             shaped += rnd_bonus * explore_scale  # curiosity is an exploration pull
+        # Reward breakdown (telemetry): what's actually DRIVING the agent — combat vs explore
+        # vs engage vs the survival penalties. Lets you see what the policy optimises.
+        self._last_reward_parts = {
+            "combat": self._kill_reward * deltas["killcount"]
+            + self._hit_reward * deltas["hitcount"] + self._step_threat_bonus,
+            "damage": -self._damage_penalty * deltas["damage_taken"],
+            "engage": engage_bonus,
+            "explore": cov_bonus + weapon_bonus + frontier_bonus + discovery_bonus
+            + rnd_bonus * explore_scale,
+            "move": self._move_reward * deltas["distance"],
+            "base": base_reward,
+        }
         # Exit proximity shaping: small reward for getting closer to the memorised exit.
         # Activates only after the first successful exit (self._exit_pos is set).
         if self._exit_pos is not None and not done and self._prev_exit_dist is not None:
@@ -1037,6 +1059,22 @@ class CampaignDoomEnv(gym.Env):
         attacked = self._action_attacks[int(action)]  # this action pressed ATTACK
         if attacked and deltas["hitcount"] == 0 and not done:
             shaped -= self._miss_penalty * combat_scale  # don't punish blind shots while exploring
+        if not done:
+            # Reaction time: ticks from an enemy first appearing until the first shot at it.
+            if self._enemies_in_view > 0:
+                if self._enemy_seen_tick is None:
+                    self._enemy_seen_tick = self._ep_ticks
+                elif attacked:
+                    self._reaction_ticks.append(max(0, self._ep_ticks - self._enemy_seen_tick))
+                    self._enemy_seen_tick = None        # measured this engagement
+            else:
+                self._enemy_seen_tick = None
+            # Weapon choice: was it wielding the strongest gun it owns?
+            best = self._best_weapon_slot()
+            if best:
+                self._weapon_choice_steps += 1
+                if int(raw.get("selected_weapon", 0)) == best:
+                    self._best_weapon_steps += 1
 
         # Completion: reaching the level EXIT = episode ended, not dead, before the
         # timeout. That's the real "I finished the map". Clearing the kill quota also
@@ -1069,6 +1107,7 @@ class CampaignDoomEnv(gym.Env):
             "action": int(action),
             "attacked": bool(attacked),  # tracker counts attacks from this (combined actions)
             "success": success,
+            "reward_parts": self._last_reward_parts,  # what's driving the reward (breakdown)
         }
         if self._use_labels:
             doom["enemies_in_view"] = int(self._enemies_in_view)  # ground-truth on-screen count
@@ -1107,6 +1146,11 @@ class CampaignDoomEnv(gym.Env):
             doom["seen_counts"] = {c: len(ids) for c, ids in self._seen_by_cat.items()}
             doom["doors_reached"] = len(self._reached_doors)
             doom["doors_total"] = len(self._doors)
+            doom["frontier_reach"] = float(self._max_dist)   # farthest from spawn this episode
+            if self._reaction_ticks:
+                doom["reaction_ticks"] = float(np.mean(self._reaction_ticks))
+            if self._weapon_choice_steps:
+                doom["best_weapon_fraction"] = self._best_weapon_steps / self._weapon_choice_steps
             # The actual cells visited this episode -> persistent per-map heatmap memory.
             # Once per episode (off the hot path), so within the ±2% budget.
             doom["visited_cells"] = [[gx, gy] for (gx, gy) in self._visited]

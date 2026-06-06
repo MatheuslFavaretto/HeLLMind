@@ -69,6 +69,12 @@ class StatsTracker:
         self.idle_steps = 0                          # steps with ~no movement (stuck/idle)
         self.seen_counts_per_ep: List[Dict[str, int]] = []  # distinct objects seen, by category
         self.doors_reached_per_ep: List[int] = []    # doors opened/reached per episode
+        self.reward_parts_sum: Dict[str, float] = {}  # reward breakdown by component (summed)
+        self.frontier_reach_per_ep: List[float] = []  # farthest from spawn per episode
+        self.reaction_ticks_per_ep: List[float] = []  # mean enemy-seen→first-shot per episode
+        self.best_weapon_frac_per_ep: List[float] = []  # share wielding strongest owned gun
+        self.weapon_shots: Counter = Counter()       # shots fired per weapon slot
+        self.weapon_hits: Counter = Counter()        # hits landed per weapon slot
         # Ordered trajectory of ONE representative env (env 0) so the minimap can draw
         # the path as a CONNECTED LINE (visit order), not just an unordered heatmap.
         # The heatmap mixes all parallel envs; an ordered line only makes sense per env.
@@ -89,6 +95,14 @@ class StatsTracker:
                 # Aim quality: how off-centre the nearest enemy was (only when one was visible).
                 if "nearest_centered" in doom:
                     self.nearest_centered_samples.append(float(doom["nearest_centered"]))
+                # Reward breakdown: what's driving the agent (combat/explore/engage/...).
+                for k, v in (doom.get("reward_parts") or {}).items():
+                    self.reward_parts_sum[k] = self.reward_parts_sum.get(k, 0.0) + float(v)
+                # Accuracy by weapon: shots + hits keyed by the wielded slot.
+                if doom.get("attacked"):
+                    slot = int(doom["levels"].get("selected_weapon", 0))
+                    self.weapon_shots[slot] += 1
+                    self.weapon_hits[slot] += float(doom["deltas"].get("hitcount", 0.0))
                 for n in LEVELS:
                     if n in doom["levels"]:  # tolerate vars a synthetic/old info omits
                         self.level_samples[n].append(doom["levels"][n])
@@ -146,6 +160,12 @@ class StatsTracker:
                         self.seen_counts_per_ep.append(dict(doom["seen_counts"]))
                     if "doors_reached" in doom:
                         self.doors_reached_per_ep.append(int(doom["doors_reached"]))
+                    if "frontier_reach" in doom:
+                        self.frontier_reach_per_ep.append(float(doom["frontier_reach"]))
+                    if "reaction_ticks" in doom:
+                        self.reaction_ticks_per_ep.append(float(doom["reaction_ticks"]))
+                    if "best_weapon_fraction" in doom:
+                        self.best_weapon_frac_per_ep.append(float(doom["best_weapon_fraction"]))
                 # env 0 finished an episode: keep its (ordered) path as the one to draw,
                 # then start a fresh trajectory for the next episode.
                 if idx == 0 and len(self._env0_path) >= 2:
@@ -236,6 +256,8 @@ class StatsTracker:
             **self._weapon_choice_metrics(n_eps),
             # PERCEPTION: distinct objects identified per category + doors reached, per episode.
             **self._perception_metrics(),
+            # Conversion / survival / reward-breakdown / weapon-accuracy (the rest of the suite).
+            **self._advanced_metrics(d, n_eps),
             # aim (hits vs misses)
             "shots_fired": float(attack_count),
             "shots_hit": shots,
@@ -332,6 +354,41 @@ class StatsTracker:
             "explored_fraction": float(min(1.0, n_cells / bbox_cells)),
             "source": "bbox",
         }
+
+    def _advanced_metrics(self, d: Dict[str, float], n_eps: int) -> Dict[str, Any]:
+        """Conversion rates, survival, reward breakdown, per-weapon accuracy, frontier/reaction."""
+        out: Dict[str, Any] = {}
+        # Conversion: of enemies/pickups SEEN, how many did it kill / collect?
+        seen_enemies = float(sum(self.enemies_seen_per_ep))
+        out["kill_conversion"] = (d.get("killcount", 0.0) / seen_enemies) if seen_enemies else 0.0
+        pickups_seen = float(sum(c.get(k, 0) for c in self.seen_counts_per_ep
+                                 for k in ("health", "ammo", "weapon", "key", "item")))
+        out["pickup_conversion"] = (d.get("itemcount", 0.0) / pickups_seen) if pickups_seen else 0.0
+        # Survival: time in the danger zone + out of ammo.
+        hp = self.level_samples.get("health", [])
+        out["low_health_fraction"] = (sum(1 for h in hp if h < 30) / len(hp)) if hp else 0.0
+        am = self.level_samples.get("ammo2", [])
+        out["out_of_ammo_fraction"] = (sum(1 for a in am if a <= 0) / len(am)) if am else 0.0
+        # Movement: circling — share of position samples on an already-visited cell.
+        total_visits = sum(self.cell_counts.values())
+        out["revisit_rate"] = ((total_visits - len(self.cell_counts)) / total_visits
+                               if total_visits else 0.0)
+        # Frontier reach / reaction time (means over episodes).
+        if self.frontier_reach_per_ep:
+            out["frontier_reach"] = float(np.mean(self.frontier_reach_per_ep))
+        if self.reaction_ticks_per_ep:
+            out["reaction_ticks"] = float(np.mean(self.reaction_ticks_per_ep))
+        if self.best_weapon_frac_per_ep:
+            out["best_weapon_fraction"] = float(np.mean(self.best_weapon_frac_per_ep))
+        # Reward breakdown as fractions of the total MAGNITUDE (so penalties show their weight).
+        total_mag = sum(abs(v) for v in self.reward_parts_sum.values()) or 1.0
+        out["reward_breakdown"] = {k: v / total_mag for k, v in self.reward_parts_sum.items()}
+        # Accuracy per weapon slot (hits / shots).
+        out["accuracy_by_weapon"] = {
+            f"slot_{slot}": self.weapon_hits[slot] / self.weapon_shots[slot]
+            for slot in sorted(self.weapon_shots) if self.weapon_shots[slot] > 0
+        }
+        return out
 
     def _weapon_choice_metrics(self, n_eps: int) -> Dict[str, float]:
         """WEAPONS: how many distinct slots it wielded + how often it switched (NEXTW use)."""
