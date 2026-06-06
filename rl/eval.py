@@ -41,14 +41,20 @@ def _tempered_actions(model, obs, temperature: float) -> np.ndarray:
 
 def evaluate(cfg: Config, path: str, button_names: list, episodes: int = 20,
              deterministic: bool = True, temperature: Optional[float] = None,
-             overlay: bool = False) -> dict:
+             overlay: bool = False, recall: bool = False,
+             recall_threshold: float = 0.92, recall_skip_noop: bool = False) -> dict:
     """Run `episodes` and return a metrics summary.
 
     `deterministic=True` (default) takes the argmax action — the honest measure of what the
     brain has *committed* to. `deterministic=False` samples the policy at temperature 1.0.
     `temperature=τ` (overrides both) samples with logits scaled by 1/τ — a tunable middle
     ground that lets a brain whose argmax collapsed still act on its learned distribution
-    (e.g. τ=0.5 explores without freezing). Feed-forward policies only."""
+    (e.g. τ=0.5 explores without freezing). Feed-forward policies only.
+
+    `recall=True` enables demo retrieval: at each step, if the current view closely matches a
+    frame from the human demos (cosine ≥ recall_threshold), replay the human's action there
+    instead of the policy's — "search memory for the best action". Defers to the policy when
+    no close match (the confidence gate)."""
     venv = build_vec_env(cfg)  # n_envs forced to 1 by the caller
     from rl.algo import algo_class_from_path
     import os
@@ -70,6 +76,25 @@ def evaluate(cfg: Config, path: str, button_names: list, episodes: int = 20,
     # When rendering, throttle to ~real time so the window is actually watchable
     # (otherwise ViZDoom blasts through hundreds of fps and the episodes flash by).
     step_delay = (cfg.frame_skip / 35.0) if cfg.render else 0.0
+
+    # Demo retrieval ("search memory for the best action"): index the human demos and, when the
+    # live view closely matches a demo frame, replay the human's action there.
+    retriever = None
+    recall_hits = recall_steps = 0
+    # The pixel channel of the MOST RECENT stacked frame (channels-last [N,H,W,C]; channels
+    # per frame = C // frame_stack; pixels are channel 0 of each frame group).
+    _pix_ch = None
+    if recall:
+        from rl.demo_retrieval import DemoRetriever
+        demos_dir = os.path.join(cfg.memory_dir, "demos")
+        retriever = DemoRetriever(demos_dir, skip_noop=recall_skip_noop)
+        if len(retriever) == 0:
+            print(f"[eval] --recall: no usable demos in {demos_dir}; ignoring recall.")
+            retriever = None
+        else:
+            print(f"[eval] recall ON: {len(retriever)} demo frames "
+                  f"(threshold {recall_threshold:.2f}"
+                  f"{', skip no-op' if recall_skip_noop else ''})")
 
     # Overlay window (watch --overlay): renders HUD + minimap in a cv2 window.
     # ViZDoom's own window already opens when cfg.render=True; the overlay is a
@@ -97,6 +122,21 @@ def evaluate(cfg: Config, path: str, button_names: list, episodes: int = 20,
             action, lstm_states = model.predict(
                 obs, state=lstm_states, episode_start=episode_starts,
                 deterministic=deterministic)
+        # Demo recall: override the policy with the human's action in the most similar demo
+        # frame, but only when the match is confident (else keep the policy's action).
+        if retriever is not None:
+            img = obs["image"] if isinstance(obs, dict) else obs
+            img = np.asarray(img)
+            if _pix_ch is None:                          # resolve the newest pixel channel once
+                c = img.shape[-1]
+                _pix_ch = c - max(1, c // max(1, cfg.frame_stack))
+            frame = img[0, :, :, _pix_ch]                # env 0, newest pixel frame (84x84)
+            mem_action, _sim = retriever.retrieve(frame, recall_threshold)
+            recall_steps += 1
+            if mem_action is not None:
+                action = np.asarray(action)
+                action[0] = mem_action
+                recall_hits += 1
         obs, _rewards, dones, infos = venv.step(action)
         episode_starts = dones
         tracker.update(infos, np.asarray(action))
@@ -134,7 +174,11 @@ def evaluate(cfg: Config, path: str, button_names: list, episodes: int = 20,
         except Exception:
             pass
     venv.close()
-    return tracker.snapshot(0)
+    snap = tracker.snapshot(0)
+    if retriever is not None and recall_steps > 0:
+        snap["recall_hit_rate"] = recall_hits / recall_steps
+        snap["recall_hits"] = recall_hits
+    return snap
 
 
 def main() -> None:
@@ -155,6 +199,16 @@ def main() -> None:
     p.add_argument("--algo", default="ppo", choices=["ppo", "dqn"],
                    help="Which brain family to evaluate: ppo (default) or dqn (QR-DQN). "
                         "Selects the checkpoint prefix when --path is not given.")
+    p.add_argument("--recall", action="store_true",
+                   help="Demo retrieval: replay the human's action from the most similar demo "
+                        "frame when the live view matches closely (search memory for the best "
+                        "action). Defers to the policy when there's no confident match.")
+    p.add_argument("--recall-threshold", type=float, default=0.92,
+                   help="Cosine-similarity gate for --recall (default 0.92). Higher = only very "
+                        "close matches replay the human action.")
+    p.add_argument("--recall-skip-noop", action="store_true",
+                   help="With --recall, ignore the human's idle (no-op) frames so retrieval "
+                        "suggests an active move instead of freezing.")
     args = p.parse_args()
 
     cfg = Config()
@@ -196,7 +250,9 @@ def main() -> None:
 
     s = evaluate(cfg, path, button_names, args.episodes,
                  deterministic=not args.stochastic, temperature=args.temperature,
-                 overlay=getattr(args, "overlay", False))
+                 overlay=getattr(args, "overlay", False), recall=args.recall,
+                 recall_threshold=args.recall_threshold,
+                 recall_skip_noop=args.recall_skip_noop)
     print("\n== Evaluation ==")
     print(f"  episodes:        {int(s['episodes'])}")
     print(f"  RAW reward/ep:   {s['mean_base_reward']:.2f}   (native scenario, fair for A/B)")
@@ -214,6 +270,9 @@ def main() -> None:
     if s.get("terminals"):
         print(f"  episode endings: {s['terminals']}")
     print(f"  mean ep length:  {s['mean_episode_length']:.0f} steps")
+    if "recall_hit_rate" in s:
+        print(f"  demo recall:     {s['recall_hit_rate']:.0%} of steps replayed a human action "
+              f"({s['recall_hits']} steps from memory)")
 
     if args.json:
         import json
