@@ -266,9 +266,9 @@ cores by default.
 channel — each on-screen object painted by category (enemy/weapon/health/…) plus doors projected
 from the WAD — so the policy SEES "what is where" instead of inferring from raw pixels. In a
 **3-seed** controlled fresh-1M A/B on MAP01 (only this flag differs) it gives a **modest but
-consistent** gain: exploration **0.227 vs 0.181** (+25%, gap > seed-to-seed std) and shooting
-accuracy **0.131 vs 0.091**. (A single seed first showed a 2× exit-progress jump — that didn't
-replicate; multi-seed corrected the claim.) Changes the obs shape → needs `--fresh` (brain tag
+consistent** gain: exploration **0.227 vs 0.173** (+31%, gap > seed-to-seed std) and shooting
+accuracy **0.131 vs 0.090**. (A single seed first showed a 2× exit-progress jump — that didn't
+replicate across 3 seeds; multi-seed corrected the claim.) Changes the obs shape → needs `--fresh` (brain tag
 `_se`). Watch what the net sees with `eval --overlay` (the "SEES" panel).
 
 ---

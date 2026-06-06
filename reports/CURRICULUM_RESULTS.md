@@ -73,18 +73,19 @@ std**, because RL is noisy and one seed lies (this is the whole point of the mul
 
 | Metric | Baseline | **Semantic** | Gap vs noise |
 |---|---|---|---|
-| map explored | 0.181 ± 0.030 | **0.227 ± 0.022** | **+25% — gap > std (holds up)** |
-| shooting accuracy | 0.091 ± 0.029 | **0.131 ± 0.002** | **+44% — gap > std (holds up)** |
-| exit progress | 0.198 ± 0.039 | 0.243 ± 0.100 | +0.046 — **within noise (inconclusive)** |
-| kills / episode | 6.35 ± 0.35 | 8.0 ± 2.07 | +1.65 — **within noise (inconclusive)** |
+| map explored | 0.173 ± 0.025 | **0.227 ± 0.022** | **+31% — gap > std (holds up)** |
+| shooting accuracy | 0.090 ± 0.021 | **0.131 ± 0.002** | **+46% — gap > std (holds up)** |
+| exit progress | 0.217 ± 0.043 | 0.243 ± 0.100 | +0.026 — **within noise (inconclusive)** |
+| kills / episode | 6.33 ± 0.25 | 8.0 ± 2.07 | +1.67 — **within noise (inconclusive)** |
 
 **Honest conclusion: the semantic channel gives a MODEST but CONSISTENT gain in EXPLORATION
 (~+25%) and shooting ACCURACY — those gaps exceed the seed-to-seed variability.** The dramatic
 seed-42 numbers (2× exit_progress, +69% kills) were a **lucky seed**: they did NOT replicate
 (seed 43 was a dead heat; exit_progress and kills overlap heavily across seeds). Single-seed A/B
 would have over-claimed a big win — the multi-seed corrected it. Both conditions still 0% exit.
-(Baseline n=2 while seed-44-baseline finishes; refines the baseline mean slightly, not the
-conclusion.)
+(Final: 3 seeds each. On seed 44 the baseline's exit_progress 0.255 actually BEAT the semantic's
+0.153 — concrete proof exit_progress is noise-dominated here, while exploration stays consistently
+in the semantic's favour across all 3 seeds.)
 
 ## Richer, non-binary metrics (replacing exit-rate as the headline)
 
