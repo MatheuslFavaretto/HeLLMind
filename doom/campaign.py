@@ -142,32 +142,42 @@ def steer_toward(buttons, px, py, angle_deg, tx, ty, fwd, turn_left, turn_right,
 
 
 def vision_steer(buttons, left_open, center_open, right_open, fwd, turn_left, turn_right,
-                 min_forward: float = 0.30):
+                 wall: float = 0.10):
     """Vision-first navigation (pure, unit-testable): steer toward the MOST OPEN direction the
-    agent can see (openness 0..1 per third of its view, from the depth buffer). This follows
+    agent can SEE (openness 0..1 per third of its view, from the depth buffer). Follows
     corridors and avoids walls — unlike steering at a map coordinate, which walks into the wall
-    between agent and target. Goes FORWARD when the centre is open; otherwise turns toward the
-    more open side. Returns a NEW button vector."""
+    between agent and target. Logic is RELATIVE (compare the thirds), not absolute, because the
+    depth scale runs low indoors:
+      • centre is (near) the most open → go FORWARD;
+      • everything is a wall (best ≤ `wall`, e.g. a corner) → TURN in place to escape, no
+        forward (this is the corner-stuck fix);
+      • one side clearly more open → turn there and ease forward.
+    Returns a NEW button vector."""
     out = list(buttons)
     best = max(left_open, center_open, right_open)
-    # Centre clear enough → push straight ahead.
-    if center_open >= best * 0.85 and center_open > min_forward:
+    if center_open >= best * 0.9 and center_open > wall:
         if fwd is not None:
-            out[fwd] = 1
-    elif left_open >= right_open:
-        if turn_left is not None:
-            out[turn_left] = 1
-        if turn_right is not None:
-            out[turn_right] = 0
-        if fwd is not None and left_open > min_forward:
-            out[fwd] = 1
+            out[fwd] = 1                       # corridor ahead → straight on
+    elif best <= wall:
+        # Boxed in (corner / facing a wall) — rotate to find an opening, do NOT push forward.
+        turn = turn_left if left_open >= right_open else turn_right
+        if turn is not None:
+            out[turn] = 1
     else:
-        if turn_right is not None:
-            out[turn_right] = 1
-        if turn_left is not None:
-            out[turn_left] = 0
-        if fwd is not None and right_open > min_forward:
-            out[fwd] = 1
+        if left_open >= right_open:
+            if turn_left is not None:
+                out[turn_left] = 1
+            if turn_right is not None:
+                out[turn_right] = 0
+            if fwd is not None and left_open > wall:
+                out[fwd] = 1
+        else:
+            if turn_right is not None:
+                out[turn_right] = 1
+            if turn_left is not None:
+                out[turn_left] = 0
+            if fwd is not None and right_open > wall:
+                out[fwd] = 1
     return out
 
 
@@ -702,19 +712,21 @@ class CampaignDoomEnv(gym.Env):
             if (dx - px) ** 2 + (dy - py) ** 2 <= reach * reach:
                 self._reached_doors.add(i)
         targets = [(i, d) for i, d in enumerate(self._doors) if i not in self._reached_doors]
-        # If a door is CLOSE and roughly in front (line of sight), approach it to trigger USE —
-        # a closed door looks like a wall to the depth sensor, so vision alone would avoid it.
         if targets:
             i, (tx, ty) = min(targets, key=lambda t: (t[1][0]-px)**2 + (t[1][1]-py)**2)
             self._nav_target = (tx, ty)
+            # ONLY when basically touching a door AND dead-ahead, nudge forward to trigger USE.
+            # (Steering at the door's coordinate from afar is what walked it into walls/corners —
+            # so we DON'T do that anymore; vision drives, this is just the final contact poke.)
             import math
             dist = math.hypot(tx - px, ty - py)
             bearing = math.degrees(math.atan2(ty - py, tx - px))
             rel = abs((bearing - ang + 180.0) % 360.0 - 180.0)
-            if dist < 180.0 and rel < 45.0:
-                return steer_toward(out, px, py, ang, tx, ty, self._fwd_idx,
-                                    self._turn_left_idx, self._turn_right_idx)
-        # Otherwise: go where it's OPEN (the user's "prioritise the field of vision first").
+            if dist < reach * 1.5 and rel < 22.0 and self._fwd_idx is not None:
+                out[self._fwd_idx] = 1
+                return out
+        # Otherwise: VISION drives — go where it's OPEN (corridors), turn off a wall, never
+        # push into a coordinate behind a wall. This is "prioritise the field of vision first".
         openness = self._depth_openness()
         if openness is not None:
             return vision_steer(out, openness[0], openness[1], openness[2],
