@@ -217,6 +217,9 @@ def main() -> None:
     p.add_argument("--recall-skip-noop", action="store_true",
                    help="With --recall, ignore the human's idle (no-op) frames so retrieval "
                         "suggests an active move instead of freezing.")
+    p.add_argument("--html", nargs="?", const="reports/eval_report.html", default=None,
+                   help="Write a full HTML report (metrics + charts + formulas + recommendations) "
+                        "after the eval. Optional path (default reports/eval_report.html).")
     args = p.parse_args()
 
     cfg = Config()
@@ -353,6 +356,19 @@ def main() -> None:
         export_metrics(s, job="hellmind_eval")
     except Exception as _e:
         print(f"[prometheus] export skipped: {_e}")
+
+    # Full HTML report (metrics + charts + formulas + recommendations) if requested.
+    if args.html:
+        try:
+            import os as _os
+            from writer.html_report import write_report
+            report_path = write_report(
+                s, args.html,
+                meta={"map": cfg.maps[0] if cfg.campaign else cfg.scenario,
+                      "brain": _os.path.basename(path)})
+            print(f"\n[report] HTML written -> {report_path}")
+        except Exception as _e:
+            print(f"[report] HTML failed: {_e}")
 
     if args.json:
         import json
