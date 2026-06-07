@@ -24,12 +24,17 @@ TRACKED_VARS = [
     vzd.GameVariable.POSITION_Y,      # map position (for path/coverage)
     vzd.GameVariable.SELECTED_WEAPON, # selected weapon (slot)
     vzd.GameVariable.ANGLE,           # facing direction (degrees) — orientation signal
+    # Weapon ownership per slot (1=owns it) — lets auto-best-weapon select the strongest gun.
+    vzd.GameVariable.WEAPON1, vzd.GameVariable.WEAPON2, vzd.GameVariable.WEAPON3,
+    vzd.GameVariable.WEAPON4, vzd.GameVariable.WEAPON5, vzd.GameVariable.WEAPON6,
+    vzd.GameVariable.WEAPON7,
 ]
 
 VAR_NAMES = [
     "killcount", "hitcount", "hits_taken", "damagecount", "damage_taken",
     "deathcount", "itemcount", "health", "ammo2",
     "position_x", "position_y", "selected_weapon", "angle",
+    "weapon1", "weapon2", "weapon3", "weapon4", "weapon5", "weapon6", "weapon7",
 ]
 
 # Cumulative counters -> we report a per-step delta
@@ -39,5 +44,8 @@ MONOTONIC = [
 ]
 # Instantaneous values -> we report the current level (mean/min over the window)
 LEVELS = ["health", "ammo2", "position_x", "position_y", "selected_weapon", "angle"]
+
+# Weapon-ownership var names (slot 1..7), in order — used by auto-best-weapon.
+WEAPON_VARS = ["weapon1", "weapon2", "weapon3", "weapon4", "weapon5", "weapon6", "weapon7"]
 
 assert len(TRACKED_VARS) == len(VAR_NAMES)

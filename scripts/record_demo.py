@@ -1,10 +1,25 @@
 """Record human demonstrations in ViZDoom SPECTATOR mode (for behavioral cloning).
 
 A human plays with the keyboard/mouse; we log (downsampled observation, nearest discrete
-action) for every frame and save one .npz per episode. Feed the dir to `python -m rl.bc`.
+action) for every frame and save one .npz per episode — now WITH a `reached_exit` flag so
+BC can clone ONLY the successful runs (wandering/dying demos teach the agent to wander/die).
 
-    python scripts/record_demo.py --map MAP01 --episodes 3
-    # play to the EXIT — those are the demos worth recording.
+The full BC → fine-tune pipeline (use a PIXEL-ONLY config so the brain's obs matches the
+recorded pixel frames — spatial/depth/game-vars channels aren't recorded and would mismatch):
+
+    # 1) record — play to the EXIT each episode (the flag is printed per episode)
+    python scripts/record_demo.py --map MAP01 --episodes 5 --strafe --minutes 8
+
+    # 2) clone — ONLY the runs that reached the exit, into a pixel-only brain
+    CAMPAIGN=1 MAPS=MAP01 GAME_VARS=0 SPATIAL_MEMORY=0 DEPTH_PERCEPTION=0 AUTOMAP=0 STRAFE=1 \
+      python -m rl.bc --epochs 20 --only-success
+
+    # 3) fine-tune — RL continues FROM the cloned brain (same pixel-only config)
+    CAMPAIGN=1 MAPS=MAP01 GAME_VARS=0 SPATIAL_MEMORY=0 DEPTH_PERCEPTION=0 AUTOMAP=0 STRAFE=1 \
+      python -m rl.train --maps MAP01 --timesteps 800000 --resume
+
+    # 4) eval
+    …same env… python -m rl.eval --episodes 20 --json --algo ppo
 
 Needs a display (it opens the game window). The agent isn't acting; you are.
 """
@@ -74,11 +89,23 @@ def main() -> None:
             # The human closed the window — not an error. Save what this episode captured.
             closed = True
             print("[record] window closed — stopping after this episode.")
+        # Did this run REACH THE EXIT? Episode ended NOT dead and BEFORE the (long) timeout =
+        # the human found the exit. BC should clone only these — wandering/dying demos teach
+        # the agent to wander/die. None when the window was closed mid-episode (unknown).
+        reached_exit = None
+        if not closed:
+            from doom.env import classify_terminal
+            term = classify_terminal(game.is_player_dead(),
+                                     game.get_episode_time(), game.get_episode_timeout())
+            reached_exit = (term == "exit")
         if obs_frames:
             path = os.path.join(out_dir, f"demo_{args.map}_{ep:03d}.npz")
             save_demo(path, np.asarray(obs_frames, dtype=np.uint8),
-                      np.asarray(act_idxs, dtype=np.int64))
-            print(f"[record] episode {ep}: {len(act_idxs)} frames -> {path}")
+                      np.asarray(act_idxs, dtype=np.int64), reached_exit=reached_exit)
+            tag = ("✓ reached EXIT" if reached_exit else
+                   "✗ did NOT reach exit (won't be used with --only-success)"
+                   if reached_exit is False else "? unknown (window closed)")
+            print(f"[record] episode {ep}: {len(act_idxs)} frames — {tag} -> {path}")
     try:
         game.close()
     except Exception:

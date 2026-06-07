@@ -53,7 +53,8 @@ def main() -> None:
     cfg.memory_enabled = False
     meta = campaign_metadata(cfg.wad_path, cfg.maps[0], strafe=cfg.strafe)
     name_prefix = brain_prefix("campaign", meta["num_actions"], cfg.use_lstm,
-                               cfg.spatial_memory, cfg.depth_perception, cfg.automap, cfg.frame_stack, cfg.game_vars)
+                               cfg.spatial_memory, cfg.depth_perception, cfg.automap, cfg.frame_stack, cfg.game_vars,
+                               getattr(cfg, "semantic_channel", False))
     path = args.path or _latest_checkpoint(cfg, name_prefix)
     print(f"[gif] brain: {path} | spatial={cfg.spatial_memory}")
 

@@ -49,13 +49,9 @@ class CoachState(TypedDict):
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _score(m: dict) -> float:
-    """Composite score — same formula as autonomous.score()."""
-    exit_r    = float(m.get("exit_rate", 0.0))
-    exit_prog = float(m.get("exit_progress", 0.0))
-    explored  = float(m.get("explored_fraction", 0.0))
-    kills     = min(float(m.get("kills_per_episode", 0.0)), 5.0) / 5.0
-    accuracy  = float(m.get("shooting_accuracy", 0.0))
-    return 4.0 * exit_r + 1.5 * exit_prog + 3.0 * explored + 1.0 * accuracy + 0.5 * kills
+    """Composite score — delegates to autonomous.score() (single source of truth, no drift)."""
+    from rl.autonomous import score as _autoscore
+    return _autoscore(m)
 
 
 # ── Nodes ─────────────────────────────────────────────────────────────────────
@@ -147,16 +143,34 @@ def node_propose(state: CoachState) -> dict:
     except Exception:
         pass
 
-    # Layer LLM on top if enabled (refines combat knobs only)
+    # Layer SEMANTIC memory: 'have I seen a situation like this before, and what worked?' Fills in
+    # proven params for knobs the heuristic didn't already target (the heuristic's targeted fix
+    # wins; semantic recall supplies validated priors for the rest).
+    try:
+        from rl.autonomous import semantic_recall
+        from rl.tuning_registry import validate
+        recalled, sem_note = semantic_recall(state["memory_dir"], m)
+        if recalled:
+            touched = {k for k in new if str(new.get(k)) != str(env.get(k))}  # heuristic's changes
+            fill = {k: v for k, v in recalled.items() if k not in touched}
+            if fill:
+                new = validate(fill, base_env=new)   # add proven priors, clamped; keep heuristic's
+                reason = f"{reason}; {sem_note}"
+    except Exception:
+        pass
+
+    # Layer LLM on top if enabled. Prefer the OPEN proposer (full parameter catalog — the LLM
+    # can change ANY knob it wants, validated against the registry); fall back to the combat-only
+    # proposer if the open one has nothing/Ollama is down.
     if state.get("use_llm"):
         try:
-            from rl.autonomous import llm_propose
+            from rl.autonomous import llm_propose, llm_propose_open
             from config import Config
             cfg = Config(); cfg.memory_dir = state["memory_dir"]
-            res = llm_propose(cfg, new, m)
+            res = llm_propose_open(cfg, new, m) or llm_propose(cfg, new, m)
             if res:
                 new, llm_r = res
-                reason = f"{reason}; LLM: {llm_r}"
+                reason = f"{reason}; {llm_r}"
         except Exception:
             pass
 
@@ -184,9 +198,13 @@ def node_adopt(state: CoachState) -> dict:
         RollbackLog(state["memory_dir"]).record(
             len(state["history"]), before, change, after,
             {"score": state["score"]}, kept=True)
+        # Remember this (situation → change → good outcome) so a similar future state recalls it.
+        from rl.autonomous import semantic_record
+        semantic_record(state["memory_dir"], state["metrics"], change,
+                        state["score"], kept=True, reason=state.get("reason", ""))
     except Exception:
         pass
-    return {"log": ["[adopt] config kept and logged"]}
+    return {"log": ["[adopt] config kept and logged (+ semantic memory)"]}
 
 
 def node_revert(state: CoachState) -> dict:
@@ -199,6 +217,10 @@ def node_revert(state: CoachState) -> dict:
         RollbackLog(state["memory_dir"]).record(
             len(history), before, change, after,
             {"score": state["score"]}, kept=False)
+        # Remember the regression too — so a similar future state won't be told it "worked".
+        from rl.autonomous import semantic_record
+        semantic_record(state["memory_dir"], state["metrics"], change,
+                        state["score"], kept=False, reason=state.get("reason", ""))
     except Exception:
         pass
     return {"next_env": last_good,

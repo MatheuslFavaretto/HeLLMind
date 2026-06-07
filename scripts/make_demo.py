@@ -32,7 +32,8 @@ def main() -> None:
 
     cfg = Config()
     name_prefix = brain_prefix("campaign", len(CAMPAIGN_ACTIONS), cfg.use_lstm,
-                               cfg.spatial_memory, cfg.depth_perception, cfg.automap, cfg.frame_stack, cfg.game_vars)
+                               cfg.spatial_memory, cfg.depth_perception, cfg.automap, cfg.frame_stack, cfg.game_vars,
+                               getattr(cfg, "semantic_channel", False))
     path = args.path or _latest_checkpoint(cfg, name_prefix)
     model = algo_class(cfg.use_lstm).load(path)
     print(f"[demo] brain: {path}")

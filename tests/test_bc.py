@@ -53,6 +53,33 @@ def test_load_demos_concatenates(tmp_path):
     assert len(la) == 5
 
 
+def test_only_success_filters_to_exit_demos(tmp_path):
+    # BC's premise: clone a WIN. only_success must keep exit demos and drop wandering ones.
+    save_demo(str(tmp_path / "win.npz"), np.zeros((4, 4, 4, 1), np.uint8),
+              np.array([0, 1, 2, 3]), reached_exit=True)
+    save_demo(str(tmp_path / "fail.npz"), np.zeros((6, 4, 4, 1), np.uint8),
+              np.array([0, 0, 0, 0, 0, 0]), reached_exit=False)
+    _, la_all = load_demos(str(tmp_path), only_success=False)
+    _, la_win = load_demos(str(tmp_path), only_success=True)
+    assert len(la_all) == 10            # both demos
+    assert len(la_win) == 4             # only the exit-reaching one
+
+
+def test_only_success_keeps_unflagged_demos(tmp_path):
+    # Older demos with no flag can't be verified → kept (with a warning), not silently dropped.
+    save_demo(str(tmp_path / "old.npz"), np.zeros((3, 4, 4, 1), np.uint8), np.array([1, 1, 1]))
+    _, la = load_demos(str(tmp_path), only_success=True)
+    assert len(la) == 3
+
+
+def test_reached_exit_round_trips(tmp_path):
+    save_demo(str(tmp_path / "d.npz"), np.zeros((2, 4, 4, 1), np.uint8),
+              np.array([0, 1]), reached_exit=True)
+    import numpy as _np
+    with _np.load(str(tmp_path / "d.npz")) as d:
+        assert "reached_exit" in d and bool(d["reached_exit"]) is True
+
+
 def test_load_demos_empty_dir(tmp_path):
     obs, acts = load_demos(str(tmp_path))
     assert len(obs) == 0 and len(acts) == 0

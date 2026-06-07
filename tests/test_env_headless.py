@@ -80,6 +80,72 @@ def test_campaign_env_contract_and_spatial_channel():
 
 @pytest.mark.skipif(not __import__("os").path.exists(default_wad()),
                     reason="freedoom2.wad not bundled")
+def test_auto_use_pulses_not_holds():
+    # Regression (found on watch: agent stood at a door and it never opened). Doom's USE is
+    # EDGE-triggered — holding it every frame opens a door only ONCE. auto-USE must PULSE
+    # (alternate on/off across steps) so each contact makes a fresh key-down edge.
+    env = CampaignDoomEnv(wad_path=default_wad(), doom_map="MAP01",
+                          rewards={"auto_use": 1.0})
+    try:
+        env.reset(seed=0)
+        assert env._use_idx is not None
+        # Action 0 (FWD) never presses USE, so auto-USE drives the pulse. Step a few times and
+        # collect the forced USE state — it must ALTERNATE, not stay held at 1.
+        states = []
+        for _ in range(6):
+            env.step(0)
+            states.append(bool(env._use_held))
+        assert any(states) and not all(states), f"USE didn't pulse: {states}"
+        # Specifically: consecutive steps must differ (a fresh edge each press).
+        assert any(states[i] != states[i + 1] for i in range(len(states) - 1))
+    finally:
+        env.close()
+
+
+def test_aim_assist_turns_toward_enemy_and_holds_fire():
+    # Combat assist the user asked for: turn toward the nearest enemy, fire when centred,
+    # and HOLD fire when there's no target (stop spraying at walls). Pure logic.
+    from doom.campaign import aim_assist
+    N, ATK, TL, TR = 10, 4, 2, 3
+    base = [0] * N
+    left  = aim_assist(base, [{"x": 0.05, "w": 0.1, "h": 0.2}], TL, TR, ATK)
+    right = aim_assist(base, [{"x": 0.85, "w": 0.1, "h": 0.2}], TL, TR, ATK)
+    centre = aim_assist(base, [{"x": 0.46, "w": 0.08, "h": 0.2}], TL, TR, ATK)
+    assert left[TL] == 1 and left[ATK] == 0        # enemy left → turn left, don't fire yet
+    assert right[TR] == 1 and right[ATK] == 0      # enemy right → turn right
+    assert centre[ATK] == 1                        # centred → fire
+    # No enemy but the policy chose ATTACK → suppressed (no ammo wasted on walls).
+    shooting = [0] * N; shooting[ATK] = 1
+    assert aim_assist(shooting, [], TL, TR, ATK)[ATK] == 0
+    # Nearest = biggest box: a close enemy on the right wins over a tiny one on the left.
+    two = aim_assist(base, [{"x": 0.0, "w": 0.02, "h": 0.02},
+                            {"x": 0.8, "w": 0.2, "h": 0.4}], TL, TR, ATK)
+    assert two[TR] == 1
+
+
+@pytest.mark.skipif(not __import__("os").path.exists(default_wad()),
+                    reason="freedoom2.wad not bundled")
+def test_auto_best_weapon_picks_highest_owned_slot():
+    # "Always use the best weapon": auto-best-weapon must select the HIGHEST owned slot. At
+    # spawn the agent owns only the pistol (slot 2); grabbing a shotgun (slot 3) must win.
+    env = CampaignDoomEnv(wad_path=default_wad(), doom_map="MAP01",
+                          rewards={"auto_best_weapon": 1.0})
+    try:
+        env.reset(seed=0)
+        env.step(0)
+        assert env._best_weapon_slot() == 2          # spawn: pistol only
+        # Simulate picking up a shotgun (slot 3) — best must jump to 3.
+        env._last_vars["weapon3"] = 1.0
+        assert env._best_weapon_slot() == 3
+        # And a chaingun (slot 4) outranks the shotgun.
+        env._last_vars["weapon4"] = 1.0
+        assert env._best_weapon_slot() == 4
+    finally:
+        env.close()
+
+
+@pytest.mark.skipif(not __import__("os").path.exists(default_wad()),
+                    reason="freedoom2.wad not bundled")
 def test_campaign_weapon_variety_seeds_spawn_weapon():
     # With the variety reward on, the spawn weapon must be pre-seeded so it doesn't
     # pay out every episode just for holding the starting pistol.

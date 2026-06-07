@@ -127,6 +127,20 @@ class Config:
     # signal -> it gets stuck banging on closed doors (observed). On by default; the agent
     # still chooses where to GO, this just stops doors from being a dead end.
     auto_use: bool = os.getenv("AUTO_USE", "1") in ("1", "true", "True")
+    # Auto-best-weapon: each frame, force-select the strongest owned weapon so the agent
+    # always fights with its best gun (e.g. swap off the pistol once it grabs a shotgun)
+    # instead of having to learn weapon management. On by default.
+    auto_best_weapon: bool = os.getenv("AUTO_BEST_WEAPON", "1") in ("1", "true", "True")
+    # Auto-aim (combat assist, needs USE_LABELS): when an enemy is on screen, TURN toward the
+    # nearest one and only let ATTACK through once it's roughly centred — and HOLD fire when no
+    # enemy is visible. Fixes "sprays at walls / never aims" — aiming from 84x84 grey pixels is
+    # near-impossible to learn, so we assist it (like auto-USE for doors). On by default.
+    auto_aim: bool = os.getenv("AUTO_AIM", "1") in ("1", "true", "True")
+    # Auto-door-nav: when NO enemy is visible, steer toward the nearest not-yet-reached door
+    # (read from the WAD) and push forward — with a wall-escape sweep when it gets stuck. Doors
+    # aren't visible like actors, but the agent doesn't need to SEE them: auto-USE opens them on
+    # contact, so this just gets it THERE. Crude potential-field nav (no full pathfinding).
+    auto_door_nav: bool = os.getenv("AUTO_DOOR_NAV", "1") in ("1", "true", "True")
     discovery_reward: float = float(os.getenv("DISCOVERY_REWARD", "0.0"))
     bestiary_reward: bool = os.getenv("BESTIARY_REWARD", "0") in ("1", "true", "True")
     # Spatial memory: feed the agent a 2nd obs channel of where it has already been
@@ -146,6 +160,11 @@ class Config:
     # Labels buffer: ground-truth on-screen enemy detection (ViZDoom labels). Does NOT change
     # the obs shape — used for telemetry and an optional engagement reward. No --fresh needed.
     use_labels: bool = os.getenv("USE_LABELS", "1") in ("1", "true", "True")
+    # Semantic channel: paint the DETECTIONS into an extra obs channel the network actually sees
+    # — each on-screen object filled by category (enemy/weapon/health/…) plus projected DOORS —
+    # so the policy perceives "what" is where instead of inferring everything from raw pixels.
+    # Implies use_labels. Changes the obs shape → needs --fresh.
+    semantic_channel: bool = os.getenv("SEMANTIC_CHANNEL", "0") in ("1", "true", "True")
     # Game-vars in the policy: feed normalised HEALTH+AMMO into the network (DFP/Arnold). The
     # agent currently can't SEE its own health → keeps fighting until it dies at low HP. With
     # this it learns to retreat when weak. Makes the obs a Dict → MultiInputPolicy, needs --fresh.
@@ -218,6 +237,9 @@ class Config:
             "combat_explore_split": float(self.combat_explore_split),
             "combat_explore_factor": self.combat_explore_factor,
             "auto_use": float(self.auto_use),
+            "auto_best_weapon": float(self.auto_best_weapon),
+            "auto_aim": float(self.auto_aim),
+            "auto_door_nav": float(self.auto_door_nav),
             "discovery_reward": self.discovery_reward,
             "weapon_variety_reward": self.weapon_variety_reward,
             "use_rnd":  float(self.use_rnd),

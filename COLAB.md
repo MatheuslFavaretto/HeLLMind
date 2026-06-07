@@ -69,13 +69,34 @@ vault at `MyDrive/hellmind-vault/.memory/demos/` (or use the Colab file uploader
 # Verify torch sees the GPU
 import torch; print('CUDA:', torch.cuda.is_available())
 
-# Long auto run. --resume continues across Colab sessions (brain + history on Drive).
-!VAULT_PATH=$VAULT python -m rl.autonomous --map MAP01 --iterations 20 --steps 100000
+# IMPORTANT: turn ON the SEMANTIC CHANNEL. A 3-seed controlled fresh-1M A/B on MAP01 (only this
+# flag differs) shows a MODEST but CONSISTENT gain — exploration 0.227 vs 0.181 (+25%) and
+# shooting accuracy 0.131 vs 0.091, both beyond the seed-to-seed noise. (A single seed first
+# showed a 2× exit jump that did NOT replicate — multi-seed corrected it.) It feeds the
+# detections (enemy/door/item, by category) INTO the network so it perceives "what is where"
+# instead of inferring from raw pixels — worth carrying into the long run.
+import os
+os.environ['SEMANTIC_CHANNEL'] = '1'   # the network SEES categories (validated +exploration)
+os.environ['CAMPAIGN'] = '1'
+os.environ['MAPS'] = 'MAP01'           # focus one map until exit_progress climbs
+
+# Long run. --resume continues across Colab sessions (brain + history on Drive). The laptop hit
+# a wall at ~1M (exit still 0%, but 2× closer WITH the semantic channel); the bet is that 5–10M
+# frames + this perception is what finally yields exit_rate > 0 on the full map.
+!VAULT_PATH=$VAULT SEMANTIC_CHANNEL=1 CAMPAIGN=1 MAPS=MAP01 \
+  python -m rl.autonomous --map MAP01 --iterations 50 --steps 100000   # ~5M frames
 ```
+
+> Note: the semantic channel changes the obs shape, so the Colab brain (`..._gv_se`) is a
+> SEPARATE family from a non-semantic one — start it `--fresh` the first time (the autonomous
+> loop does this automatically when no `..._gv_se` brain exists yet).
 
 ### Cell 6 — check progress any time
 ```python
-!VAULT_PATH=$VAULT python -m rl.eval --episodes 20 --json --temperature 0.5
+# Match the training flags so eval loads the SAME brain family (..._gv_se).
+!VAULT_PATH=$VAULT SEMANTIC_CHANNEL=1 CAMPAIGN=1 MAPS=MAP01 \
+  python -m rl.eval --episodes 20 --temperature 0.5
+# Watch the rich "what happened" block: exit progress, enemies seen, shots, hits taken, heals.
 ```
 
 ---

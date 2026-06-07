@@ -1,0 +1,10 @@
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  # Scrape the Pushgateway, where eval/train push the HeLLMind metrics. honor_labels keeps the
+  # job/instance the pusher set (so each run's metrics are distinguishable).
+  - job_name: pushgateway
+    honor_labels: true
+    static_configs:
+      - targets: ["pushgateway:9091"]

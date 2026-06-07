@@ -29,25 +29,32 @@ PY = sys.executable
 
 # ---- the GOAL, as one number: explore the whole map, finish it, and survive/fight ----
 def score(m: dict) -> float:
-    """Composite goal score. Priority order (the weights): finishing > covering > aim >
-    fighting.
+    """Composite goal score — COMBAT/AIM-prioritised (the user's goal: 'aim better, don't die').
 
-    Every term is normalised to ~[0,1] FIRST, so the weights alone set priority. This
-    matters: kills/ep is unbounded (0–5+), so the old `0.5 * kills` let a spawn-camping
-    brain that farms ~4 kills score +2.0 — dwarfing a real explorer (explored=0.1 →
-    +0.3). That scale bug literally told the agent "camp and kill > explore", the exact
-    local optimum we kept hitting. Capping kills at 5 (diminishing past that) and scaling
-    to [0,1] restores the intended ordering: max contributions become exit 4.0, explore
-    3.0, aim 1.0, kills 0.5 — kills is now a tiebreaker, not the objective."""
-    exit_r   = m.get("exit_rate", 0.0)                       # [0,1] (binary: finished?)
-    # Partial credit for getting CLOSE to the exit (dense, fairer than the binary rate) — so
-    # the agent is rewarded for progress toward finishing even before it completes once.
-    exit_prog = m.get("exit_progress", 0.0)                 # [0,1]
-    explored = m.get("explored_fraction", 0.0)              # [0,1]
-    kills    = min(m.get("kills_per_episode", 0.0), 5.0) / 5.0  # [0,1] (capped)
-    accuracy = m.get("shooting_accuracy", 0.0)             # [0,1]
-    return (4.0 * exit_r + 1.5 * exit_prog + 3.0 * explored
-            + 1.0 * accuracy + 0.5 * kills)
+    Priority by weight: AIM QUALITY (accuracy + finishing what it sees + NOT spraying + centring)
+    > survival > exploration > finishing. Every term is normalised to ~[0,1] so the weights set
+    priority; empty metrics → 0 (penalties act on the BAD terms so a blank dict stays 0).
+
+    Why this shape: the old score weighted explore 3.0 vs aim 1.0, so the auto-loop kept tuning
+    EXPLORATION (and the agent sprayed). To make it learn to AIM, the reward of the loop must
+    value aim. The big levers are now accuracy + kill_conversion and the anti-spray/anti-death
+    PENALTIES (wasted_shots, aim_offset, death_rate) — a kill-farming sprayer (low accuracy, high
+    wasted) scores low, while a precise fighter scores high. kills stays a small capped tiebreaker
+    so raw farming can't dominate. Exit terms are kept (secondary) so finishing still helps."""
+    # Rewards (≥0)
+    accuracy   = m.get("shooting_accuracy", 0.0)               # [0,1] aim
+    kill_conv  = m.get("kill_conversion", 0.0)                 # [0,1] finishes what it sees
+    kills      = min(m.get("kills_per_episode", 0.0), 5.0) / 5.0   # [0,1] capped tiebreaker
+    explored   = m.get("explored_fraction", 0.0)              # [0,1] still must move
+    exit_prog  = m.get("exit_progress", 0.0)                  # [0,1] secondary
+    exit_r     = m.get("exit_rate", 0.0)                      # [0,1] secondary (binary)
+    # Penalties (the bad behaviours to drive DOWN) — default 0 so empty metrics score 0.
+    wasted     = m.get("wasted_shot_rate", 0.0)              # [0,1] spraying at nothing
+    aim_off    = m.get("aim_offset", 0.0)                    # [0,1] enemy off-centre
+    death      = m.get("death_rate", 0.0)                    # [0,1] dying
+    return (2.5 * accuracy + 1.5 * kill_conv + 0.5 * kills
+            + 1.0 * explored + 1.0 * exit_prog + 2.0 * exit_r
+            - 1.5 * wasted - 1.0 * aim_off - 0.5 * death)
 
 
 # Reward knobs the supervisor is allowed to move, with hard bounds (the guardrails).
@@ -101,6 +108,13 @@ def propose(env: dict, m: dict, algo: str = "ppo") -> tuple[dict, str]:
 
     timeout_rate = m.get("timeout_rate", 0.0)
     explored = m.get("explored_fraction", 0.0)
+    # Rich-metric diagnosis (the panels): what's the reward ACTUALLY rewarding, is it spraying,
+    # is it circling? These let the loop auto-make the fix we made by hand.
+    rb = m.get("reward_breakdown", {}) or {}
+    explore_share = rb.get("explore", 0.0)       # fraction of reward from exploration
+    wasted = m.get("wasted_shot_rate", 0.0)      # shots fired with NO enemy on screen
+    aim_off = m.get("aim_offset", 0.0)           # nearest enemy off-centre (1=edge)
+    revisit = m.get("revisit_rate", 0.0)         # circling (revisited cells)
 
     # Timeout diagnosis: if > 80% of episodes time out AND exploration is low, the
     # episode is too short to let the agent find anything interesting — extend it.
@@ -109,9 +123,11 @@ def propose(env: dict, m: dict, algo: str = "ppo") -> tuple[dict, str]:
         return new, (f"timeout_rate={timeout_rate:.0%}, explored={explored:.0%} → "
                      f"episode too short — raise EPISODE_TIMEOUT to {int(new['EPISODE_TIMEOUT'])}")
 
-    if explored < 0.10:
-        # Very low exploration: push on EVERY exploration lever — coverage, frontier, and the
-        # curiosity/return-then-explore knobs — to break out of the spawn room.
+    if explored < 0.10 and explore_share < 0.6:
+        # Very low exploration AND the reward isn't already explore-dominated: push on EVERY
+        # exploration lever to break out of the spawn room. (If explore_share is already high,
+        # pouring in MORE explore reward is the trap we hit by hand — fall through to the spray
+        # rule below instead.)
         bump("COVERAGE_REWARD", factor=1.4)
         bump("FRONTIER_REWARD", factor=1.5)
         bump("RND_SCALE", factor=1.3)
@@ -129,6 +145,26 @@ def propose(env: dict, m: dict, algo: str = "ppo") -> tuple[dict, str]:
         bump("DEATH_PENALTY", factor=1.2)
         return new, (f"death_rate {m.get('death_rate',0):.0%} -> raise DAMAGE_TAKEN_PENALTY "
                      f"to {new['DAMAGE_TAKEN_PENALTY']}, DEATH_PENALTY to {new['DEATH_PENALTY']}")
+    # SPRAY / reward-imbalance (rich metrics): it fires with no target (wasted_shot_rate high)
+    # AND/OR the reward is dominated by EXPLORATION while it isn't aiming (aim_offset high) — the
+    # exact miscalibration that makes it spray instead of aim. Cut the exploration pull, sharpen
+    # the trigger + aim. This is the hand-made fix, automated.
+    if wasted > 0.4 or (explore_share > 0.6 and aim_off > 0.5):
+        bump("COVERAGE_REWARD", factor=0.5)
+        bump("RND_SCALE", factor=0.5)
+        bump("FRONTIER_REWARD", factor=0.5)
+        bump("MISS_PENALTY", add=0.04)
+        bump("ENGAGEMENT_REWARD", factor=1.4)
+        return new, (f"spraying (wasted {wasted:.0%}, reward {explore_share:.0%} explore, "
+                     f"aim_offset {aim_off:.2f}) -> cut exploration + sharpen trigger/aim: "
+                     f"COVERAGE_REWARD {new['COVERAGE_REWARD']}, MISS_PENALTY {new['MISS_PENALTY']}, "
+                     f"ENGAGEMENT_REWARD {new['ENGAGEMENT_REWARD']}")
+    # Circling: covers little but revisits a lot — anti-circle levers (frontier + curiosity).
+    if revisit > 0.85 and explored < 0.3 and explore_share < 0.6:
+        bump("FRONTIER_REWARD", factor=1.5)
+        bump("RND_SCALE", factor=1.3)
+        return new, (f"circling (revisit {revisit:.0%}, explored {explored:.0%}) -> anti-circle: "
+                     f"FRONTIER_REWARD {new['FRONTIER_REWARD']}, RND_SCALE {new['RND_SCALE']}")
     # COMBAT regime diagnosis (separate from exploration): the agent SEES enemies but won't
     # shoot (combat_engagement low) or barely kills -> the deterministic policy has frozen.
     # Un-freeze it (entropy) and pay it to face enemies. Uses the per-mode telemetry when
@@ -207,6 +243,104 @@ def llm_propose(cfg: Config, env: dict, m: dict) -> Optional[tuple[dict, str]]:
     return new, f"LLM: {res.summary.strip()[:120]} ({', '.join(applied)})"
 
 
+def situation_text(m: dict) -> str:
+    """One-line description of the agent's CURRENT behaviour — what the semantic memory embeds, so
+    'similar past situations' are matched by MEANING (not keyword)."""
+    rb = m.get("reward_breakdown", {}) or {}
+    parts = [
+        f"explored {m.get('explored_fraction', 0):.0%}",
+        f"exit_progress {m.get('exit_progress', 0):.0%}",
+        f"kills {m.get('kills_per_episode', 0):.1f}",
+        f"accuracy {m.get('shooting_accuracy', 0):.0%}",
+        f"wasted_shots {m.get('wasted_shot_rate', 0):.0%}",
+        f"aim_offset {m.get('aim_offset', 0):.2f}",
+        f"revisit {m.get('revisit_rate', 0):.0%}",
+        f"deaths {m.get('death_rate', 0):.0%}",
+        f"reward_explore {rb.get('explore', 0):.0%}",
+        f"reward_combat {rb.get('combat', 0):.0%}",
+    ]
+    return "agent behaviour: " + ", ".join(parts)
+
+
+def semantic_recall(memory_dir: str, m: dict, top_k: int = 3) -> tuple[Optional[dict], str]:
+    """Ask semantic memory: 'have I seen a situation like THIS, and what change worked?' Returns
+    (env_delta, note) from the most-similar KEPT iteration that improved, or (None, '')."""
+    try:
+        from writer.semantic_memory import SemanticMemory
+        sm = SemanticMemory(memory_dir)
+        hits = sm.search(situation_text(m), top_k=top_k)
+        sm.close()
+    except Exception:
+        return None, ""
+    for text, meta, score in hits or []:
+        meta = meta or {}
+        chg = meta.get("change")
+        if chg and meta.get("kept") and float(meta.get("score", 0)) > 0 and score >= 0.6:
+            return dict(chg), (f"semantic recall ({score:.2f} similar past run "
+                               f"scored {float(meta.get('score',0)):.2f}): {str(meta.get('reason',''))[:70]}")
+    return None, ""
+
+
+def semantic_record(memory_dir: str, m: dict, change: dict, score: float, kept: bool,
+                    reason: str = "") -> None:
+    """Store this iteration's (situation → change → outcome) so a future similar situation recalls
+    what worked. Best-effort (no-op if semantic memory is unavailable)."""
+    try:
+        from writer.semantic_memory import SemanticMemory
+        sm = SemanticMemory(memory_dir)
+        sm.add(situation_text(m), meta={"change": dict(change or {}), "score": float(score),
+                                        "kept": bool(kept), "reason": str(reason)[:160]})
+        sm.close()
+    except Exception:
+        pass
+
+
+def llm_propose_open(cfg: Config, env: dict, m: dict) -> Optional[tuple[dict, str]]:
+    """OPEN LLM proposer: hand the model the FULL parameter catalog (every tunable knob, its
+    current value, range and effect) + this run's metrics, and let it propose a new value for
+    ANY of them. Every change is validated/clamped against the registry, so it can ask for
+    anything but only valid, in-range params apply. Returns (new_env, reason) or None.
+
+    This is the "the LLM knows and can change all parameters" path (vs llm_propose's fixed
+    combat subset). Needs Ollama; degrades to None if unavailable."""
+    try:
+        from pydantic import BaseModel
+        from rl.tuning_registry import describe_for_llm, validate
+        from writer.llm_client import LLMWriter
+
+        class _Change(BaseModel):
+            param: str
+            value: float
+
+        class _Proposal(BaseModel):
+            changes: list[_Change]
+            reason: str
+
+        catalog = describe_for_llm(env)
+        keymetrics = {k: m.get(k) for k in (
+            "aim_offset", "wasted_shot_rate", "kill_conversion", "shooting_accuracy",
+            "explored_fraction", "revisit_rate", "exit_progress", "death_rate",
+            "kills_per_episode", "reward_breakdown") if k in m}
+        system = ("You tune a Doom RL agent's reward + training parameters. Given the metrics and "
+                  "the full parameter catalog, propose new values for the few knobs most likely to "
+                  "fix the weakest behaviour. Change only what helps; stay within each range.")
+        user = f"METRICS:\n{keymetrics}\n\n{catalog}\n\nReturn the changes and a one-line reason."
+        llm = LLMWriter(model=cfg.llm_model, host=cfg.ollama_host,
+                        num_ctx=cfg.llm_num_ctx, num_predict=cfg.llm_num_predict,
+                        keep_alive=cfg.llm_keep_alive)
+        content = llm._chat(system, user, _Proposal.model_json_schema())
+        prop = _Proposal.model_validate_json(content)
+    except Exception as e:
+        print(f"[autonomous] open LLM proposer unavailable ({e}); skipping.")
+        return None
+    proposal = {c.param: c.value for c in prop.changes}
+    new = validate(proposal, base_env=env)
+    applied = [f"{k}->{new[k]}" for k in proposal if k in new and new.get(k) != env.get(k)]
+    if not applied:
+        return None
+    return new, f"LLM(open): {prop.reason.strip()[:120]} ({', '.join(applied)})"
+
+
 def propose_next(cfg: Config, env: dict, m: dict, use_llm: bool,
                  algo: str = "ppo") -> tuple[dict, str]:
     """Pick the next reward config. The heuristic always runs (it owns exploration and
@@ -222,6 +356,19 @@ def propose_next(cfg: Config, env: dict, m: dict, use_llm: bool,
             new, reason = mem_env, f"{reason}; {mem_reason}"
     except Exception as e:
         print(f"[autonomous] memory policy unavailable ({type(e).__name__}); skipping.")
+    # Semantic recall: 'seen a situation like this before? what worked?' — fills proven priors
+    # for knobs the heuristic didn't already target (heuristic's targeted fix wins).
+    try:
+        recalled, sem_note = semantic_recall(cfg.memory_dir, m)
+        if recalled:
+            from rl.tuning_registry import validate
+            touched = {k for k in new if str(new.get(k)) != str(env.get(k))}
+            fill = {k: v for k, v in recalled.items() if k not in touched}
+            if fill:
+                new = validate(fill, base_env=new)
+                reason = f"{reason}; {sem_note}"
+    except Exception:
+        pass
     if use_llm:
         llm_res = llm_propose(cfg, new, m)
         if llm_res:
@@ -717,7 +864,8 @@ def main() -> None:
             name_prefix = _dqn_prefix(meta["num_actions"], cfg.game_vars, cfg)
         else:
             name_prefix = brain_prefix("campaign", meta["num_actions"], cfg.use_lstm,
-                                       spatial, depth, automap, cfg.frame_stack, cfg.game_vars)
+                                       spatial, depth, automap, cfg.frame_stack, cfg.game_vars,
+                                       getattr(cfg, "semantic_channel", False))
         ckpt_dir = cfg.checkpoint_dir
         has_brain = bool(
             os.path.exists(os.path.join(ckpt_dir, f"{name_prefix}_final.zip"))
@@ -845,6 +993,18 @@ def main() -> None:
 
         # Auto-chain (P4): log this change + its verdict into the experiment registry.
         _record_iteration(cfg, i, history[-1]["env"] if history else {}, eval_env, kept, sc)
+        # Semantic memory: store (situation → change → outcome) so a future similar state recalls
+        # what worked here (kept+positive) and avoids what regressed.
+        _prev = history[-1]["env"] if history else {}
+        _change = {k: v for k, v in eval_env.items() if str(v) != str(_prev.get(k))}
+        semantic_record(cfg.memory_dir, m, _change, sc, kept)
+        # Push this iteration's metrics to Prometheus (if configured) so Grafana shows the run
+        # EVOLVING across iterations. Best-effort, never blocks the loop.
+        try:
+            from instrumentation.prometheus_exporter import export_metrics
+            export_metrics({**m, "iter_score": sc}, job="hellmind_auto")
+        except Exception:
+            pass
 
         if not kept:
             env = history[-1]["env"]  # roll back to the last good reward config
@@ -876,6 +1036,24 @@ def main() -> None:
     best = max(history, key=lambda h: h["score"])
     print(f"\n[autonomous] DONE ({len(history)}/{args.iterations} iters ok). "
           f"Best iter {best['iter']} score {best['score']:.2f}.")
+
+    # Auto-emit the full HTML report + final Prometheus/Grafana push on finish (best-effort).
+    # The loop knows when it's done, so it produces the artifacts itself — no manual step.
+    last_m = history[-1]["metrics"]
+    try:
+        from writer.html_report import write_report
+        hp = write_report(last_m, "reports/auto_report.html",
+                          meta={"map": doom_map or "", "brain": f"auto (best iter {best['iter']}, "
+                                f"score {best['score']:.2f})"})
+        print(f"[autonomous] HTML report -> {hp}")
+    except Exception as e:
+        print(f"[autonomous] HTML report skipped: {e}")
+    try:
+        from instrumentation.prometheus_exporter import export_metrics
+        if export_metrics(last_m, job="hellmind_auto"):
+            print("[autonomous] final metrics pushed to Prometheus/Grafana")
+    except Exception as e:
+        print(f"[autonomous] Prometheus push skipped: {e}")
 
     # Final comprehensive report in 30-runs/ — always written if any iteration ran.
     report_path = write_final_report(cfg, history, doom_map, use_llm=args.llm)

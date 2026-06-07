@@ -38,6 +38,12 @@ CAMPAIGN_BUTTONS = [
     vzd.Button.SELECT_NEXT_WEAPON,   # switch weapons (creates weapon variety)
     vzd.Button.MOVE_LEFT,            # strafe left  (opt-in actions; harmless if unused)
     vzd.Button.MOVE_RIGHT,           # strafe right
+    # Direct weapon-slot select — NOT policy actions; auto-best-weapon injects the right one
+    # each frame (like auto-USE). Harmless if unused. Kept LAST so existing action/button
+    # indices are unchanged.
+    vzd.Button.SELECT_WEAPON1, vzd.Button.SELECT_WEAPON2, vzd.Button.SELECT_WEAPON3,
+    vzd.Button.SELECT_WEAPON4, vzd.Button.SELECT_WEAPON5, vzd.Button.SELECT_WEAPON6,
+    vzd.Button.SELECT_WEAPON7,
 ]
 
 # Curated COMBINED actions (each presses MULTIPLE buttons at once). A naive one-hot space
@@ -69,6 +75,15 @@ STRAFE_ACTIONS = [
     (["MOVE_RIGHT"], "SR"),
     (["MOVE_FORWARD", "MOVE_LEFT"], "FWD+SL"),
     (["MOVE_FORWARD", "MOVE_RIGHT"], "FWD+SR"),
+    # Combat-survival combos (2026-06): dodge/retreat WHILE shooting — so the agent can learn to
+    # NOT die in a fight without the old passive "back-and-spray" collapse (the dodge/retreat
+    # here keep ATTACK pressed = still engaged). Plain BACK is for low-health retreat — safe now
+    # because the agent sees its HEALTH (game_vars) and the engagement+death rewards punish pure
+    # fleeing. This is why the base set above omits backward; here it returns, reward-guarded.
+    (["MOVE_LEFT", "ATTACK"], "SL+ATK"),    # circle-strafe left, firing
+    (["MOVE_RIGHT", "ATTACK"], "SR+ATK"),   # circle-strafe right, firing
+    (["MOVE_BACKWARD"], "BACK"),            # retreat (when low on health)
+    (["MOVE_BACKWARD", "ATTACK"], "BACK+ATK"),  # fighting retreat
 ]
 
 
@@ -84,6 +99,95 @@ def default_wad() -> str:
     scenarios/.
     """
     return os.path.join(os.path.dirname(vzd.scenarios_path), "freedoom2.wad")
+
+
+def aim_assist(buttons, enemies, turn_left, turn_right, attack, dead_zone: float = 0.08):
+    """Auto-aim combat assist (pure, so it's unit-testable without ViZDoom). Given the visible
+    `enemies` (dicts with normalised x/w), turn the agent toward the NEAREST (biggest box) and
+    fire only when it's roughly centred; HOLD fire when no enemy is visible (so it stops
+    spraying at walls). Returns a NEW button vector."""
+    out = list(buttons)
+    if attack is None:
+        return out
+    if enemies:
+        tgt = max(enemies, key=lambda o: o.get("w", 0) * o.get("h", 0))
+        offset = (tgt.get("x", 0) + tgt.get("w", 0) / 2.0) - 0.5  # <0 left, >0 right of centre
+        if offset < -dead_zone and turn_left is not None:
+            out[turn_left] = 1
+            if turn_right is not None:
+                out[turn_right] = 0
+        elif offset > dead_zone and turn_right is not None:
+            out[turn_right] = 1
+            if turn_left is not None:
+                out[turn_left] = 0
+        else:
+            out[attack] = 1   # centred on the enemy → FIRE
+    else:
+        out[attack] = 0       # no target → hold fire (don't waste ammo on walls)
+    return out
+
+
+def steer_toward(buttons, px, py, angle_deg, tx, ty, fwd, turn_left, turn_right,
+                 dead_zone: float = 20.0):
+    """Point the agent at a target (tx,ty) and move forward (pure, unit-testable). Doom angles
+    are 0=east, counter-clockwise (north=90); TURN_LEFT increases the angle, TURN_RIGHT
+    decreases it. Returns a NEW button vector. When roughly aligned (within dead_zone degrees)
+    it presses FORWARD; otherwise it turns the shorter way toward the target."""
+    import math
+    out = list(buttons)
+    bearing = math.degrees(math.atan2(ty - py, tx - px))   # 0=east, ccw
+    rel = (bearing - angle_deg + 180.0) % 360.0 - 180.0    # normalise to [-180, 180]
+    if rel > dead_zone and turn_left is not None:
+        out[turn_left] = 1
+        if turn_right is not None:
+            out[turn_right] = 0
+    elif rel < -dead_zone and turn_right is not None:
+        out[turn_right] = 1
+        if turn_left is not None:
+            out[turn_left] = 0
+    if abs(rel) < 90.0 and fwd is not None:                # facing roughly the right way → go
+        out[fwd] = 1
+    return out
+
+
+def vision_steer(buttons, left_open, center_open, right_open, fwd, turn_left, turn_right,
+                 wall: float = 0.10):
+    """Vision-first navigation (pure, unit-testable): steer toward the MOST OPEN direction the
+    agent can SEE (openness 0..1 per third of its view, from the depth buffer). Follows
+    corridors and avoids walls — unlike steering at a map coordinate, which walks into the wall
+    between agent and target. Logic is RELATIVE (compare the thirds), not absolute, because the
+    depth scale runs low indoors:
+      • centre is (near) the most open → go FORWARD;
+      • everything is a wall (best ≤ `wall`, e.g. a corner) → TURN in place to escape, no
+        forward (this is the corner-stuck fix);
+      • one side clearly more open → turn there and ease forward.
+    Returns a NEW button vector."""
+    out = list(buttons)
+    best = max(left_open, center_open, right_open)
+    if center_open >= best * 0.9 and center_open > wall:
+        if fwd is not None:
+            out[fwd] = 1                       # corridor ahead → straight on
+    elif best <= wall:
+        # Boxed in (corner / facing a wall) — rotate to find an opening, do NOT push forward.
+        turn = turn_left if left_open >= right_open else turn_right
+        if turn is not None:
+            out[turn] = 1
+    else:
+        if left_open >= right_open:
+            if turn_left is not None:
+                out[turn_left] = 1
+            if turn_right is not None:
+                out[turn_right] = 0
+            if fwd is not None and left_open > wall:
+                out[fwd] = 1
+        else:
+            if turn_right is not None:
+                out[turn_right] = 1
+            if turn_left is not None:
+                out[turn_left] = 0
+            if fwd is not None and right_open > wall:
+                out[fwd] = 1
+    return out
 
 
 def mode_scales(enemies_in_view: int, split_on: bool, factor: float):
@@ -123,6 +227,7 @@ class CampaignDoomEnv(gym.Env):
         automap: bool = False,
         use_labels: bool = False,
         game_vars: bool = False,
+        semantic_channel: bool = False,
     ) -> None:
         super().__init__()
         self.frame_skip = frame_skip
@@ -132,7 +237,9 @@ class CampaignDoomEnv(gym.Env):
         self._depth = bool(depth_perception)  # extra obs channel: ViZDoom depth buffer
         self._strafe = bool(strafe)           # add sideways-movement actions
         self._automap = bool(automap)         # extra obs channel: native top-down automap
-        self._use_labels = bool(use_labels)   # ground-truth on-screen enemy detection
+        self._semantic = bool(semantic_channel)  # extra obs channel: detections by category
+        # The semantic channel is built from the labels detections, so it needs them on.
+        self._use_labels = bool(use_labels) or self._semantic
         self._game_vars = bool(game_vars)     # feed HEALTH/AMMO into the policy (DFP/Arnold)
         self._engagement_reward = float((rewards or {}).get("engagement_reward", 0.0))
         r = rewards or {}
@@ -143,6 +250,28 @@ class CampaignDoomEnv(gym.Env):
         # Auto-USE: open doors / hit switches on contact (see Config.auto_use).
         self._auto_use = bool(r.get("auto_use", 0.0))
         self._use_idx: Optional[int] = None  # set once the button layout is built
+        self._use_held = False  # tracks USE state across steps so auto-USE can PULSE (edges)
+        # Auto-best-weapon: each frame, force-select the strongest owned weapon so the agent
+        # always fights with its best gun (it shouldn't have to learn weapon management).
+        self._auto_best_weapon = bool(r.get("auto_best_weapon", 0.0))
+        # Auto-aim combat assist: turn toward the nearest visible enemy + hold fire unless one
+        # is roughly centred (aiming from 84x84 grey pixels is near-impossible to learn).
+        self._auto_aim = bool(r.get("auto_aim", 0.0))
+        self._auto_door_nav = bool(r.get("auto_door_nav", 0.0))
+        self._visible_objects = []  # last frame's detected objects (used to aim this frame)
+        # Combat priority/persistence: hunt the nearest living monster (even just off-screen)
+        # before heading for a door, so the agent finishes a fight instead of abandoning it.
+        self._nearest_monster_dist = 1e9
+        self._nearest_monster_xy = None
+        self._combat_cooldown = 0   # steps to keep hunting after last seeing an enemy
+        self._seen_by_cat = {}      # category -> set of distinct actor ids seen this episode
+        self._enemies_seen = set()  # distinct enemy ids (alias of _seen_by_cat["enemy"])
+        self._last_nearest_centered = None  # aim quality: nearest enemy's off-centre [0,1]
+        self._last_reward_parts = {}        # reward breakdown by component (telemetry)
+        self._enemy_seen_tick = None        # tick the current enemy-presence began (reaction)
+        self._reaction_ticks = []           # reaction times (ticks enemy-seen → first shot)
+        self._best_weapon_steps = 0         # steps wielding the strongest owned weapon
+        self._weapon_choice_steps = 0       # steps where it owned any real weapon
         # Discovery reward: pay the first sighting of each new object per episode.
         self._discovery_reward = float(r.get("discovery_reward", 0.0))
         self._seen_objects: set = set()
@@ -221,6 +350,20 @@ class CampaignDoomEnv(gym.Env):
         self._ep_ticks = 0          # ticks elapsed this episode (exit vs timeout)
         self._current_map = doom_map
         self._pending_map: Optional[str] = None
+        self._wad_path = wad_path
+        # Door positions (from the WAD) — needed by auto-door-nav AND the semantic channel.
+        self._doors = []
+        if self._auto_door_nav or self._semantic:
+            from doom.wad_doors import map_doors
+            self._doors = list(map_doors(wad_path, doom_map))
+        # Exit position read straight from the WAD — the reference for "how close to the exit"
+        # WITHOUT ever reaching it (metric only; does NOT enable the reward shaping below).
+        from doom.wad_doors import map_exit
+        self._wad_exit_pos = map_exit(wad_path, doom_map)
+        self._exit_ref = None       # metric exit reference (memorised exit OR the WAD exit)
+        self._reached_doors = set()
+        self._nomove_steps = 0      # consecutive steps with ~no movement (wall-stuck)
+        self._nav_target = None     # current door the agent is steering toward (for the minimap)
 
         game = vzd.DoomGame()
         # Full IWAD (freedoom2.wad / doom.wad) -> game path; maps via set_doom_map.
@@ -254,8 +397,10 @@ class CampaignDoomEnv(gym.Env):
         game.set_available_game_variables(TRACKED_VARS)
         game.set_sectors_info_enabled(True)  # map geometry for the real minimap
         game.set_objects_info_enabled(True)  # actor names/positions -> factual bestiary
-        if self._depth:
-            game.set_depth_buffer_enabled(True)  # per-pixel distance -> 3D structure channel
+        if self._depth or self._auto_door_nav:
+            # depth buffer: needed as an obs channel (_depth) AND for vision-based auto-nav
+            # (steer toward the most OPEN direction the agent can see, not a coordinate).
+            game.set_depth_buffer_enabled(True)  # per-pixel distance -> 3D structure
         if self._automap:
             game.set_automap_buffer_enabled(True)  # native top-down explored map channel
             game.set_automap_mode(vzd.AutomapMode.OBJECTS)  # walls + objects, no HUD clutter
@@ -285,10 +430,16 @@ class CampaignDoomEnv(gym.Env):
             self.button_names.append(label)
             self._action_attacks.append(bool(vec[bidx["ATTACK"]]))
         self._use_idx = bidx.get("USE")  # for auto-USE (open doors on contact)
+        # auto-best-weapon: button index per weapon slot, so we can force-select the best gun.
+        self._weapon_btn = {s: bidx.get(f"SELECT_WEAPON{s}") for s in range(1, 8)}
+        # auto-aim: turn + fire button indices (to orient toward enemies and gate the trigger).
+        self._turn_left_idx = bidx.get("TURN_LEFT")
+        self._turn_right_idx = bidx.get("TURN_RIGHT")
+        self._attack_btn_idx = bidx.get("ATTACK")
+        self._fwd_idx = bidx.get("MOVE_FORWARD")  # auto-door-nav: push toward the target door
 
         self.action_space = spaces.Discrete(len(self.actions))
-        channels = (1 + (1 if self._spatial else 0) + (1 if self._depth else 0)
-                    + (1 if self._automap else 0))
+        channels = self._image_channels()   # single source of truth (incl. semantic channel)
         image_space = spaces.Box(
             low=0, high=255, shape=(self.height, self.width, channels), dtype=np.uint8
         )
@@ -353,6 +504,8 @@ class CampaignDoomEnv(gym.Env):
             channels.append(self._depth_frame(state))
         if self._automap:  # native top-down map of the explored layout
             channels.append(self._automap_frame(state))
+        if self._semantic:  # detections (objects by category + doors) painted into the view
+            channels.append(self._semantic_frame())
         return np.stack(channels, axis=2)
 
     def _gamevar_vector(self) -> np.ndarray:
@@ -372,7 +525,40 @@ class CampaignDoomEnv(gym.Env):
 
     def _image_channels(self) -> int:
         return (1 + (1 if self._spatial else 0) + (1 if self._depth else 0)
-                + (1 if self._automap else 0))
+                + (1 if self._automap else 0) + (1 if self._semantic else 0))
+
+    def _semantic_frame(self) -> np.ndarray:
+        """Detections painted into a HxW uint8 channel the policy SEES: each on-screen object
+        filled by category code (enemy/weapon/health/…), plus any unreached DOORS projected to
+        screen-x. Lets the network perceive 'what is where' instead of inferring from pixels."""
+        from doom.entities import semantic_code, screen_x_of
+        canvas = np.zeros((self.height, self.width), dtype=np.uint8)
+        # On-screen objects (normalised bbox + category already computed this step).
+        for o in self._visible_objects:
+            code = semantic_code(o.get("category", "item"))
+            if code == 0:
+                continue
+            x0 = int(o["x"] * self.width); y0 = int(o["y"] * self.height)
+            x1 = int((o["x"] + o["w"]) * self.width); y1 = int((o["y"] + o["h"]) * self.height)
+            canvas[max(0, y0):max(0, y1), max(0, x0):max(0, x1)] = code
+        # Doors (not actors): project each not-yet-reached door into the view as a vertical band.
+        if self._doors and self._last_vars:
+            px = float(self._last_vars.get("position_x", 0.0))
+            py = float(self._last_vars.get("position_y", 0.0))
+            ang = float(self._last_vars.get("angle", 0.0))
+            code = semantic_code("door")
+            half = max(2, self.width // 28)              # band half-width in pixels
+            for i, (dx, dy) in enumerate(self._doors):
+                if i in self._reached_doors:
+                    continue
+                sx = screen_x_of(px, py, ang, dx, dy)
+                if sx is None:
+                    continue
+                cx = int(sx * self.width)
+                # Don't overwrite a nearer object already painted (objects > door priority).
+                band = canvas[:, max(0, cx - half):cx + half]
+                band[band == 0] = code
+        return canvas
 
     def _depth_frame(self, state) -> np.ndarray:
         """Resized depth buffer as a uint8 channel (0 = near, 255 = far)."""
@@ -488,6 +674,11 @@ class CampaignDoomEnv(gym.Env):
             self._pending_map = None
             self._walls_pending = True  # new map -> resend the geometry
             self._exit_pos = None       # new map = unknown exit position
+            if self._auto_door_nav or self._semantic:  # reload door positions for the new map
+                from doom.wad_doors import map_doors
+                self._doors = list(map_doors(self._wad_path, self._current_map))
+            from doom.wad_doors import map_exit       # reload the WAD exit for the new map
+            self._wad_exit_pos = map_exit(self._wad_path, self._current_map)
         # Pull a persisted exit for this map (set by a prior run/env that reached it). Read
         # each reset so a parallel env that just discovered the exit benefits the others.
         if self._exit_pos is None and self._exit_store is not None:
@@ -508,13 +699,19 @@ class CampaignDoomEnv(gym.Env):
         self._prev_exit_dist = None
         self._spawn_exit_dist = None
         self._closest_exit_dist = None
+        # Reward shaping baseline: ONLY from a memorised (actually-reached) exit.
         if self._exit_pos is not None and self._spawn_xy is not None:
             sx, sy = self._spawn_xy
             ex, ey = self._exit_pos
             self._prev_exit_dist = ((ex - sx) ** 2 + (ey - sy) ** 2) ** 0.5
-            # Baselines for the dense exit_progress metric (how close it gets to the exit).
-            self._spawn_exit_dist = self._prev_exit_dist
-            self._closest_exit_dist = self._prev_exit_dist
+        # Metric baseline: memorised exit if known, else the WAD exit — so exit_progress works
+        # even before the exit is ever reached. Independent of the reward above.
+        self._exit_ref = self._exit_pos or self._wad_exit_pos
+        if self._exit_ref is not None and self._spawn_xy is not None:
+            sx, sy = self._spawn_xy
+            ex, ey = self._exit_ref
+            self._spawn_exit_dist = ((ex - sx) ** 2 + (ey - sy) ** 2) ** 0.5
+            self._closest_exit_dist = self._spawn_exit_dist
         # Go-Explore: archive the cells the LAST episode reached, then maybe pick a frontier
         # cell as this episode's "return" goal (dense reward guides the agent back to it).
         if self._frontier_store is not None:
@@ -524,6 +721,20 @@ class CampaignDoomEnv(gym.Env):
                 except OSError:
                     pass
             self._ep_positions = []
+        self._use_held = False  # fresh USE-pulse state each episode
+        self._visible_objects = []  # no stale detections from the previous episode
+        self._reached_doors = set()  # re-target all doors fresh each episode
+        self._nomove_steps = 0
+        self._combat_cooldown = 0
+        self._nearest_monster_xy = None
+        self._nearest_monster_dist = 1e9
+        self._seen_by_cat = {}       # distinct ids seen per category, fresh each episode
+        self._enemies_seen = set()
+        self._last_nearest_centered = None
+        self._enemy_seen_tick = None
+        self._reaction_ticks = []
+        self._best_weapon_steps = 0
+        self._weapon_choice_steps = 0
         self._goal_xy = None
         self._goal_reached = False
         self._prev_goal_dist = None
@@ -540,15 +751,128 @@ class CampaignDoomEnv(gym.Env):
             self._mark_visit(self._last_vars["position_x"], self._last_vars["position_y"])
         return self._get_obs(), {"map": self._current_map}
 
+    def _best_weapon_slot(self) -> int:
+        """The strongest weapon the agent OWNS, by slot. Doom slots roughly rank by power
+        (3 shotgun > 2 pistol > 1 fist), and 4-7 (chaingun/rocket/plasma/BFG) higher still.
+        We pick the highest owned slot — "use the best gun you have". 0 = unknown/none owned."""
+        from instrumentation.game_vars import WEAPON_VARS
+        if not self._last_vars:
+            return 0
+        owned = [s for s in range(1, 8)
+                 if float(self._last_vars.get(WEAPON_VARS[s - 1], 0.0)) > 0.0]
+        return max(owned) if owned else 0
+
+    def _depth_openness(self):
+        """(left, centre, right) openness in [0,1] from the depth buffer's middle band — how
+        FAR the agent can see in each third of its view (1 = wide open, 0 = wall in your face).
+        None if depth isn't available."""
+        st = self.game.get_state()
+        depth = getattr(st, "depth_buffer", None) if st else None
+        if depth is None:
+            return None
+        h, w = depth.shape[:2]
+        band = depth[h // 3: 2 * h // 3, :]            # middle band (skip floor/ceiling)
+        w3 = max(1, w // 3)
+        return (float(band[:, :w3].mean()) / 255.0,
+                float(band[:, w3:2 * w3].mean()) / 255.0,
+                float(band[:, 2 * w3:].mean()) / 255.0)
+
+    def _door_nav_buttons(self, buttons):
+        """VISION-FIRST navigation: steer toward the most OPEN direction the agent can SEE
+        (depth buffer), so it follows corridors instead of walking into the wall between it and
+        a door's coordinate. Only when a not-yet-reached door is CLOSE and roughly AHEAD does it
+        push toward that door (auto-USE then opens it). Holds fire while navigating."""
+        px = float(self._last_vars.get("position_x", 0.0))
+        py = float(self._last_vars.get("position_y", 0.0))
+        ang = float(self._last_vars.get("angle", 0.0))
+        out = list(buttons)
+        if self._attack_btn_idx is not None:
+            out[self._attack_btn_idx] = 0          # don't shoot while navigating
+        # Mark doors we're at as reached (auto-USE opened them).
+        reach = self._goal_radius if self._goal_radius else 96.0
+        for i, (dx, dy) in enumerate(self._doors):
+            if (dx - px) ** 2 + (dy - py) ** 2 <= reach * reach:
+                self._reached_doors.add(i)
+        targets = [(i, d) for i, d in enumerate(self._doors) if i not in self._reached_doors]
+        openness = self._depth_openness()
+        # Door-at-contact: ONLY push forward into a blockage when that blockage IS a door — i.e.
+        # the view ahead is BLOCKED (centre closed) AND a known unreached door is right there
+        # (close + dead-ahead). A corner has a blockage too but NO door right there, so it falls
+        # through to vision and gets turned around — this is the fix for "banged the corner
+        # before the door". We never steer at a far door coordinate (that caused the banging).
+        if targets and openness is not None:
+            i, (tx, ty) = min(targets, key=lambda t: (t[1][0]-px)**2 + (t[1][1]-py)**2)
+            self._nav_target = (tx, ty)
+            import math
+            dist = math.hypot(tx - px, ty - py)
+            bearing = math.degrees(math.atan2(ty - py, tx - px))
+            rel = abs((bearing - ang + 180.0) % 360.0 - 180.0)
+            blocked_ahead = openness[1] <= 0.22
+            if blocked_ahead and dist < reach * 1.2 and rel < 22.0 and self._fwd_idx is not None:
+                out[self._fwd_idx] = 1           # the wall in front is the door → open it
+                return out
+        # Otherwise: VISION drives — go where it's OPEN (corridors), turn off a wall/corner,
+        # never push into a coordinate behind a wall. "Prioritise the field of vision first."
+        if openness is not None:
+            return vision_steer(out, openness[0], openness[1], openness[2],
+                                self._fwd_idx, self._turn_left_idx, self._turn_right_idx)
+        return out
+
     def step(
         self, action: int
     ) -> Tuple[np.ndarray, float, bool, bool, Dict[str, Any]]:
         buttons = self.actions[int(action)]
         if self._auto_use and self._use_idx is not None and not buttons[self._use_idx]:
-            # Hold USE every frame so doors open / switches fire on contact, without changing
-            # the discrete action the policy chose (copy so the stored action vector is intact).
+            # Doom's USE is EDGE-triggered: it fires on the key-DOWN transition, NOT while held.
+            # Holding USE every frame opens a door only ONCE (the engine needs a release before
+            # it re-fires), so the agent "stood at the door and it never opened" — the exact
+            # failure seen on watch. PULSE it instead (alternate on/off) so each contact makes a
+            # fresh key-down edge. Don't override an action that already chose USE (FWD+USE).
             buttons = list(buttons)
-            buttons[self._use_idx] = 1
+            buttons[self._use_idx] = 0 if self._use_held else 1
+        self._use_held = bool(buttons[self._use_idx]) if self._use_idx is not None else False
+        # Auto-best-weapon: force-select the strongest owned weapon so the agent always fights
+        # with its best gun (e.g. switch off the pistol once it has a shotgun). Idempotent —
+        # selecting the already-equipped slot is a no-op, so holding is fine here (unlike USE).
+        if self._auto_best_weapon:
+            best = self._best_weapon_slot()
+            cur = int(self._last_vars.get("selected_weapon", 0)) if self._last_vars else 0
+            btn = self._weapon_btn.get(best) if best else None
+            if btn is not None and best != cur:
+                buttons = list(buttons)
+                buttons[btn] = 1
+        # COMBAT FIRST, then the door. Priority: visible enemy → fight; recently-seen enemy
+        # still nearby → HUNT it (turn to re-acquire) before navigating; area clear → door-nav.
+        enemies = [o for o in self._visible_objects if o.get("category") == "enemy"]
+        HUNT_RADIUS = 700.0
+        if enemies:
+            self._combat_cooldown = 10          # keep hunting for a bit after it leaves view
+        elif self._combat_cooldown > 0:
+            self._combat_cooldown -= 1
+        hunting = (not enemies and self._combat_cooldown > 0
+                   and self._nearest_monster_xy is not None
+                   and self._nearest_monster_dist < HUNT_RADIUS)
+        if enemies and self._auto_aim and self._attack_btn_idx is not None:
+            # Enemy in view → combat assist (turn to it, fire when centred).
+            buttons = aim_assist(buttons, enemies, self._turn_left_idx,
+                                 self._turn_right_idx, self._attack_btn_idx)
+        elif hunting and self._auto_aim:
+            # Enemy just left view but is still close → TURN toward it to re-acquire (hold fire
+            # until it's back on screen). Finishes the fight instead of walking off to a door.
+            mx, my = self._nearest_monster_xy
+            buttons = steer_toward(buttons, self._last_vars["position_x"],
+                                   self._last_vars["position_y"],
+                                   float(self._last_vars.get("angle", 0.0)), mx, my,
+                                   self._fwd_idx, self._turn_left_idx, self._turn_right_idx)
+            if self._attack_btn_idx is not None:
+                buttons = list(buttons); buttons[self._attack_btn_idx] = 0
+        elif not enemies and self._auto_door_nav and self._doors and self._last_vars:
+            # Area clear → head for the nearest not-yet-reached door (vision-first; auto-USE
+            # opens it on contact).
+            buttons = self._door_nav_buttons(buttons)
+        elif not enemies and self._auto_aim and self._attack_btn_idx is not None:
+            buttons = aim_assist(buttons, [], self._turn_left_idx,
+                                 self._turn_right_idx, self._attack_btn_idx)  # just hold fire
         base_reward = self.game.make_action(buttons, self.frame_skip)
         self._ep_base += base_reward
         self._ep_ticks += self.frame_skip
@@ -559,13 +883,23 @@ class CampaignDoomEnv(gym.Env):
         frontier_bonus = 0.0  # reward NET outward progress (can't be farmed by circling)
         engage_bonus = 0.0  # reward keeping a visible enemy centred (labels buffer)
         discovery_bonus = 0.0  # reward the first sighting of a new object this episode
+        rnd_bonus = 0.0  # intrinsic curiosity (RND) — init so the reward breakdown is defined
         self._enemies_in_view = 0  # telemetry: how many enemies the agent can see now
+        self._visible_objects = []  # detector overlay: every visible object (normalised bbox)
         if not done:
             raw = self._read_raw_vars()
             deltas = {n: max(0.0, raw[n] - self._last_vars[n]) for n in MONOTONIC}
             dx = raw["position_x"] - self._last_vars["position_x"]
             dy = raw["position_y"] - self._last_vars["position_y"]
             deltas["distance"] = float((dx * dx + dy * dy) ** 0.5)
+            # "How many heals did I consume" — a health INCREASE means a medikit/stimpack pickup
+            # (health isn't monotonic, so it's not in the delta loop above). Sums in the tracker.
+            heal = raw["health"] - self._last_vars["health"]
+            if heal > 0:
+                deltas["heal_pickups"] = 1.0
+                deltas["heal_hp"] = float(heal)
+            # Wall-stuck tracking for auto-door-nav (barely moved this step → escape next step).
+            self._nomove_steps = self._nomove_steps + 1 if deltas["distance"] < 4.0 else 0
             levels = {n: raw[n] for n in LEVELS}
             self._last_vars = raw
             # Count-based exploration: bonus only the FIRST time a cell is visited.
@@ -597,11 +931,40 @@ class CampaignDoomEnv(gym.Env):
                                 int(deltas.get("killcount", 0)))
             # Labels buffer: ground-truth on-screen enemy detection + engagement reward.
             if self._use_labels:
-                from doom.entities import visible_enemies, visible_object_names
+                from doom.entities import (visible_enemies, visible_object_names,
+                                           visible_objects)
                 st = self.game.get_state()
                 labels = getattr(st, "labels", None) if st else None
                 view = visible_enemies(labels, screen_width=float(self.width))
                 self._enemies_in_view = view["count"]
+                # Every visible object (normalised bbox + category) for the detector overlay.
+                sw = float(self.game.get_screen_width() or self.width)
+                sh = float(self.game.get_screen_height() or self.height)
+                self._visible_objects = visible_objects(labels, sw, sh)
+                # Perception telemetry: accumulate DISTINCT actor ids seen this episode, PER
+                # category (enemy/weapon/health/ammo/key/item) — "what did it identify".
+                from doom.entities import classify_object
+                for lb in (labels or []):
+                    cat = classify_object(getattr(lb, "object_name", ""))
+                    if cat in ("self", "projectile"):
+                        continue
+                    oid = getattr(lb, "object_id", getattr(lb, "object_name", id(lb)))
+                    self._seen_by_cat.setdefault(cat, set()).add(oid)
+                self._enemies_seen = self._seen_by_cat.get("enemy", set())
+                # Aim quality: how off-centre the nearest enemy is (0 = dead-centre, 1 = edge).
+                self._last_nearest_centered = view["nearest_centered"]
+                # Nearest LIVING monster anywhere in the level (objects buffer) — so combat can
+                # hunt one that just left the agent's view instead of abandoning it for a door.
+                from doom.entities import is_monster
+                cx = raw["position_x"]; cy = raw["position_y"]
+                best_d, best_xy = 1e9, None
+                for o in (getattr(st, "objects", None) or []):
+                    if is_monster(getattr(o, "name", "")):
+                        d = (o.position_x - cx) ** 2 + (o.position_y - cy) ** 2
+                        if d < best_d:
+                            best_d, best_xy = d, (o.position_x, o.position_y)
+                self._nearest_monster_dist = best_d ** 0.5 if best_xy else 1e9
+                self._nearest_monster_xy = best_xy
                 if self._engagement_reward and view["nearest_centered"] is not None:
                     # 1.0 when an enemy is dead-centred, 0 at the screen edge.
                     engage_bonus = self._engagement_reward * (1.0 - view["nearest_centered"])
@@ -651,6 +1014,18 @@ class CampaignDoomEnv(gym.Env):
         if self._rnd and not done:
             rnd_bonus = self._rnd.bonus(raw["position_x"], raw["position_y"])
             shaped += rnd_bonus * explore_scale  # curiosity is an exploration pull
+        # Reward breakdown (telemetry): what's actually DRIVING the agent — combat vs explore
+        # vs engage vs the survival penalties. Lets you see what the policy optimises.
+        self._last_reward_parts = {
+            "combat": self._kill_reward * deltas["killcount"]
+            + self._hit_reward * deltas["hitcount"] + self._step_threat_bonus,
+            "damage": -self._damage_penalty * deltas["damage_taken"],
+            "engage": engage_bonus,
+            "explore": cov_bonus + weapon_bonus + frontier_bonus + discovery_bonus
+            + rnd_bonus * explore_scale,
+            "move": self._move_reward * deltas["distance"],
+            "base": base_reward,
+        }
         # Exit proximity shaping: small reward for getting closer to the memorised exit.
         # Activates only after the first successful exit (self._exit_pos is set).
         if self._exit_pos is not None and not done and self._prev_exit_dist is not None:
@@ -661,8 +1036,12 @@ class CampaignDoomEnv(gym.Env):
             if progress > 0:
                 shaped += self._exit_prox_scale * progress * 0.001  # tiny per-unit bonus
             self._prev_exit_dist = cur_dist
-            if self._closest_exit_dist is not None:
-                self._closest_exit_dist = min(self._closest_exit_dist, cur_dist)
+        # Metric ONLY (reward-independent): closest the agent got to the exit REFERENCE (WAD or
+        # memorised), tracked every step so exit_progress is meaningful even at 0% exit_rate.
+        if self._exit_ref is not None and self._closest_exit_dist is not None and not done:
+            ex, ey = self._exit_ref
+            md = ((ex - raw["position_x"]) ** 2 + (ey - raw["position_y"]) ** 2) ** 0.5
+            self._closest_exit_dist = min(self._closest_exit_dist, md)
         # Go-Explore goal shaping: dense reward for returning to this episode's frontier
         # goal. Once within reach_radius the goal is "achieved" — reward stops and the agent
         # explores OUTWARD from that far launch point (the "then explore" half).
@@ -680,6 +1059,22 @@ class CampaignDoomEnv(gym.Env):
         attacked = self._action_attacks[int(action)]  # this action pressed ATTACK
         if attacked and deltas["hitcount"] == 0 and not done:
             shaped -= self._miss_penalty * combat_scale  # don't punish blind shots while exploring
+        if not done:
+            # Reaction time: ticks from an enemy first appearing until the first shot at it.
+            if self._enemies_in_view > 0:
+                if self._enemy_seen_tick is None:
+                    self._enemy_seen_tick = self._ep_ticks
+                elif attacked:
+                    self._reaction_ticks.append(max(0, self._ep_ticks - self._enemy_seen_tick))
+                    self._enemy_seen_tick = None        # measured this engagement
+            else:
+                self._enemy_seen_tick = None
+            # Weapon choice: was it wielding the strongest gun it owns?
+            best = self._best_weapon_slot()
+            if best:
+                self._weapon_choice_steps += 1
+                if int(raw.get("selected_weapon", 0)) == best:
+                    self._best_weapon_steps += 1
 
         # Completion: reaching the level EXIT = episode ended, not dead, before the
         # timeout. That's the real "I finished the map". Clearing the kill quota also
@@ -712,11 +1107,26 @@ class CampaignDoomEnv(gym.Env):
             "action": int(action),
             "attacked": bool(attacked),  # tracker counts attacks from this (combined actions)
             "success": success,
+            "reward_parts": self._last_reward_parts,  # what's driving the reward (breakdown)
         }
         if self._use_labels:
             doom["enemies_in_view"] = int(self._enemies_in_view)  # ground-truth on-screen count
+            doom["objects"] = self._visible_objects  # detector overlay: boxes around everything
+            if self._last_nearest_centered is not None:
+                doom["nearest_centered"] = float(self._last_nearest_centered)  # aim quality
+            if self._nearest_monster_dist < 1e9:   # how close the nearest enemy is (positioning)
+                doom["nearest_enemy_dist"] = float(self._nearest_monster_dist)
             if self._combat_explore_split:
                 doom["mode"] = "combat" if self._enemies_in_view > 0 else "explore"
+        if self._auto_door_nav and self._doors and self._last_vars:
+            # Door minimap: positions + which we've reached + the agent + the current target.
+            doom["navmap"] = {
+                "doors": self._doors, "reached": sorted(self._reached_doors),
+                "agent": (float(self._last_vars.get("position_x", 0.0)),
+                          float(self._last_vars.get("position_y", 0.0)),
+                          float(self._last_vars.get("angle", 0.0))),
+                "target": self._nav_target,
+            }
         if done:
             doom["terminal"] = (
                 "death" if dead else ("exit" if reached_exit else "timeout")
@@ -732,6 +1142,17 @@ class CampaignDoomEnv(gym.Env):
                 doom["exit_progress"] = float(max(0.0, min(1.0, frac)))
             doom["base_return"] = self._ep_base  # native episode return (no shaping)
             doom["coverage_cells"] = len(self._visited)  # for frontier curriculum
+            doom["enemies_seen"] = len(self._enemies_seen)  # distinct enemies seen this episode
+            # Distinct objects identified per category (enemy/weapon/health/ammo/key/item) +
+            # doors reached — the "did it identify items/enemies/doors" telemetry.
+            doom["seen_counts"] = {c: len(ids) for c, ids in self._seen_by_cat.items()}
+            doom["doors_reached"] = len(self._reached_doors)
+            doom["doors_total"] = len(self._doors)
+            doom["frontier_reach"] = float(self._max_dist)   # farthest from spawn this episode
+            if self._reaction_ticks:
+                doom["reaction_ticks"] = float(np.mean(self._reaction_ticks))
+            if self._weapon_choice_steps:
+                doom["best_weapon_fraction"] = self._best_weapon_steps / self._weapon_choice_steps
             # The actual cells visited this episode -> persistent per-map heatmap memory.
             # Once per episode (off the hot path), so within the ±2% budget.
             doom["visited_cells"] = [[gx, gy] for (gx, gy) in self._visited]
@@ -789,6 +1210,7 @@ def make_campaign_env(
             automap=cfg.automap,
             use_labels=cfg.use_labels,
             game_vars=getattr(cfg, "game_vars", False),
+            semantic_channel=getattr(cfg, "semantic_channel", False),
         )
         env.reset(seed=cfg.seed + rank)
         return env

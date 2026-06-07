@@ -77,6 +77,12 @@ def gamevars_tag(game_vars: bool) -> str:
     return "_gv" if game_vars else ""
 
 
+def semantic_tag(semantic_channel: bool) -> str:
+    """Checkpoint-name suffix for semantic-channel brains (extra obs channel of detections →
+    new input shape). Same cross-load guard as `_sp`/`_dp`."""
+    return "_se" if semantic_channel else ""
+
+
 def policy_name(use_lstm: bool = False, game_vars: bool = False) -> str:
     """The SB3 policy string. MultiInputPolicy when the obs is a Dict (game_vars)."""
     if game_vars:
@@ -86,17 +92,20 @@ def policy_name(use_lstm: bool = False, game_vars: bool = False) -> str:
 
 def brain_prefix(task: str, num_actions: int, use_lstm: bool,
                  spatial_memory: bool = False, depth_perception: bool = False,
-                 automap: bool = False, frame_stack: int = 4, game_vars: bool = False) -> str:
+                 automap: bool = False, frame_stack: int = 4, game_vars: bool = False,
+                 semantic_channel: bool = False) -> str:
     """The single source of truth for a checkpoint family name. Every site that builds or
     looks up a brain name MUST use this so train/eval/progress/gif never disagree. Any flag
-    that changes the obs shape (spatial, depth, automap, frame_stack, game_vars) or the policy
-    class (lstm) gets its own tag, so incompatible brains can never share a name and
+    that changes the obs shape (spatial, depth, automap, frame_stack, game_vars, semantic) or
+    the policy class (lstm) gets its own tag, so incompatible brains can never share a name and
     cross-load into a crash."""
     return (f"ppo_{task}_a{num_actions}{policy_tag(use_lstm)}"
             f"{spatial_tag(spatial_memory)}{depth_tag(depth_perception)}{automap_tag(automap)}"
-            f"{framestack_tag(frame_stack)}{gamevars_tag(game_vars)}")
+            f"{framestack_tag(frame_stack)}{gamevars_tag(game_vars)}"
+            f"{semantic_tag(semantic_channel)}")
 
 
-def describe(use_lstm: bool) -> Tuple[str, str]:
-    """(algo name, policy name) for logging."""
-    return ("RecurrentPPO" if use_lstm else "PPO"), policy_name(use_lstm)
+def describe(use_lstm: bool, game_vars: bool = False) -> Tuple[str, str]:
+    """(algo name, policy name) for logging. game_vars → MultiInputPolicy (matches the real
+    policy the trainer builds; without it the log misreports CnnPolicy)."""
+    return ("RecurrentPPO" if use_lstm else "PPO"), policy_name(use_lstm, game_vars)

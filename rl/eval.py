@@ -41,14 +41,20 @@ def _tempered_actions(model, obs, temperature: float) -> np.ndarray:
 
 def evaluate(cfg: Config, path: str, button_names: list, episodes: int = 20,
              deterministic: bool = True, temperature: Optional[float] = None,
-             overlay: bool = False) -> dict:
+             overlay: bool = False, recall: bool = False,
+             recall_threshold: float = 0.92, recall_skip_noop: bool = False) -> dict:
     """Run `episodes` and return a metrics summary.
 
     `deterministic=True` (default) takes the argmax action — the honest measure of what the
     brain has *committed* to. `deterministic=False` samples the policy at temperature 1.0.
     `temperature=τ` (overrides both) samples with logits scaled by 1/τ — a tunable middle
     ground that lets a brain whose argmax collapsed still act on its learned distribution
-    (e.g. τ=0.5 explores without freezing). Feed-forward policies only."""
+    (e.g. τ=0.5 explores without freezing). Feed-forward policies only.
+
+    `recall=True` enables demo retrieval: at each step, if the current view closely matches a
+    frame from the human demos (cosine ≥ recall_threshold), replay the human's action there
+    instead of the policy's — "search memory for the best action". Defers to the policy when
+    no close match (the confidence gate)."""
     venv = build_vec_env(cfg)  # n_envs forced to 1 by the caller
     from rl.algo import algo_class_from_path
     import os
@@ -70,6 +76,28 @@ def evaluate(cfg: Config, path: str, button_names: list, episodes: int = 20,
     # When rendering, throttle to ~real time so the window is actually watchable
     # (otherwise ViZDoom blasts through hundreds of fps and the episodes flash by).
     step_delay = (cfg.frame_skip / 35.0) if cfg.render else 0.0
+
+    # Demo retrieval ("search memory for the best action"): index the human demos and, when the
+    # live view closely matches a demo frame, replay the human's action there.
+    retriever = None
+    recall_hits = recall_steps = 0
+    # The pixel channel of the MOST RECENT stacked frame (channels-last [N,H,W,C]; channels
+    # per frame = C // frame_stack; pixels are channel 0 of each frame group).
+    _pix_ch = None
+    if recall:
+        from rl.demo_retrieval import DemoRetriever
+        from rl.frame_encoder import load_encoder_if_present
+        demos_dir = os.path.join(cfg.memory_dir, "demos")
+        encoder = load_encoder_if_present(cfg.memory_dir)  # learned embedding if trained
+        retriever = DemoRetriever(demos_dir, skip_noop=recall_skip_noop, encoder=encoder)
+        if len(retriever) == 0:
+            print(f"[eval] --recall: no usable demos in {demos_dir}; ignoring recall.")
+            retriever = None
+        else:
+            kind = "learned-embedding" if encoder is not None else "pixel-descriptor"
+            print(f"[eval] recall ON: {len(retriever)} demo frames, {kind} "
+                  f"(threshold {recall_threshold:.2f}"
+                  f"{', skip no-op' if recall_skip_noop else ''})")
 
     # Overlay window (watch --overlay): renders HUD + minimap in a cv2 window.
     # ViZDoom's own window already opens when cfg.render=True; the overlay is a
@@ -97,6 +125,21 @@ def evaluate(cfg: Config, path: str, button_names: list, episodes: int = 20,
             action, lstm_states = model.predict(
                 obs, state=lstm_states, episode_start=episode_starts,
                 deterministic=deterministic)
+        # Demo recall: override the policy with the human's action in the most similar demo
+        # frame, but only when the match is confident (else keep the policy's action).
+        if retriever is not None:
+            img = obs["image"] if isinstance(obs, dict) else obs
+            img = np.asarray(img)
+            if _pix_ch is None:                          # resolve the newest pixel channel once
+                c = img.shape[-1]
+                _pix_ch = c - max(1, c // max(1, cfg.frame_stack))
+            frame = img[0, :, :, _pix_ch]                # env 0, newest pixel frame (84x84)
+            mem_action, _sim = retriever.retrieve(frame, recall_threshold)
+            recall_steps += 1
+            if mem_action is not None:
+                action = np.asarray(action)
+                action[0] = mem_action
+                recall_hits += 1
         obs, _rewards, dones, infos = venv.step(action)
         episode_starts = dones
         tracker.update(infos, np.asarray(action))
@@ -105,13 +148,22 @@ def evaluate(cfg: Config, path: str, button_names: list, episodes: int = 20,
         if _win is not None:
             try:
                 import cv2 as _cv2
-                from doom.overlay import draw_hud, draw_minimap
-                img_obs = obs["image"] if isinstance(obs, dict) else obs
-                frame = np.asarray(img_obs)[0, :, :, 0]   # first channel, env 0
+                from doom.overlay import (draw_hud, draw_object_boxes, draw_door_map,
+                                          draw_semantic_panel)
+                img_obs = np.asarray(obs["image"] if isinstance(obs, dict) else obs)
+                frame = img_obs[0, :, :, 0]   # first channel, env 0
                 bgr = _cv2.cvtColor(
                     _cv2.resize(frame, (420, 420), interpolation=_cv2.INTER_NEAREST),
                     _cv2.COLOR_GRAY2BGR)
                 doom_i = (infos[0].get("doom") or {}) if infos else {}
+                # Squares around EVERY object the agent sees (the on-screen detector).
+                draw_object_boxes(bgr, doom_i.get("objects"), 420, 420)
+                # Door minimap (top-right): where the doors are + where the agent is headed.
+                draw_door_map(bgr, doom_i.get("navmap"))
+                # Semantic channel panel (bottom-right): what the NETWORK sees, if that channel
+                # is in the obs (last channel of the newest stacked frame).
+                if getattr(cfg, "semantic_channel", False):
+                    draw_semantic_panel(bgr, img_obs[0, :, :, img_obs.shape[-1] - 1])
                 lvl = doom_i.get("levels", {})
                 if lvl:
                     draw_hud(bgr,
@@ -130,7 +182,11 @@ def evaluate(cfg: Config, path: str, button_names: list, episodes: int = 20,
         except Exception:
             pass
     venv.close()
-    return tracker.snapshot(0)
+    snap = tracker.snapshot(0)
+    if retriever is not None and recall_steps > 0:
+        snap["recall_hit_rate"] = recall_hits / recall_steps
+        snap["recall_hits"] = recall_hits
+    return snap
 
 
 def main() -> None:
@@ -151,6 +207,19 @@ def main() -> None:
     p.add_argument("--algo", default="ppo", choices=["ppo", "dqn"],
                    help="Which brain family to evaluate: ppo (default) or dqn (QR-DQN). "
                         "Selects the checkpoint prefix when --path is not given.")
+    p.add_argument("--recall", action="store_true",
+                   help="Demo retrieval: replay the human's action from the most similar demo "
+                        "frame when the live view matches closely (search memory for the best "
+                        "action). Defers to the policy when there's no confident match.")
+    p.add_argument("--recall-threshold", type=float, default=0.92,
+                   help="Cosine-similarity gate for --recall (default 0.92). Higher = only very "
+                        "close matches replay the human action.")
+    p.add_argument("--recall-skip-noop", action="store_true",
+                   help="With --recall, ignore the human's idle (no-op) frames so retrieval "
+                        "suggests an active move instead of freezing.")
+    p.add_argument("--html", nargs="?", const="reports/eval_report.html", default=None,
+                   help="Write a full HTML report (metrics + charts + formulas + recommendations) "
+                        "after the eval. Optional path (default reports/eval_report.html).")
     args = p.parse_args()
 
     cfg = Config()
@@ -175,7 +244,8 @@ def main() -> None:
         task = "campaign" if cfg.campaign else cfg.scenario
         name_prefix = brain_prefix(task, meta["num_actions"], cfg.use_lstm,
                                    cfg.spatial_memory, cfg.depth_perception, cfg.automap,
-                                   cfg.frame_stack, cfg.game_vars)
+                                   cfg.frame_stack, cfg.game_vars,
+                                   getattr(cfg, "semantic_channel", False))
     button_names = meta["button_names"]
 
     path = args.path or _latest_checkpoint(cfg, name_prefix)
@@ -192,7 +262,9 @@ def main() -> None:
 
     s = evaluate(cfg, path, button_names, args.episodes,
                  deterministic=not args.stochastic, temperature=args.temperature,
-                 overlay=getattr(args, "overlay", False))
+                 overlay=getattr(args, "overlay", False), recall=args.recall,
+                 recall_threshold=args.recall_threshold,
+                 recall_skip_noop=args.recall_skip_noop)
     print("\n== Evaluation ==")
     print(f"  episodes:        {int(s['episodes'])}")
     print(f"  RAW reward/ep:   {s['mean_base_reward']:.2f}   (native scenario, fair for A/B)")
@@ -210,6 +282,93 @@ def main() -> None:
     if s.get("terminals"):
         print(f"  episode endings: {s['terminals']}")
     print(f"  mean ep length:  {s['mean_episode_length']:.0f} steps")
+    # "What happened this run" — grouped panels so you can see WHAT to adjust (per episode).
+    n_eps = max(int(s.get("episodes", 1)), 1)
+    dist = s.get("action_distribution", {}) or {}
+
+    def _share(*tokens):
+        return sum(v for k, v in dist.items() if any(t in k for t in tokens))
+
+    print("\n  -- AIM (did it learn to shoot well?) --")
+    print(f"  accuracy:        {s.get('shooting_accuracy', 0.0):.0%}   "
+          f"(landed {s.get('shots_hit', 0.0)/n_eps:.1f} of {s.get('shots_fired_per_episode', 0.0):.1f} shots/ep)")
+    print(f"  shots per kill:  {s.get('shots_per_kill', 0.0):.1f}   (lower = better aim/discipline)")
+    print(f"  aim offset:      {s.get('aim_offset', 0.0):.2f}   (0=enemy dead-centre, 1=screen edge)")
+    print(f"  wasted shots:    {s.get('wasted_shot_rate', 0.0):.0%}   (fired with NO enemy on screen)")
+    print(f"  kill conversion: {s.get('kill_conversion', 0.0):.0%}   (enemies killed of those seen)")
+    if s.get("reaction_ticks"):
+        print(f"  reaction:        {s.get('reaction_ticks', 0.0):.0f} ticks (enemy seen → first shot)")
+    if s.get("nearest_enemy_dist"):
+        print(f"  enemy distance:  {s.get('nearest_enemy_dist', 0.0):.0f} units avg "
+              f"(lower = lets them close in)")
+
+    print("  -- MOVEMENT --")
+    print(f"  explored:        {(s.get('map_coverage', {}) or {}).get('explored_fraction', 0.0):.0%}   "
+          f"({s.get('distance_per_episode', 0.0):.0f} units/ep, frontier {s.get('frontier_reach', 0.0):.0f})")
+    print(f"  idle/stuck:      {s.get('idle_rate', 0.0):.0%} of steps   "
+          f"revisit {s.get('revisit_rate', 0.0):.0%} (circling)")
+    print(f"  style:           fwd {_share('FWD'):.0%} · turn {_share('TL','TR','TURN'):.0%} · "
+          f"strafe {_share('SL','SR','MOVE_LEFT','MOVE_RIGHT'):.0%} · back {_share('BACK'):.0%}")
+
+    print("  -- WEAPONS --")
+    print(f"  distinct used:   {s.get('distinct_weapons_used', 0.0):.0f}   "
+          f"(switches {s.get('weapon_switches_per_episode', 0.0):.1f}/ep, "
+          f"best-gun {s.get('best_weapon_fraction', 0.0):.0%} of the time)")
+    # Per-weapon detail: WHICH gun, HOW LONG (% of time wielded) and HOW WELL (accuracy).
+    wu = s.get("weapons_used", {}) or {}            # slot -> fraction of time
+    abw = s.get("accuracy_by_weapon", {}) or {}     # slot -> hit rate
+    if wu:
+        for slot in sorted(wu, key=lambda k: -wu[k]):   # most-used first
+            acc = abw.get(slot)
+            acc_s = f", {acc:.0%} acc" if acc is not None else ""
+            print(f"    {slot.replace('slot_', 'weapon ')}: {wu[slot]:.0%} of time{acc_s}")
+
+    print("  -- PERCEPTION (what it identified) --")
+    seen = s.get("objects_seen_per_episode", {}) or {}
+    if seen:
+        order = ["enemy", "weapon", "health", "ammo", "key", "item"]
+        parts = [f"{c} {seen[c]:.1f}" for c in order if c in seen]
+        print(f"  objects seen/ep: {' · '.join(parts)}")
+    print(f"  pickup conv.:    {s.get('pickup_conversion', 0.0):.0%}   (items grabbed of those seen)")
+    print(f"  doors reached:   {s.get('doors_reached_per_episode', 0.0):.1f}/ep   "
+          f"exit progress {s.get('exit_progress', 0.0):.0%}")
+
+    print("  -- SURVIVAL & POLICY --")
+    print(f"  survival:        {s.get('hits_taken_per_episode', 0.0):.1f} hits ({s.get('damage_taken', 0.0)/n_eps:.0f} HP), "
+          f"{s.get('heals_consumed', 0.0)/n_eps:.1f} heals, {s.get('low_health_fraction', 0.0):.0%} time low HP, "
+          f"{s.get('out_of_ammo_fraction', 0.0):.0%} dry")
+    rb = s.get("reward_breakdown", {}) or {}
+    if rb:
+        order = ["combat", "engage", "explore", "move", "damage", "base"]
+        print("  reward from:     " + " · ".join(f"{k} {rb[k]:+.0%}"
+                                                 for k in order if k in rb)
+              + "   (what it optimises)")
+    print(f"  decisiveness:    {s.get('action_entropy_normalized', 0.0):.2f} "
+          f"action-entropy (0=fixed, 1=random)")
+    if "recall_hit_rate" in s:
+        print(f"  demo recall:     {s['recall_hit_rate']:.0%} of steps replayed a human action "
+              f"({s['recall_hits']} steps from memory)")
+
+    # Export the full metrics to Prometheus (push-gateway / textfile) if configured — for
+    # Grafana time-series of the agent improving across runs. No-op unless the env vars are set.
+    try:
+        from instrumentation.prometheus_exporter import export_metrics
+        export_metrics(s, job="hellmind_eval")
+    except Exception as _e:
+        print(f"[prometheus] export skipped: {_e}")
+
+    # Full HTML report (metrics + charts + formulas + recommendations) if requested.
+    if args.html:
+        try:
+            import os as _os
+            from writer.html_report import write_report
+            report_path = write_report(
+                s, args.html,
+                meta={"map": cfg.maps[0] if cfg.campaign else cfg.scenario,
+                      "brain": _os.path.basename(path)})
+            print(f"\n[report] HTML written -> {report_path}")
+        except Exception as _e:
+            print(f"[report] HTML failed: {_e}")
 
     if args.json:
         import json
@@ -226,6 +385,15 @@ def main() -> None:
             "death_rate": float(terminals.get("death", 0)) / n_eps,
             "explored_fraction": float(cov.get("explored_fraction", 0.0)),
             "cells_visited": float(cov.get("cells_visited", 0.0)),
+            "enemies_seen_per_episode": float(s.get("enemies_seen_per_episode", 0.0)),
+            "hits_taken_per_episode": float(s.get("hits_taken_per_episode", 0.0)),
+            "heals_consumed": float(s.get("heals_consumed", 0.0)),
+            # Skill-curriculum scoreboard: aim quality + spray + conversion + circling + reward mix.
+            "aim_offset": float(s.get("aim_offset", 0.0)),
+            "wasted_shot_rate": float(s.get("wasted_shot_rate", 0.0)),
+            "kill_conversion": float(s.get("kill_conversion", 0.0)),
+            "revisit_rate": float(s.get("revisit_rate", 0.0)),
+            "reward_breakdown": s.get("reward_breakdown", {}),
             "mean_base_reward": float(s["mean_base_reward"]),
             "mean_episode_length": float(s["mean_episode_length"]),
             # Combat vs exploration regime — so the coach tunes each one separately.

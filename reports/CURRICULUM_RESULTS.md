@@ -54,3 +54,53 @@ trained tens of millions of steps; 1M on a laptop M5 (~30 min) isn't enough.
 
 > Reproduce any stage: `doom-cli curriculum2 --stages mywh` (or `corridor`, `navigate`).
 > Eval a stage's brain: set its scenario/map env and run `doom-cli eval --algo ppo`.
+
+---
+
+# 🧠 Semantic channel — feeding the detections INTO the network (2026-06-06)
+
+The agent's policy only ever saw raw pixels (+ depth/spatial/health) and had to INFER what a
+region was; it did not know "enemy" vs "item" vs "door" (those were human-overlay only). We added
+a **semantic obs channel** (`SEMANTIC_CHANNEL=1`, brain tag `_se`): an 84×84 map where each
+on-screen object is painted by category code (enemy/weapon/health/…) from the labels detector,
+plus every door projected from the WAD. The network now perceives **what is where**.
+
+## Multi-seed controlled A/B (the rigorous test)
+
+Fresh 1M PPO runs on MAP01, identical config, only `SEMANTIC_CHANNEL` differs — repeated across
+**3 seeds** (42, 43, 44; baseline 42, 43). Eval 10 episodes, T=0.5. Reporting **mean ± seed-to-seed
+std**, because RL is noisy and one seed lies (this is the whole point of the multi-seed run).
+
+| Metric | Baseline | **Semantic** | Gap vs noise |
+|---|---|---|---|
+| map explored | 0.173 ± 0.025 | **0.227 ± 0.022** | **+31% — gap > std (holds up)** |
+| shooting accuracy | 0.090 ± 0.021 | **0.131 ± 0.002** | **+46% — gap > std (holds up)** |
+| exit progress | 0.217 ± 0.043 | 0.243 ± 0.100 | +0.026 — **within noise (inconclusive)** |
+| kills / episode | 6.33 ± 0.25 | 8.0 ± 2.07 | +1.67 — **within noise (inconclusive)** |
+
+**Honest conclusion: the semantic channel gives a MODEST but CONSISTENT gain in EXPLORATION
+(~+25%) and shooting ACCURACY — those gaps exceed the seed-to-seed variability.** The dramatic
+seed-42 numbers (2× exit_progress, +69% kills) were a **lucky seed**: they did NOT replicate
+(seed 43 was a dead heat; exit_progress and kills overlap heavily across seeds). Single-seed A/B
+would have over-claimed a big win — the multi-seed corrected it. Both conditions still 0% exit.
+(Final: 3 seeds each. On seed 44 the baseline's exit_progress 0.255 actually BEAT the semantic's
+0.153 — concrete proof exit_progress is noise-dominated here, while exploration stays consistently
+in the semantic's favour across all 3 seeds.)
+
+## Richer, non-binary metrics (replacing exit-rate as the headline)
+
+exit-rate is binary and harsh. `rl.eval` now prints a **"what happened (per episode)"** block:
+- **exit progress** — how close to the exit, now computed even WITHOUT reaching it by reading the
+  EXIT linedef straight from the WAD (`doom.wad_doors.map_exit`; metric-only, no reward change).
+- **enemies seen** (distinct), **shots fired** (+ landed/accuracy), **hits taken** (+HP damage),
+  **heals consumed** (+HP) — the real story of a run.
+
+## What did NOT help: demo retrieval (nearest-neighbour imitation)
+
+`--recall` replays the human's action from the most-similar demo frame (raw-pixel descriptor, and
+a learned-autoencoder embedding). Built + tested, but it does **not** improve exit on MAP01: the
+agent drifts off the demos' path, so the nearest demo frame isn't the right action for its actual
+situation (classic BC distribution-shift / DAgger problem). Reusable with many more demos.
+
+> Reproduce: fresh A/B → `SEMANTIC_CHANNEL=0/1 CAMPAIGN=1 MAPS=MAP01 python -m rl.train --fresh
+> --timesteps 1000000`, then `... python -m rl.eval --episodes 10 --temperature 0.5`.
