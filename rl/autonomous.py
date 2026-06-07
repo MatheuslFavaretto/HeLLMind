@@ -991,6 +991,13 @@ def main() -> None:
         _prev = history[-1]["env"] if history else {}
         _change = {k: v for k, v in eval_env.items() if str(v) != str(_prev.get(k))}
         semantic_record(cfg.memory_dir, m, _change, sc, kept)
+        # Push this iteration's metrics to Prometheus (if configured) so Grafana shows the run
+        # EVOLVING across iterations. Best-effort, never blocks the loop.
+        try:
+            from instrumentation.prometheus_exporter import export_metrics
+            export_metrics({**m, "iter_score": sc}, job="hellmind_auto")
+        except Exception:
+            pass
 
         if not kept:
             env = history[-1]["env"]  # roll back to the last good reward config
@@ -1022,6 +1029,24 @@ def main() -> None:
     best = max(history, key=lambda h: h["score"])
     print(f"\n[autonomous] DONE ({len(history)}/{args.iterations} iters ok). "
           f"Best iter {best['iter']} score {best['score']:.2f}.")
+
+    # Auto-emit the full HTML report + final Prometheus/Grafana push on finish (best-effort).
+    # The loop knows when it's done, so it produces the artifacts itself — no manual step.
+    last_m = history[-1]["metrics"]
+    try:
+        from writer.html_report import write_report
+        hp = write_report(last_m, "reports/auto_report.html",
+                          meta={"map": doom_map or "", "brain": f"auto (best iter {best['iter']}, "
+                                f"score {best['score']:.2f})"})
+        print(f"[autonomous] HTML report -> {hp}")
+    except Exception as e:
+        print(f"[autonomous] HTML report skipped: {e}")
+    try:
+        from instrumentation.prometheus_exporter import export_metrics
+        if export_metrics(last_m, job="hellmind_auto"):
+            print("[autonomous] final metrics pushed to Prometheus/Grafana")
+    except Exception as e:
+        print(f"[autonomous] Prometheus push skipped: {e}")
 
     # Final comprehensive report in 30-runs/ — always written if any iteration ran.
     report_path = write_final_report(cfg, history, doom_map, use_llm=args.llm)
