@@ -10,7 +10,7 @@ training loop. **100% local, no API key, no cost.**
 
 ![python](https://img.shields.io/badge/python-3.12-blue)
 ![license](https://img.shields.io/badge/license-MIT-green)
-![tests](https://img.shields.io/badge/tests-398%20passing-brightgreen)
+![tests](https://img.shields.io/badge/tests-435%20passing-brightgreen)
 ![local](https://img.shields.io/badge/100%25-local-orange)
 
 </div>
@@ -83,13 +83,21 @@ The agent learns from reward, not labels. By default it perceives **all** of the
 A **CNN** reads the stacked image, a **small network** reads the health/ammo vector, and they
 combine (`MultiInputPolicy`). Two interchangeable RL engines train it:
 
-- **PPO** (default, on-policy) — stable baseline, the original engine.
-- **QR-DQN** (`--algo dqn`, off-policy) — a replay buffer + continuous updates make it more
-  sample-efficient on discrete Doom (the V2 upgrade). Same observation/action space, so the
-  cognition layer above is identical.
+- **PPO** (default, on-policy) — a **stochastic** policy: it outputs a *distribution* over actions.
+  It **samples** while training (exploration) and in eval we use **tempered sampling
+  (`--temperature 0.5`)**, NOT pure argmax — pure argmax can freeze into a bad action
+  (“argmax-collapse”) when entropy is low.
+- **QR-DQN** (`--algo dqn`, off-policy) — value-based, so action = **argmax over Q-values** by
+  nature. Replay buffer + continuous updates make it more sample-efficient on discrete Doom.
 
-Run `doom-cli intel` to see the exact architecture, parameter count, and depth — proof it's a
-real neural network.
+**Action space:** 15 combined actions (move+turn+shoot+use+weapon), or **19 with `STRAFE=1`** —
+the extra 4 are combat-survival moves (circle-strafe-while-firing, retreat-while-firing). The
+policy picks one combined action per step.
+
+**Perception channels (obs):** pixels + spatial-memory + depth (+ optional **semantic channel**,
+`SEMANTIC_CHANNEL=1`, which paints the detections — enemy/door/item by category — INTO the input
+so the net *sees* “what is where” instead of inferring from raw pixels; a 3-seed A/B showed
++31% exploration). Run `doom-cli intel` to see the exact architecture and parameter count.
 
 ### 3. Senses for exploration & combat (reward shaping)
 
@@ -151,6 +159,49 @@ doom-cli auto --map MAP01 --iterations 8 --steps 100000                         
 ```
 
 > Note: recording needs a game window, so play on your own machine (not headless Colab).
+
+---
+
+## 🧩 Features & technologies — what's on
+
+Legend: ✅ **active by default** · ⬜ **built, off by default** (flip a flag) · 🔬 **built, not yet wired into the loop**
+
+| Area | Feature / tech | State | Flag / note |
+|---|---|---|---|
+| **RL engine** | PPO (stochastic, MultiInputPolicy) | ✅ | the default brain |
+| | QR-DQN (off-policy, replay buffer) | ⬜ | `--algo dqn` |
+| | Recurrent PPO (LSTM) | ⬜ | `USE_LSTM=1` |
+| **Perception (obs)** | Pixels + frame-stack | ✅ | `FRAME_STACK=2` |
+| | Spatial memory channel | ✅ | `SPATIAL_MEMORY=1` |
+| | Depth buffer channel | ✅ | `DEPTH_PERCEPTION=1` |
+| | Game-vars (health/ammo) | ✅ | `GAME_VARS=1` |
+| | Labels (ground-truth detections) | ✅ | `USE_LABELS=1` |
+| | **Semantic channel** (detections → obs) | ⬜ | `SEMANTIC_CHANNEL=1` — +31% explore (3-seed A/B) |
+| | Automap channel | ⬜ | `AUTOMAP=1` (off: ~10% slower) |
+| **Actions** | Strafe + combat-survival (19 actions) | ✅ | `STRAFE=1` (dodge/retreat while firing) |
+| **Reward shaping** | Kill/hit/damage/death, engagement | ✅ | combat core |
+| | Coverage + frontier (anti-circle) | ✅ | exploration |
+| | RND intrinsic curiosity | ✅ | `USE_RND=1` |
+| | Go-Explore frontier goals | ✅ | `GOEXPLORE_GOAL_PROB` |
+| | Discovery / exit-proximity | ✅ | guides to objects/exit |
+| | Combat⇄explore split | ✅ | `COMBAT_EXPLORE_SPLIT=1` |
+| **Mechanical assists** | Auto-USE / auto-aim / best-weapon / door-nav (vision) | ✅ | crutches; turn OFF to train the net solo |
+| **Door/exit from WAD** | door + exit positions parsed from the map | ✅ | minimap + exit_progress metric |
+| **Imitation** | Behavioral cloning from human demos | ✅ | `doom-cli bc` |
+| | Assist-as-teacher demos | ✅ | `scripts/record_assist_demos.py` |
+| | Demo retrieval (`--recall`) | 🔬 | built; didn't beat baseline (distribution shift) |
+| **Self-improvement** | Auto loop (train→eval→diagnose→tune→keep/revert) | ✅ | **the default mode** |
+| | LangGraph coach | ⬜ | `auto --graph` |
+| | Rich-metric diagnosis (spray/circling/reward-mix) | ✅ | auto reads aim/wasted/breakdown |
+| | LLM tunes ANY param (full registry) | ✅ | `rl/tuning_registry.py` (needs Ollama) |
+| | Lessons + memory-policy + rollback + learned-config | ✅ | the vault flow |
+| | Semantic memory (vector DB) in the loop | 🔬 | exists; **not yet consulted by the coach** |
+| **Curriculum** | Staged skill curriculum (combat→nav→objectives) | ⬜ | `scripts/skill_curriculum.py` |
+| | Scenario curriculum (my_way_home→corridor→MAP01) | ⬜ | `doom-cli curriculum2` |
+| **Observability** | Rich metrics (aim/move/weapons/perception panels) | ✅ | `doom-cli eval` |
+| | HTML report (charts/formulas/recs) | ✅ | `eval --html` |
+| | Prometheus + Grafana dashboards | ⬜ | `monitoring/` + `PROMETHEUS_GATEWAY=` |
+| **Cognition / docs** | Obsidian notes, bestiary, knowledge graph | ✅ | `DOCS_ENABLED=1` (local Ollama) |
 
 ---
 
@@ -222,11 +273,12 @@ without tying up your machine. Full step-by-step in **[`COLAB.md`](COLAB.md)**.
 ## 🎮 Commands
 
 ```bash
-# Run
-doom-cli auto              # the main loop: train → eval → self-tune → repeat (resumes by default)
+# Run  —  `auto` is the DEFAULT/recommended training mode (it self-tunes). `train`/`dqn` are
+#         one-shot escape hatches with no self-improvement.
+doom-cli auto              # ⭐ DEFAULT: the main loop — train → eval → self-tune → repeat (resumes)
 doom-cli auto --algo dqn   # …same loop, QR-DQN engine (off-policy, replay buffer — V2)
 doom-cli auto --graph      # …with the LangGraph coach (observe→diagnose→hypothesize→propose)
-doom-cli dqn               # one-shot QR-DQN training
+doom-cli dqn               # one-shot QR-DQN training (no self-tuning)
 doom-cli train             # one-shot PPO training (no self-tuning)
 doom-cli curriculum2       # progressive curriculum: my_way_home → deadly_corridor → MAP01
 doom-cli bc                # behavioral cloning from your recorded demos
@@ -285,7 +337,7 @@ across the V2 curriculum (full table: [`reports/CURRICULUM_RESULTS.md`](reports/
   the V2 thesis: *it's compute, not features.*
 - ✅ **Combat works** — `deadly_corridor`: **81% shooting accuracy**, advances and kills
   (QR-DQN on MAP01: 2 kills/ep, 0% deaths, 0.97 combat-engagement).
-- ✅ **The machinery works** — every feature above is wired, tested (398 tests), and the
+- ✅ **The machinery works** — every feature above is wired, tested (435 tests), and the
   self-improvement loop tunes the agent and accumulates memory across runs.
 - 🧱 **The wall is the full map + compute** — on real freedoom2 MAP01, 1M steps explores only
   **4%** (the toy scenarios are far smaller). The skills are proven *in isolation*; combining
@@ -313,7 +365,7 @@ doom_cli.py      one unified CLI · config.py all settings (.env → dataclass)
 ## 🧪 Tests
 
 ```bash
-doom-cli tests        # 398 tests — no ViZDoom / Ollama needed (synthetic data)
+doom-cli tests        # 435 tests — no ViZDoom / Ollama needed (synthetic data)
 ```
 
 ## 📜 License
