@@ -236,6 +236,52 @@ def llm_propose(cfg: Config, env: dict, m: dict) -> Optional[tuple[dict, str]]:
     return new, f"LLM: {res.summary.strip()[:120]} ({', '.join(applied)})"
 
 
+def llm_propose_open(cfg: Config, env: dict, m: dict) -> Optional[tuple[dict, str]]:
+    """OPEN LLM proposer: hand the model the FULL parameter catalog (every tunable knob, its
+    current value, range and effect) + this run's metrics, and let it propose a new value for
+    ANY of them. Every change is validated/clamped against the registry, so it can ask for
+    anything but only valid, in-range params apply. Returns (new_env, reason) or None.
+
+    This is the "the LLM knows and can change all parameters" path (vs llm_propose's fixed
+    combat subset). Needs Ollama; degrades to None if unavailable."""
+    try:
+        from pydantic import BaseModel
+        from rl.tuning_registry import describe_for_llm, validate
+        from writer.llm_client import LLMWriter
+
+        class _Change(BaseModel):
+            param: str
+            value: float
+
+        class _Proposal(BaseModel):
+            changes: list[_Change]
+            reason: str
+
+        catalog = describe_for_llm(env)
+        keymetrics = {k: m.get(k) for k in (
+            "aim_offset", "wasted_shot_rate", "kill_conversion", "shooting_accuracy",
+            "explored_fraction", "revisit_rate", "exit_progress", "death_rate",
+            "kills_per_episode", "reward_breakdown") if k in m}
+        system = ("You tune a Doom RL agent's reward + training parameters. Given the metrics and "
+                  "the full parameter catalog, propose new values for the few knobs most likely to "
+                  "fix the weakest behaviour. Change only what helps; stay within each range.")
+        user = f"METRICS:\n{keymetrics}\n\n{catalog}\n\nReturn the changes and a one-line reason."
+        llm = LLMWriter(model=cfg.llm_model, host=cfg.ollama_host,
+                        num_ctx=cfg.llm_num_ctx, num_predict=cfg.llm_num_predict,
+                        keep_alive=cfg.llm_keep_alive)
+        content = llm._chat(system, user, _Proposal.model_json_schema())
+        prop = _Proposal.model_validate_json(content)
+    except Exception as e:
+        print(f"[autonomous] open LLM proposer unavailable ({e}); skipping.")
+        return None
+    proposal = {c.param: c.value for c in prop.changes}
+    new = validate(proposal, base_env=env)
+    applied = [f"{k}->{new[k]}" for k in proposal if k in new and new.get(k) != env.get(k)]
+    if not applied:
+        return None
+    return new, f"LLM(open): {prop.reason.strip()[:120]} ({', '.join(applied)})"
+
+
 def propose_next(cfg: Config, env: dict, m: dict, use_llm: bool,
                  algo: str = "ppo") -> tuple[dict, str]:
     """Pick the next reward config. The heuristic always runs (it owns exploration and

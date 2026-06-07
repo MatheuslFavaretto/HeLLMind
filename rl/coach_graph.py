@@ -147,16 +147,18 @@ def node_propose(state: CoachState) -> dict:
     except Exception:
         pass
 
-    # Layer LLM on top if enabled (refines combat knobs only)
+    # Layer LLM on top if enabled. Prefer the OPEN proposer (full parameter catalog — the LLM
+    # can change ANY knob it wants, validated against the registry); fall back to the combat-only
+    # proposer if the open one has nothing/Ollama is down.
     if state.get("use_llm"):
         try:
-            from rl.autonomous import llm_propose
+            from rl.autonomous import llm_propose, llm_propose_open
             from config import Config
             cfg = Config(); cfg.memory_dir = state["memory_dir"]
-            res = llm_propose(cfg, new, m)
+            res = llm_propose_open(cfg, new, m) or llm_propose(cfg, new, m)
             if res:
                 new, llm_r = res
-                reason = f"{reason}; LLM: {llm_r}"
+                reason = f"{reason}; {llm_r}"
         except Exception:
             pass
 
