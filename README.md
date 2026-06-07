@@ -229,6 +229,24 @@ propose → keep/revert). A **slow loop** accumulates knowledge (events → less
 graph). The bridge is the *propose* step: it consults the accumulated memory, so the more the
 slow loop turns, the smarter the fast loop's decisions get.
 
+**What the `propose` step actually consults (the full vault flow):**
+
+1. **Rich-metric diagnosis** — not just kills/explored, but `aim_offset` (is it centring enemies?),
+   `wasted_shot_rate` (spraying?), `revisit_rate` (circling?), and the **reward breakdown** (is the
+   reward 82% exploration when the goal is combat?). It picks the knob that targets the weakest one.
+2. **Lessons** — events → `aggregate_events` → an LLM distils reusable lessons across runs.
+3. **Memory-policy** — death patterns → knob suggestions that AVOID changes a past run disproved.
+4. **Semantic memory** — *"have I seen a situation like this before, and what worked?"* It matches
+   past iterations by MEANING (not keywords) and fills in proven settings; it records every
+   outcome (wins **and** regressions) so it never re-recommends what failed.
+5. **LLM proposer (full registry)** — given the catalog of **every** tunable parameter (name,
+   range, effect) + the metrics, the LLM may change ANY knob, validated/clamped against the registry.
+6. **Tradeoff / keep-revert** — the new config is kept only if the composite score holds; a
+   regression is rolled back and remembered. The loop can only improve or hold.
+
+So each turn the agent looks at **far more** than before, draws on the **whole** vault (lessons +
+memory-policy + semantic + learned-config), and self-corrects — bounded only by training frames.
+
 ```mermaid
 flowchart TD
     P["① PLAY · train a chunk"]
