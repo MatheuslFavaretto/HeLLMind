@@ -236,6 +236,58 @@ def llm_propose(cfg: Config, env: dict, m: dict) -> Optional[tuple[dict, str]]:
     return new, f"LLM: {res.summary.strip()[:120]} ({', '.join(applied)})"
 
 
+def situation_text(m: dict) -> str:
+    """One-line description of the agent's CURRENT behaviour — what the semantic memory embeds, so
+    'similar past situations' are matched by MEANING (not keyword)."""
+    rb = m.get("reward_breakdown", {}) or {}
+    parts = [
+        f"explored {m.get('explored_fraction', 0):.0%}",
+        f"exit_progress {m.get('exit_progress', 0):.0%}",
+        f"kills {m.get('kills_per_episode', 0):.1f}",
+        f"accuracy {m.get('shooting_accuracy', 0):.0%}",
+        f"wasted_shots {m.get('wasted_shot_rate', 0):.0%}",
+        f"aim_offset {m.get('aim_offset', 0):.2f}",
+        f"revisit {m.get('revisit_rate', 0):.0%}",
+        f"deaths {m.get('death_rate', 0):.0%}",
+        f"reward_explore {rb.get('explore', 0):.0%}",
+        f"reward_combat {rb.get('combat', 0):.0%}",
+    ]
+    return "agent behaviour: " + ", ".join(parts)
+
+
+def semantic_recall(memory_dir: str, m: dict, top_k: int = 3) -> tuple[Optional[dict], str]:
+    """Ask semantic memory: 'have I seen a situation like THIS, and what change worked?' Returns
+    (env_delta, note) from the most-similar KEPT iteration that improved, or (None, '')."""
+    try:
+        from writer.semantic_memory import SemanticMemory
+        sm = SemanticMemory(memory_dir)
+        hits = sm.search(situation_text(m), top_k=top_k)
+        sm.close()
+    except Exception:
+        return None, ""
+    for text, meta, score in hits or []:
+        meta = meta or {}
+        chg = meta.get("change")
+        if chg and meta.get("kept") and float(meta.get("score", 0)) > 0 and score >= 0.6:
+            return dict(chg), (f"semantic recall ({score:.2f} similar past run "
+                               f"scored {float(meta.get('score',0)):.2f}): {str(meta.get('reason',''))[:70]}")
+    return None, ""
+
+
+def semantic_record(memory_dir: str, m: dict, change: dict, score: float, kept: bool,
+                    reason: str = "") -> None:
+    """Store this iteration's (situation → change → outcome) so a future similar situation recalls
+    what worked. Best-effort (no-op if semantic memory is unavailable)."""
+    try:
+        from writer.semantic_memory import SemanticMemory
+        sm = SemanticMemory(memory_dir)
+        sm.add(situation_text(m), meta={"change": dict(change or {}), "score": float(score),
+                                        "kept": bool(kept), "reason": str(reason)[:160]})
+        sm.close()
+    except Exception:
+        pass
+
+
 def llm_propose_open(cfg: Config, env: dict, m: dict) -> Optional[tuple[dict, str]]:
     """OPEN LLM proposer: hand the model the FULL parameter catalog (every tunable knob, its
     current value, range and effect) + this run's metrics, and let it propose a new value for

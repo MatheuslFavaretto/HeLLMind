@@ -147,6 +147,22 @@ def node_propose(state: CoachState) -> dict:
     except Exception:
         pass
 
+    # Layer SEMANTIC memory: 'have I seen a situation like this before, and what worked?' Fills in
+    # proven params for knobs the heuristic didn't already target (the heuristic's targeted fix
+    # wins; semantic recall supplies validated priors for the rest).
+    try:
+        from rl.autonomous import semantic_recall
+        from rl.tuning_registry import validate
+        recalled, sem_note = semantic_recall(state["memory_dir"], m)
+        if recalled:
+            touched = {k for k in new if str(new.get(k)) != str(env.get(k))}  # heuristic's changes
+            fill = {k: v for k, v in recalled.items() if k not in touched}
+            if fill:
+                new = validate(fill, base_env=new)   # add proven priors, clamped; keep heuristic's
+                reason = f"{reason}; {sem_note}"
+    except Exception:
+        pass
+
     # Layer LLM on top if enabled. Prefer the OPEN proposer (full parameter catalog — the LLM
     # can change ANY knob it wants, validated against the registry); fall back to the combat-only
     # proposer if the open one has nothing/Ollama is down.
@@ -186,9 +202,13 @@ def node_adopt(state: CoachState) -> dict:
         RollbackLog(state["memory_dir"]).record(
             len(state["history"]), before, change, after,
             {"score": state["score"]}, kept=True)
+        # Remember this (situation → change → good outcome) so a similar future state recalls it.
+        from rl.autonomous import semantic_record
+        semantic_record(state["memory_dir"], state["metrics"], change,
+                        state["score"], kept=True, reason=state.get("reason", ""))
     except Exception:
         pass
-    return {"log": ["[adopt] config kept and logged"]}
+    return {"log": ["[adopt] config kept and logged (+ semantic memory)"]}
 
 
 def node_revert(state: CoachState) -> dict:
@@ -201,6 +221,10 @@ def node_revert(state: CoachState) -> dict:
         RollbackLog(state["memory_dir"]).record(
             len(history), before, change, after,
             {"score": state["score"]}, kept=False)
+        # Remember the regression too — so a similar future state won't be told it "worked".
+        from rl.autonomous import semantic_record
+        semantic_record(state["memory_dir"], state["metrics"], change,
+                        state["score"], kept=False, reason=state.get("reason", ""))
     except Exception:
         pass
     return {"next_env": last_good,

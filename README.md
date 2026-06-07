@@ -99,6 +99,23 @@ policy picks one combined action per step.
 so the net *sees* “what is where” instead of inferring from raw pixels; a 3-seed A/B showed
 +31% exploration). Run `doom-cli intel` to see the exact architecture and parameter count.
 
+**Why PPO is the default (and when to reach for QR-DQN).** The `auto` loop runs **PPO** by
+default — not because QR-DQN is worse (it actually scored well: ~2 kills/ep, 0 deaths), but
+because the whole pipeline is built around PPO:
+
+| Reason PPO is default | Detail |
+|---|---|
+| **Imitation is PPO-only** | behavioral cloning (your demos / assist-as-teacher) clones into a PPO policy; QR-DQN is value-based and can't be bootstrapped from demos the same way |
+| **Scenario curricula are PPO-only** | `my_way_home`, `defend_the_center` (isolated aim) — `train_dqn` only does campaign maps |
+| **All recent work is PPO** | semantic channel, the 19-action brain, the staged curriculum |
+
+**The honest case FOR QR-DQN:** it's an **off-policy** method with a replay buffer, so it
+**reuses** each frame many times — often **more sample-efficient on discrete actions** (Doom is
+discrete). That's exactly the lever for the laptop **compute wall** (no cloud). The smart
+auto-tuner is already algo-aware (it un-freezes via `DQN_EPS_FINAL` instead of `ENT_COEF`). The
+cost of switching: you lose the PPO brains + the BC bootstrap, and the DQN loop was historically
+more fragile (≈10 bugs fixed). Try it with `doom-cli auto --algo dqn`.
+
 ### 3. Senses for exploration & combat (reward shaping)
 
 V2 collapsed a ~12-term reward zoo down to **4 active buckets** (the rest were reward-hacking
@@ -195,7 +212,7 @@ Legend: ✅ **active by default** · ⬜ **built, off by default** (flip a flag)
 | | Rich-metric diagnosis (spray/circling/reward-mix) | ✅ | auto reads aim/wasted/breakdown |
 | | LLM tunes ANY param (full registry) | ✅ | `rl/tuning_registry.py` (needs Ollama) |
 | | Lessons + memory-policy + rollback + learned-config | ✅ | the vault flow |
-| | Semantic memory (vector DB) in the loop | 🔬 | exists; **not yet consulted by the coach** |
+| | Semantic memory (vector DB) in the loop | ✅ | coach recalls similar past situations by meaning + records each outcome |
 | **Curriculum** | Staged skill curriculum (combat→nav→objectives) | ⬜ | `scripts/skill_curriculum.py` |
 | | Scenario curriculum (my_way_home→corridor→MAP01) | ⬜ | `doom-cli curriculum2` |
 | **Observability** | Rich metrics (aim/move/weapons/perception panels) | ✅ | `doom-cli eval` |
