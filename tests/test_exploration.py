@@ -94,14 +94,15 @@ def test_propose_dqn_eps_stays_within_bounds():
     assert float(new["DQN_EPS_FINAL"]) <= BOUNDS["DQN_EPS_FINAL"][1]
 
 
-def test_score_caps_kills_so_camper_loses_to_explorer():
-    # Regression: kills/ep is unbounded, so an un-normalised 0.5*kills once let a
-    # spawn-camper (many kills, no exploration) outscore a real explorer.
-    camper = {"exit_rate": 0.0, "explored_fraction": 0.03,
-              "kills_per_episode": 4.0, "shooting_accuracy": 0.0}
-    explorer = {"exit_rate": 0.0, "explored_fraction": 0.40,
-                "kills_per_episode": 0.5, "shooting_accuracy": 0.0}
-    assert score(explorer) > score(camper)
+def test_score_precise_fighter_beats_sprayer():
+    # Combat-priority goal: a precise fighter (high accuracy, little wasted fire) must outscore a
+    # kill-farming SPRAYER (many shots at nothing, low accuracy) — the score values AIM QUALITY,
+    # not raw kills. (Replaces the old explore-vs-camp regression under the new goal.)
+    sprayer = {"shooting_accuracy": 0.02, "wasted_shot_rate": 0.8, "kills_per_episode": 4.0,
+               "aim_offset": 0.9, "explored_fraction": 0.05}
+    precise = {"shooting_accuracy": 0.4, "wasted_shot_rate": 0.1, "kills_per_episode": 2.0,
+               "kill_conversion": 0.6, "aim_offset": 0.2, "explored_fraction": 0.05}
+    assert score(precise) > score(sprayer)
 
 
 def test_score_kills_contribution_is_capped():

@@ -29,25 +29,32 @@ PY = sys.executable
 
 # ---- the GOAL, as one number: explore the whole map, finish it, and survive/fight ----
 def score(m: dict) -> float:
-    """Composite goal score. Priority order (the weights): finishing > covering > aim >
-    fighting.
+    """Composite goal score — COMBAT/AIM-prioritised (the user's goal: 'aim better, don't die').
 
-    Every term is normalised to ~[0,1] FIRST, so the weights alone set priority. This
-    matters: kills/ep is unbounded (0–5+), so the old `0.5 * kills` let a spawn-camping
-    brain that farms ~4 kills score +2.0 — dwarfing a real explorer (explored=0.1 →
-    +0.3). That scale bug literally told the agent "camp and kill > explore", the exact
-    local optimum we kept hitting. Capping kills at 5 (diminishing past that) and scaling
-    to [0,1] restores the intended ordering: max contributions become exit 4.0, explore
-    3.0, aim 1.0, kills 0.5 — kills is now a tiebreaker, not the objective."""
-    exit_r   = m.get("exit_rate", 0.0)                       # [0,1] (binary: finished?)
-    # Partial credit for getting CLOSE to the exit (dense, fairer than the binary rate) — so
-    # the agent is rewarded for progress toward finishing even before it completes once.
-    exit_prog = m.get("exit_progress", 0.0)                 # [0,1]
-    explored = m.get("explored_fraction", 0.0)              # [0,1]
-    kills    = min(m.get("kills_per_episode", 0.0), 5.0) / 5.0  # [0,1] (capped)
-    accuracy = m.get("shooting_accuracy", 0.0)             # [0,1]
-    return (4.0 * exit_r + 1.5 * exit_prog + 3.0 * explored
-            + 1.0 * accuracy + 0.5 * kills)
+    Priority by weight: AIM QUALITY (accuracy + finishing what it sees + NOT spraying + centring)
+    > survival > exploration > finishing. Every term is normalised to ~[0,1] so the weights set
+    priority; empty metrics → 0 (penalties act on the BAD terms so a blank dict stays 0).
+
+    Why this shape: the old score weighted explore 3.0 vs aim 1.0, so the auto-loop kept tuning
+    EXPLORATION (and the agent sprayed). To make it learn to AIM, the reward of the loop must
+    value aim. The big levers are now accuracy + kill_conversion and the anti-spray/anti-death
+    PENALTIES (wasted_shots, aim_offset, death_rate) — a kill-farming sprayer (low accuracy, high
+    wasted) scores low, while a precise fighter scores high. kills stays a small capped tiebreaker
+    so raw farming can't dominate. Exit terms are kept (secondary) so finishing still helps."""
+    # Rewards (≥0)
+    accuracy   = m.get("shooting_accuracy", 0.0)               # [0,1] aim
+    kill_conv  = m.get("kill_conversion", 0.0)                 # [0,1] finishes what it sees
+    kills      = min(m.get("kills_per_episode", 0.0), 5.0) / 5.0   # [0,1] capped tiebreaker
+    explored   = m.get("explored_fraction", 0.0)              # [0,1] still must move
+    exit_prog  = m.get("exit_progress", 0.0)                  # [0,1] secondary
+    exit_r     = m.get("exit_rate", 0.0)                      # [0,1] secondary (binary)
+    # Penalties (the bad behaviours to drive DOWN) — default 0 so empty metrics score 0.
+    wasted     = m.get("wasted_shot_rate", 0.0)              # [0,1] spraying at nothing
+    aim_off    = m.get("aim_offset", 0.0)                    # [0,1] enemy off-centre
+    death      = m.get("death_rate", 0.0)                    # [0,1] dying
+    return (2.5 * accuracy + 1.5 * kill_conv + 0.5 * kills
+            + 1.0 * explored + 1.0 * exit_prog + 2.0 * exit_r
+            - 1.5 * wasted - 1.0 * aim_off - 0.5 * death)
 
 
 # Reward knobs the supervisor is allowed to move, with hard bounds (the guardrails).

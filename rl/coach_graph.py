@@ -49,13 +49,9 @@ class CoachState(TypedDict):
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _score(m: dict) -> float:
-    """Composite score — same formula as autonomous.score()."""
-    exit_r    = float(m.get("exit_rate", 0.0))
-    exit_prog = float(m.get("exit_progress", 0.0))
-    explored  = float(m.get("explored_fraction", 0.0))
-    kills     = min(float(m.get("kills_per_episode", 0.0)), 5.0) / 5.0
-    accuracy  = float(m.get("shooting_accuracy", 0.0))
-    return 4.0 * exit_r + 1.5 * exit_prog + 3.0 * explored + 1.0 * accuracy + 0.5 * kills
+    """Composite score — delegates to autonomous.score() (single source of truth, no drift)."""
+    from rl.autonomous import score as _autoscore
+    return _autoscore(m)
 
 
 # ── Nodes ─────────────────────────────────────────────────────────────────────
