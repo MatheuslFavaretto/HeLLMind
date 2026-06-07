@@ -1365,10 +1365,14 @@ def build_parser() -> argparse.ArgumentParser:
     au.add_argument("--resume", action="store_true", help="(default now) Continue prior session.")
     au.add_argument("--fast", action="store_true",
                     help="Throughput: scale parallel envs to your CPU cores. Disables NOTHING.")
-    au.add_argument("--llm", action="store_true", help="LLM-refined reward proposals.")
+    # graph + llm are ON by default (the smartest loop). Opt out with --no-graph / --no-llm.
+    # Both degrade gracefully: --llm falls back to the heuristic if Ollama is down; --graph falls
+    # back to the inline cascade if langgraph isn't importable.
+    au.add_argument("--llm", action=argparse.BooleanOptionalAction, default=True,
+                    help="LLM-refined reward proposals over the FULL param registry (default on).")
     au.add_argument("--lstm", action="store_true", help="RecurrentPPO/LSTM policy.")
-    au.add_argument("--graph", action="store_true",
-                    help="LangGraph coach (V2): observe→diagnose→hypothesize→propose graph.")
+    au.add_argument("--graph", action=argparse.BooleanOptionalAction, default=True,
+                    help="LangGraph coach: observe→diagnose→hypothesize→propose graph (default on).")
     au.add_argument("--algo", default="ppo", choices=["ppo", "dqn"],
                     help="RL algorithm: ppo (default) or dqn (QR-DQN, off-policy + replay buffer).")
     au.set_defaults(fn=cmd_auto)
