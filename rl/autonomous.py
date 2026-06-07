@@ -349,6 +349,19 @@ def propose_next(cfg: Config, env: dict, m: dict, use_llm: bool,
             new, reason = mem_env, f"{reason}; {mem_reason}"
     except Exception as e:
         print(f"[autonomous] memory policy unavailable ({type(e).__name__}); skipping.")
+    # Semantic recall: 'seen a situation like this before? what worked?' — fills proven priors
+    # for knobs the heuristic didn't already target (heuristic's targeted fix wins).
+    try:
+        recalled, sem_note = semantic_recall(cfg.memory_dir, m)
+        if recalled:
+            from rl.tuning_registry import validate
+            touched = {k for k in new if str(new.get(k)) != str(env.get(k))}
+            fill = {k: v for k, v in recalled.items() if k not in touched}
+            if fill:
+                new = validate(fill, base_env=new)
+                reason = f"{reason}; {sem_note}"
+    except Exception:
+        pass
     if use_llm:
         llm_res = llm_propose(cfg, new, m)
         if llm_res:
@@ -973,6 +986,11 @@ def main() -> None:
 
         # Auto-chain (P4): log this change + its verdict into the experiment registry.
         _record_iteration(cfg, i, history[-1]["env"] if history else {}, eval_env, kept, sc)
+        # Semantic memory: store (situation → change → outcome) so a future similar state recalls
+        # what worked here (kept+positive) and avoids what regressed.
+        _prev = history[-1]["env"] if history else {}
+        _change = {k: v for k, v in eval_env.items() if str(v) != str(_prev.get(k))}
+        semantic_record(cfg.memory_dir, m, _change, sc, kept)
 
         if not kept:
             env = history[-1]["env"]  # roll back to the last good reward config
