@@ -714,10 +714,13 @@ def cmd_watch(a) -> int:
         cmd += ["--temperature", str(a.temperature)]
     if getattr(a, "overlay", False):
         cmd.append("--overlay")
-    env = {"USE_LSTM": "1"} if a.lstm else None
+    env = {"USE_LSTM": "1"} if a.lstm else {}
+    if getattr(a, "maps", None):
+        env["MAPS"] = a.maps
     label = "argmax" if (a.temperature == 0) else f"tempered T={a.temperature}"
     overlay_note = " + overlay" if getattr(a, "overlay", False) else ""
-    return run(cmd, env, title=f"🎮 Watching · {a.episodes} eps · {label}{overlay_note}")
+    map_note = f" · {a.maps}" if getattr(a, "maps", None) else ""
+    return run(cmd, env or None, title=f"🎮 Watching · {a.episodes} eps · {label}{map_note}{overlay_note}")
 
 
 def cmd_eval(a) -> int:
@@ -730,12 +733,15 @@ def cmd_eval(a) -> int:
         cmd.append("--stochastic")
     if getattr(a, "temperature", None) is not None:
         cmd += ["--temperature", str(a.temperature)]
-    env = {"USE_LSTM": "1"} if a.lstm else None
+    env = {"USE_LSTM": "1"} if a.lstm else {}
+    if getattr(a, "maps", None):
+        env["MAPS"] = a.maps
     if getattr(a, "temperature", None) is not None:
         mode = f"tempered T={a.temperature}"
     else:
         mode = "stochastic" if a.stochastic else "deterministic"
-    return run(cmd, env, title=f"📊 Evaluating · {a.episodes} {mode} episodes")
+    map_note = f" · {a.maps}" if getattr(a, "maps", None) else ""
+    return run(cmd, env or None, title=f"📊 Evaluating · {a.episodes} {mode} episodes{map_note}")
 
 
 def cmd_auto(a) -> int:
@@ -1346,6 +1352,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     w = sub.add_parser("watch"); w.add_argument("--episodes", type=int, default=3)
     w.add_argument("--path"); w.add_argument("--lstm", action="store_true")
+    w.add_argument("--maps", default=None,
+                   help="Map to watch on (e.g. MAP01, MAP02). Overrides the .env default.")
     w.add_argument("--temperature", type=float, default=0.5,
                    help="Tempered sampling for watching (default 0.5). Use 0 for raw argmax.")
     w.add_argument("--overlay", action="store_true",
@@ -1354,6 +1362,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     e = sub.add_parser("eval"); e.add_argument("--episodes", type=int, default=10)
     e.add_argument("--path"); e.add_argument("--json", action="store_true")
+    e.add_argument("--maps", default=None,
+                   help="Map to evaluate on (e.g. MAP01, MAP02). Overrides the .env default.")
     e.add_argument("--lstm", action="store_true", help="Evaluate an LSTM brain (USE_LSTM).")
     e.add_argument("--stochastic", action="store_true",
                    help="Sample the policy (vs argmax) — for unconverged brains.")
