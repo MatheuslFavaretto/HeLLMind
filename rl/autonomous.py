@@ -165,20 +165,31 @@ def plateau_escape(cfg: Config, env: dict, history: list,
             reason = f"[PLATEAU L3] {streak} iters no improvement — no history, using defaults"
         return new, reason, False
 
-    # Level 4: nuclear option — fresh brain, default config, other map.
+    # Level 4: the reward history is poisoned — clear it and restart the reward evolution,
+    # but KEEP THE BRAIN. The CNN weights encode real knowledge (5+ kills/ep = real learning).
+    # What's broken is the config that drifted over 20+ iterations. Fix:
+    #   - delete autonomy.jsonl so the loop starts fresh reward evolution from .env defaults
+    #   - switch to the other map (new gradient signal, same brain works fine)
+    #   - reset all reward knobs to .env defaults
+    # No --fresh: never waste the trained brain.
     current = env.get("MAPS", doom_map)
     nxt = "MAP02" if current == "MAP01" else "MAP01"
     new = dict(env)  # keep perception flags (obs shape must stay compatible)
     new["MAPS"] = nxt
-    # Reset all reward knobs to defaults.
     for knob in BOUNDS:
         env_val = os.getenv(knob)
         if env_val is not None:
             new[knob] = env_val
+    # Purge the reward-evolution history so the next session starts clean.
+    # The brain checkpoint is untouched — only the config trail is cleared.
+    trail = os.path.join(cfg.memory_dir, "autonomy.jsonl")
+    if os.path.exists(trail):
+        backup = trail + ".plateau_l4_backup"
+        os.rename(trail, backup)  # rename, not delete — reversible
     reason = (f"[PLATEAU L4] {streak} iters no improvement — "
-              f"FRESH BRAIN on {nxt} with default rewards. "
-              f"Policy was entrenched; restarting from scratch.")
-    return new, reason, True  # needs_fresh=True
+              f"reward history cleared (backed up), switching {current}→{nxt}, "
+              f"rewards reset to .env defaults. BRAIN KEPT (weights are real).")
+    return new, reason, False  # needs_fresh=False — brain survives
 
 
 # writer.suggest speaks in lowercase knobs; map them onto the supervisor's env vars.
@@ -1089,13 +1100,10 @@ def main() -> None:
         # an IndexError (the opposite of the graceful-continue we want).
         reason = ("baseline" if i == 0 or not history
                   else history[-1].get("_next_reason", "adjust"))
-        # Level-4 plateau escape: the previous iter flagged this as a fresh-brain restart.
-        if getattr(args, "_escape_fresh_next", False):
-            fresh = True
-            args._escape_fresh_next = False
-            # Also update doom_map from the env in case the escape rotated the map.
-            doom_map = env.get("MAPS", doom_map)
-        print(f"\n===== ITER {i} ({'ESCAPE-FRESH' if fresh and i > 0 else 'fresh' if fresh else 'resume'}) — {reason} =====")
+        # Map rotation: if plateau escape changed MAPS, update doom_map so train_chunk
+        # and eval both target the new map (the escape already wrote it into env).
+        doom_map = env.get("MAPS", doom_map)
+        print(f"\n===== ITER {i} ({'fresh' if fresh else 'resume'}) — {reason} =====")
         # A single iteration crash (ViZDoom hiccup, OOM, transient subprocess failure)
         # must NOT abort the whole self-improvement run — that's the opposite of autonomy.
         # Catch it, keep the best brain found so far, and continue / finish gracefully.
@@ -1141,21 +1149,15 @@ def main() -> None:
             best_score = max(best_score, sc)
 
         # Plateau Escape: check if the loop is stuck before proposing the next tweak.
-        # When stuck, override the proposal with a structural intervention (map switch,
-        # config reset, or fresh brain) instead of another small reward nudge.
-        _escape_fresh = False
+        # When stuck, override the proposal with a structural intervention instead of
+        # another small reward nudge. Brain weights are NEVER discarded — only the
+        # reward config history is reset (L4 renames autonomy.jsonl, doesn't delete it).
         _p_level = _stagnation_level(history)
         if _p_level > 0:
-            nxt, nxt_reason, _escape_fresh = plateau_escape(
+            nxt, nxt_reason, _ = plateau_escape(
                 cfg, env, history, _p_level, doom_map, algo)
             print(f"[autonomous] {nxt_reason}")
-            # If escape requires a fresh brain, flag it for the next train_chunk call.
-            # We mark it on args so the next loop iteration picks it up.
-            if _escape_fresh:
-                print("[autonomous] next iteration will start a FRESH brain (plateau L4).")
-                args._escape_fresh_next = True
         else:
-            args._escape_fresh_next = False
             # Coach: LangGraph graph (--graph) OR the legacy heuristic cascade.
             if getattr(args, "graph", False) and _coach is not None:
                 cr = _coach.run(metrics=m, env=env, history=history)
