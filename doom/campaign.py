@@ -228,6 +228,7 @@ class CampaignDoomEnv(gym.Env):
         use_labels: bool = False,
         game_vars: bool = False,
         semantic_channel: bool = False,
+        scenario_wad: Optional[str] = None,
     ) -> None:
         super().__init__()
         self.frame_skip = frame_skip
@@ -351,15 +352,25 @@ class CampaignDoomEnv(gym.Env):
         self._current_map = doom_map
         self._pending_map: Optional[str] = None
         self._wad_path = wad_path
+        self._scenario_wad = scenario_wad or ""
+        # For door/exit parsing: use the scenario PWAD when set (it contains the actual map),
+        # otherwise fall back to the IWAD (freedoom2.wad / doom.wad).
+        _map_wad = self._scenario_wad if self._scenario_wad else wad_path
         # Door positions (from the WAD) — needed by auto-door-nav AND the semantic channel.
         self._doors = []
         if self._auto_door_nav or self._semantic:
             from doom.wad_doors import map_doors
-            self._doors = list(map_doors(wad_path, doom_map))
+            try:
+                self._doors = list(map_doors(_map_wad, doom_map))
+            except Exception:
+                pass  # scenario WAD may lack door linedefs (e.g. my_way_home has none)
         # Exit position read straight from the WAD — the reference for "how close to the exit"
         # WITHOUT ever reaching it (metric only; does NOT enable the reward shaping below).
         from doom.wad_doors import map_exit
-        self._wad_exit_pos = map_exit(wad_path, doom_map)
+        try:
+            self._wad_exit_pos = map_exit(_map_wad, doom_map)
+        except Exception:
+            self._wad_exit_pos = None
         self._exit_ref = None       # metric exit reference (memorised exit OR the WAD exit)
         self._reached_doors = set()
         self._nomove_steps = 0      # consecutive steps with ~no movement (wall-stuck)
@@ -368,6 +379,11 @@ class CampaignDoomEnv(gym.Env):
         game = vzd.DoomGame()
         # Full IWAD (freedoom2.wad / doom.wad) -> game path; maps via set_doom_map.
         game.set_doom_game_path(wad_path)
+        # Optional PWAD: overlays a ViZDoom scenario map (e.g. my_way_home.wad) on top of
+        # the IWAD. This gives the full campaign action space on a scenario map so the brain
+        # can be transferred directly to full campaign runs (same action count → same weights).
+        if scenario_wad:
+            game.set_doom_scenario_path(scenario_wad)
         game.set_doom_map(doom_map)
         game.set_screen_format(vzd.ScreenFormat.GRAY8)
         game.set_screen_resolution(
@@ -1211,6 +1227,7 @@ def make_campaign_env(
             use_labels=cfg.use_labels,
             game_vars=getattr(cfg, "game_vars", False),
             semantic_channel=getattr(cfg, "semantic_channel", False),
+            scenario_wad=getattr(cfg, "scenario_wad", "") or None,
         )
         env.reset(seed=cfg.seed + rank)
         return env

@@ -36,6 +36,11 @@ class Config:
     # WAD with the maps. Default: bundled freedoom2.wad (free).
     # For the original Doom 1 maps, point to your doom.wad.
     wad_path: str = os.getenv("WAD_PATH", "")
+    # Optional PWAD to overlay on top of the IWAD (e.g. vizdoom scenarios like my_way_home.wad).
+    # When set, CampaignDoomEnv loads wad_path as the IWAD and scenario_wad as the map PWAD,
+    # giving the full campaign action space (15-19 actions) on a scenario map. This allows
+    # brain weight transfer between scenario stages and full campaign runs.
+    scenario_wad: str = os.getenv("SCENARIO_WAD", "")
     # Map list, in order. freedoom2 uses MAP01..; doom.wad uses E1M1..
     maps: Tuple[str, ...] = tuple(
         os.getenv("MAPS", "MAP01,MAP02,MAP03,MAP04,MAP05").split(",")

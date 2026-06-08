@@ -33,15 +33,33 @@ sys.path.insert(0, ROOT)
 # mode "scenario" → CAMPAIGN=0, DOOM_SCENARIO=<name> (uses DoomEnv)
 # mode "campaign" → CAMPAIGN=1, MAPS=<doom_map>      (uses CampaignDoomEnv)
 
+def _mywh_wad() -> str:
+    """Absolute path to the my_way_home PWAD bundled with ViZDoom."""
+    import vizdoom as vzd
+    import os
+    return os.path.join(vzd.scenarios_path, "my_way_home.wad")
+
+
 STAGE_DEFS = {
-    # ── ViZDoom built-in scenarios (scenario mode, no action-space mismatch) ──────
+    # ── my_way_home: campaign mode with the full action space ─────────────────────
+    # Runs via CampaignDoomEnv (IWAD=freedoom2.wad + PWAD=my_way_home.wad, MAP01).
+    # Same 15-19 actions as the full campaign → brain weights transfer directly to
+    # MAP01/MAP02 runs with no compatibility issue (same action count = same network).
+    # No enemies: agent focuses entirely on navigation / finding the exit.
     "mywh": {
-        "_mode": "scenario",
-        "_scenario": "my_way_home",      # tiny exit-finding map, no enemies
+        "_mode": "campaign",              # CampaignDoomEnv, NOT the scenario env
+        "_scenario_wad_fn": "_mywh_wad", # resolved at runtime (avoids import at parse)
         "EPISODE_TIMEOUT": "2100",
         "EXIT_REWARD": "500.0",
+        "COVERAGE_REWARD": "1.5",
+        "FRONTIER_REWARD": "0.05",
         "USE_RND": "1", "RND_SCALE": "0.5",
         "DEATH_PENALTY": "1.0",
+        # No combat rewards (no enemies in my_way_home)
+        "HIT_REWARD": "0", "MISS_PENALTY": "0", "KILL_REWARD": "0",
+        "DAMAGE_TAKEN_PENALTY": "0",
+        # Assists off: this stage trains the real solo nav skill
+        "AUTO_AIM": "0", "AUTO_DOOR_NAV": "0",
         "ENT_COEF": "0.05",
     },
     "corridor": {
@@ -109,6 +127,12 @@ def _run_stage(stage: str, profile: dict, doom_map: str,
                steps: int, algo: str, fresh: bool) -> None:
     mode     = profile.get("_mode", "campaign")
     scenario = profile.get("_scenario", "")
+    # Resolve lazy scenario-WAD path (avoids vizdoom import at module load time).
+    scenario_wad = ""
+    if "_scenario_wad_fn" in profile:
+        fn_name = profile["_scenario_wad_fn"]
+        import rl.progressive_curriculum as _self
+        scenario_wad = getattr(_self, fn_name)()
     # Strip internal keys before passing to the subprocess env.
     env_overrides = {k: v for k, v in profile.items() if not k.startswith("_")}
 
@@ -126,11 +150,15 @@ def _run_stage(stage: str, profile: dict, doom_map: str,
             cmd = [sys.executable, "-m", "rl.train",
                    "--timesteps", str(steps)]
     else:
-        # Campaign mode: freedoom2 full map
+        # Campaign mode: freedoom2 IWAD + optional scenario PWAD overlay.
         base_env = {**os.environ, "CAMPAIGN": "1", "MAPS": doom_map,
                     "DOCS_ENABLED": "0",
                     "MEMORY_ENABLED": "1" if stage == "full" else "0",
                     **env_overrides}
+        if scenario_wad:
+            # PWAD overlay: the stage map lives in the PWAD, not in freedoom2.wad.
+            # CampaignDoomEnv loads IWAD as base and PWAD via set_doom_scenario_path.
+            base_env["SCENARIO_WAD"] = scenario_wad
         if algo == "dqn":
             cmd = [sys.executable, "-m", "rl.train_dqn",
                    "--map", doom_map, "--timesteps", str(steps), "--n-envs", "1"]
@@ -141,7 +169,8 @@ def _run_stage(stage: str, profile: dict, doom_map: str,
     if fresh:
         cmd.append("--fresh")
 
-    tag = f"scenario:{scenario}" if mode == "scenario" else f"map:{doom_map}"
+    tag = (f"scenario:{scenario}" if mode == "scenario"
+           else f"map:{doom_map}" + (f"+pwad" if scenario_wad else ""))
     print(f"\n{'═'*64}")
     print(f"  STAGE: {stage.upper()}  |  algo: {algo}  |  steps: {steps:,}  |  {tag}")
     key = {k: v for k, v in env_overrides.items()
