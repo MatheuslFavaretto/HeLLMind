@@ -80,7 +80,7 @@ def test_index_from_memory_store_with_events(tmp_path):
         {"map": "MAP01", "terminal": "death", "nearest_enemy": "DoomImp", "health": 10.0},
         {"map": "MAP01", "terminal": "timeout", "region": "1x2", "weapon": "shotgun"},
     ]
-    with open(os.path.join(str(tmp_path), "memory.jsonl"), "w") as f:
+    with open(os.path.join(str(tmp_path), "memory_store.jsonl"), "w") as f:
         for ev in events:
             f.write(json.dumps(ev) + "\n")
 

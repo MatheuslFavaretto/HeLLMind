@@ -206,34 +206,54 @@ class SemanticMemory:
 
 # ── Index events from the episodic memory store ───────────────────────────────
 
-def index_from_memory_store(memory_dir: str, limit: int = 500) -> int:
-    """Pull recent events from memory_store.jsonl and add them to the vector DB.
+_CURSOR_FILE = "semantic_index_cursor.txt"
 
-    Skips entries that are already in the vector DB (by checking count vs stored
-    progress). Returns the number of new entries added.
-    """
-    import glob
 
-    mem = SemanticMemory(memory_dir)
-    already = mem.count()
-
-    jsonl_files = glob.glob(os.path.join(memory_dir, "*.jsonl"))
-    events: list[dict] = []
-    for path in jsonl_files:
-        try:
-            with open(path) as f:
-                for line in f:
-                    line = line.strip()
-                    if line:
-                        events.append(json.loads(line))
-        except Exception:
-            pass
-
-    new_events = events[already:][:limit]
-    if not new_events:
-        mem.close()
+def _read_cursor(memory_dir: str) -> int:
+    """Return the number of lines already indexed from memory_store.jsonl."""
+    path = os.path.join(memory_dir, _CURSOR_FILE)
+    try:
+        return int(open(path).read().strip())
+    except Exception:
         return 0
 
+
+def _write_cursor(memory_dir: str, n: int) -> None:
+    with open(os.path.join(memory_dir, _CURSOR_FILE), "w") as f:
+        f.write(str(n))
+
+
+def index_from_memory_store(memory_dir: str, limit: int = 500) -> int:
+    """Pull new events from memory_store.jsonl and add them to the vector DB.
+
+    Uses a cursor file so we never re-index already-stored events and the
+    offset doesn't drift when memory_store.jsonl has more lines than DB rows
+    (which happens when events have empty text and are stored as JSON fallback).
+
+    Returns the number of new entries added.
+    """
+    jsonl_path = os.path.join(memory_dir, "memory_store.jsonl")
+    if not os.path.exists(jsonl_path):
+        return 0
+
+    cursor = _read_cursor(memory_dir)
+    events: list[dict] = []
+    with open(jsonl_path) as f:
+        for i, line in enumerate(f):
+            if i < cursor:
+                continue
+            line = line.strip()
+            if line:
+                try:
+                    events.append(json.loads(line))
+                except Exception:
+                    pass
+
+    new_events = events[:limit]
+    if not new_events:
+        return 0
+
+    mem = SemanticMemory(memory_dir)
     texts, metas = [], []
     for ev in new_events:
         parts = []
@@ -256,6 +276,7 @@ def index_from_memory_store(memory_dir: str, limit: int = 500) -> int:
     mem.add_batch(texts, metas)
     n = len(texts)
     mem.close()
+    _write_cursor(memory_dir, cursor + len(new_events))
     return n
 
 

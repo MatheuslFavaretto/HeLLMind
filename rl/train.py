@@ -79,6 +79,14 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Ignore the saved brain and start from ZERO (overwrites the vault's).",
     )
+    p.add_argument(
+        "--no-assists",
+        dest="no_assists",
+        action="store_true",
+        help="Disable ALL gameplay assists (auto-aim, auto-door-nav, auto-best-weapon, "
+             "auto-use). Trains a SOLO brain that must learn everything itself. "
+             "Required for a policy that works assists-OFF in eval.",
+    )
     return p.parse_args()
 
 
@@ -99,6 +107,11 @@ def apply_args(cfg: Config, args: argparse.Namespace) -> Config:
         cfg.maps = tuple(args.maps.split(","))
     if args.wad:
         cfg.wad_path = args.wad
+    if getattr(args, "no_assists", False):
+        cfg.auto_aim = False
+        cfg.auto_best_weapon = False
+        cfg.auto_use = False
+        cfg.auto_door_nav = False
     # Render needs a single windowed env; you can't watch parallel subprocesses.
     if cfg.render and cfg.n_envs != 1:
         print("[render] forcing n_envs=1 to show the Doom window.")

@@ -314,6 +314,147 @@ def write_behavior_note(cfg, flags: List[BehaviorFlag]) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Long-term behavior history
+# ---------------------------------------------------------------------------
+
+_HISTORY_FILE = "behavior_history.jsonl"
+
+
+@dataclass
+class BehaviorTrend:
+    name: str           # flag name
+    occurrences: int    # times seen in last N analyses
+    total_runs: int     # N (window size)
+    frequency: float    # occurrences / total_runs
+    mean_confidence: float
+    verdict: str        # "persistent" | "improving" | "new" | "resolved"
+
+
+def save_flags(memory_dir: str, flags: List[BehaviorFlag]) -> None:
+    """Append current flags snapshot to behavior_history.jsonl."""
+    from datetime import datetime, timezone
+    import dataclasses
+    record = {
+        "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "flags": [dataclasses.asdict(f) for f in flags],
+    }
+    path = os.path.join(memory_dir, _HISTORY_FILE)
+    with open(path, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps(record) + "\n")
+
+
+def load_history(memory_dir: str, n_runs: int = 20) -> List[Dict[str, Any]]:
+    """Load the last n_runs behavior snapshots."""
+    path = os.path.join(memory_dir, _HISTORY_FILE)
+    if not os.path.exists(path):
+        return []
+    records = []
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                try:
+                    records.append(json.loads(line))
+                except Exception:
+                    pass
+    return records[-n_runs:]
+
+
+def detect_trends(memory_dir: str, n_runs: int = 10) -> List[BehaviorTrend]:
+    """Compare behavior flags across the last n_runs analyses.
+
+    Classifies each flag as:
+      persistent  — seen in >= 60% of runs (chronic problem)
+      improving   — frequency dropped > 20% in the second half vs first half
+      new         — only appeared in the most recent half
+      resolved    — was in first half but gone in second half
+    """
+    records = load_history(memory_dir, n_runs)
+    if len(records) < 2:
+        return []
+
+    total = len(records)
+    half = max(1, total // 2)
+    early = records[:half]
+    late  = records[half:]
+
+    all_names: set[str] = set()
+    for r in records:
+        for f in r.get("flags", []):
+            all_names.add(f["name"])
+
+    trends = []
+    for name in sorted(all_names):
+        early_hits  = sum(1 for r in early if any(f["name"] == name for f in r.get("flags", [])))
+        late_hits   = sum(1 for r in late  if any(f["name"] == name for f in r.get("flags", [])))
+        all_hits    = early_hits + late_hits
+        freq        = all_hits / total
+        confs = [f["confidence"] for r in records for f in r.get("flags", []) if f["name"] == name]
+        mean_conf   = sum(confs) / len(confs) if confs else 0.0
+
+        early_freq = early_hits / len(early)
+        late_freq  = late_hits  / len(late)
+
+        if freq >= 0.6:
+            verdict = "persistent"
+        elif late_freq - early_freq > 0.2:
+            verdict = "new"
+        elif early_freq - late_freq > 0.2:
+            verdict = "improving" if late_freq > 0 else "resolved"
+        else:
+            verdict = "persistent" if freq >= 0.3 else "resolved"
+
+        trends.append(BehaviorTrend(
+            name=name, occurrences=all_hits, total_runs=total,
+            frequency=freq, mean_confidence=mean_conf, verdict=verdict,
+        ))
+
+    return sorted(trends, key=lambda t: (-t.frequency, t.name))
+
+
+def write_trend_note(cfg, trends: List[BehaviorTrend]) -> str:
+    """Write `80-recommendations/BehaviorTrends.md`. Returns path."""
+    from datetime import datetime, timezone
+    out_dir = os.path.join(cfg.vault_path, "80-recommendations")
+    os.makedirs(out_dir, exist_ok=True)
+    path = os.path.join(out_dir, "BehaviorTrends.md")
+
+    lines = [
+        "---",
+        "type: behavior-trends",
+        f"created: {datetime.now(timezone.utc).isoformat(timespec='seconds')}",
+        f"window: {trends[0].total_runs if trends else 0} runs",
+        "tags: [behavior, trends, doom-rl]",
+        "---",
+        "",
+        "# Behavioral trends (cross-run)",
+        "",
+        f"_Tracks flag frequency across the last {trends[0].total_runs if trends else 0} behavior analyses._",
+        "",
+    ]
+
+    for t in trends:
+        verdict_icon = {
+            "persistent": "CRITICAL",
+            "new":        "WARN",
+            "improving":  "OK",
+            "resolved":   "OK",
+        }.get(t.verdict, "INFO")
+        lines += [
+            f"## [{verdict_icon}] {t.name.replace('_', ' ').title()}",
+            "",
+            f"- **Verdict:** {t.verdict}",
+            f"- **Frequency:** {t.occurrences}/{t.total_runs} runs ({t.frequency:.0%})",
+            f"- **Mean confidence:** {t.mean_confidence:.0%}",
+            "",
+        ]
+
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write("\n".join(lines))
+    return path
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
@@ -322,10 +463,33 @@ def main() -> None:
         description="Detect behavioral patterns from HeLLMind telemetry."
     )
     p.add_argument("--json", action="store_true", help="Output as JSON.")
+    p.add_argument("--trends", action="store_true",
+                   help="Show cross-run trend analysis (requires multiple prior runs).")
+    p.add_argument("--n-runs", type=int, default=10,
+                   help="Window size for trend analysis (default: 10).")
     args = p.parse_args()
 
     from config import Config
     cfg = Config()
+
+    if args.trends:
+        trends = detect_trends(cfg.memory_dir, n_runs=args.n_runs)
+        if not trends:
+            print("[behavior] No trend history yet — run `doom-cli behavior` after each session.")
+            return
+        if args.json:
+            import dataclasses
+            print(json.dumps([dataclasses.asdict(t) for t in trends], indent=2))
+            return
+        for t in trends:
+            icon = "CRITICAL" if t.verdict == "persistent" else (
+                   "WARN"     if t.verdict == "new" else "OK")
+            print(f"[{icon}] {t.name} | {t.verdict} | {t.occurrences}/{t.total_runs} runs "
+                  f"({t.frequency:.0%}) | mean conf {t.mean_confidence:.0%}")
+        note = write_trend_note(cfg, trends)
+        print(f"[behavior] trend note written: {note}")
+        return
+
     flags = detect_from_vault(cfg)
 
     if args.json:
@@ -335,18 +499,20 @@ def main() -> None:
 
     if not flags:
         print("[behavior] No behavioral issues detected.")
-        return
+    else:
+        for f in sorted(flags, key=lambda x: -x.confidence):
+            icon = "CRITICAL" if f.confidence >= 0.7 else ("WARN" if f.confidence >= 0.4 else "INFO")
+            print(f"[{icon}] {f.name} (confidence={f.confidence:.0%})")
+            print(f"  {f.description}")
+            print(f"  Evidence: {f.evidence}")
+            print(f"  Fix: {f.recommendation}")
+            print()
 
-    for f in sorted(flags, key=lambda x: -x.confidence):
-        icon = "CRITICAL" if f.confidence >= 0.7 else ("WARN" if f.confidence >= 0.4 else "INFO")
-        print(f"[{icon}] {f.name} (confidence={f.confidence:.0%})")
-        print(f"  {f.description}")
-        print(f"  Evidence: {f.evidence}")
-        print(f"  Fix: {f.recommendation}")
-        print()
+        path = write_behavior_note(cfg, flags)
+        print(f"[behavior] wrote {path}")
 
-    path = write_behavior_note(cfg, flags)
-    print(f"[behavior] wrote {path}")
+    # Always persist the snapshot so trends accumulate over time.
+    save_flags(cfg.memory_dir, flags)
 
 
 if __name__ == "__main__":

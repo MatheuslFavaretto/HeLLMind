@@ -832,7 +832,15 @@ def cmd_bestiary(a) -> int:
 
 
 def cmd_behavior(a) -> int:
-    return run([PY, "-m", "writer.behavior"], title="🔍 Detecting behavioral patterns")
+    cmd = [PY, "-m", "writer.behavior"]
+    if getattr(a, "trends", False):
+        cmd.append("--trends")
+    if getattr(a, "n_runs", None):
+        cmd += ["--n-runs", str(a.n_runs)]
+    if getattr(a, "json", False):
+        cmd.append("--json")
+    title = "📈 Behavior trend analysis" if getattr(a, "trends", False) else "🔍 Detecting behavioral patterns"
+    return run(cmd, title=title)
 
 
 def cmd_hypothesize(a) -> int:
@@ -1462,7 +1470,13 @@ def build_parser() -> argparse.ArgumentParser:
         [PY, "-m", "writer.perception_note"],
         title="🧠 Writing agent perception note to vault"
     ))
-    sub.add_parser("behavior").set_defaults(fn=cmd_behavior)
+    beh = sub.add_parser("behavior", help="Detect bad behavior patterns (or show trends)")
+    beh.add_argument("--trends", action="store_true",
+                     help="Show cross-run trend analysis instead of current-snapshot flags.")
+    beh.add_argument("--n-runs", type=int, default=10, dest="n_runs",
+                     help="Window size for trend analysis (default: 10).")
+    beh.add_argument("--json", action="store_true", help="Machine-readable output.")
+    beh.set_defaults(fn=cmd_behavior)
 
     rc = sub.add_parser("recall", help="Query episodic memory")
     rc.add_argument("query", nargs="*", help="Free-text query")

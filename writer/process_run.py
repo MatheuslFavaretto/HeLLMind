@@ -125,6 +125,15 @@ def process_run(
     except Exception as e:
         print(f"[process_run] hub failed (ignoring): {e}")
 
+    # (Phase 1.5) Auto-index new episodic events into the semantic vector DB.
+    try:
+        from writer.semantic_memory import index_from_memory_store
+        n_indexed = index_from_memory_store(cfg.memory_dir)
+        if n_indexed:
+            print(f"[process_run] semantic index: +{n_indexed} events")
+    except Exception as e:
+        print(f"[process_run] semantic index failed (ignoring): {e}")
+
     print(f"[process_run] done: {written}/{len(snaps)} notes in {cfg.vault_path}")
     return written
 

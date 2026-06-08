@@ -807,6 +807,10 @@ def main() -> None:
     p.add_argument("--algo", default="ppo", choices=["ppo", "dqn"],
                    help="RL algorithm: ppo (default, on-policy) or dqn (QR-DQN, off-policy "
                         "with replay buffer — more sample-efficient, V2 default).")
+    p.add_argument("--no-assists", dest="no_assists", action="store_true",
+                   help="Disable ALL gameplay assists (auto-aim, auto-door-nav, "
+                        "auto-best-weapon, auto-use). Trains a SOLO brain that must "
+                        "learn everything itself. Required to benchmark true solo policy.")
     args = p.parse_args()
 
     cfg = Config()
@@ -908,6 +912,16 @@ def main() -> None:
         "AUTO_USE": "1" if cfg.auto_use else "0",
         "DISCOVERY_REWARD": str(cfg.discovery_reward),
     }
+
+    # --no-assists: train a SOLO brain (all crutches off). Override after base env is built
+    # so any learned_config can't accidentally re-enable assists via env vars.
+    if args.no_assists:
+        env["AUTO_AIM"] = "0"
+        env["AUTO_BEST_WEAPON"] = "0"
+        env["AUTO_USE"] = "0"
+        env["AUTO_DOOR_NAV"] = "0"
+        print("[autonomous] --no-assists: all gameplay assists DISABLED (solo brain mode). "
+              "Training will be harder — agent must learn aim + nav from scratch.")
 
     # Accumulate across sessions: overlay reward knobs the agent has PROVEN help (validated
     # experiments), then adopt any "improved" verdicts sitting in memory from prior runs.
