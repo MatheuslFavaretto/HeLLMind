@@ -78,6 +78,109 @@ BOUNDS = {
     "KILL_REWARD":           (2.0, 20.0),   # added: auto-loop can tune the primary lever
 }
 
+# ── Plateau Escape ────────────────────────────────────────────────────────────
+# Detects when the loop is genuinely stuck and escalates to structural changes,
+# not just reward tweaks. Levels are cumulative: a level-2 action also resets
+# level-1 state, so the timer resets cleanly after each intervention.
+#
+# Level 0 — OK: score improving normally.
+# Level 1 — MILD (5 iters no improve): reset reward knobs to .env defaults; keep brain.
+#            The evolved config may have drifted to a bad local minimum.
+# Level 2 — MODERATE (10 iters no improve): switch training map (MAP01↔MAP02 rotation).
+#            Different enemy density, different spawn — new gradient signal.
+# Level 3 — SEVERE (15 iters no improve): revert to the BEST-EVER iter config + raise ENT.
+#            Stop trusting recent proposals; go back to what actually worked.
+# Level 4 — CRITICAL (20 iters no improve): fresh brain, default config, different map.
+#            The policy is entrenched; the only fix is to restart with the lesson learned.
+
+_ESCAPE_WINDOWS = {1: 5, 2: 10, 3: 15, 4: 20}   # level → iters-without-improvement
+_ESCAPE_IMPROVE_THRESHOLD = 0.03   # must beat best by this much to count as "improved"
+_MAP_ROTATION = ["MAP02", "MAP01", "MAP02", "MAP01"]  # rotation on level-2 escape
+
+
+def _no_improve_streak(history: list) -> int:
+    """How many consecutive trailing iters have NOT beaten the best score so far."""
+    if not history:
+        return 0
+    best = max(h["score"] for h in history)
+    streak = 0
+    for h in reversed(history):
+        if h["score"] >= best - _ESCAPE_IMPROVE_THRESHOLD:
+            break
+        streak += 1
+    return streak
+
+
+def _stagnation_level(history: list) -> int:
+    """Return the plateau-escape level (0=ok, 1-4=escalating interventions)."""
+    streak = _no_improve_streak(history)
+    for level in sorted(_ESCAPE_WINDOWS, reverse=True):
+        if streak >= _ESCAPE_WINDOWS[level]:
+            return level
+    return 0
+
+
+def plateau_escape(cfg: Config, env: dict, history: list,
+                   level: int, doom_map: str, algo: str) -> tuple[dict, str, bool]:
+    """Apply a structural intervention to break out of a score plateau.
+
+    Returns (new_env, reason, needs_fresh_brain).
+    The caller is responsible for passing --fresh to train_chunk when needs_fresh_brain=True.
+    """
+    new = dict(env)
+    streak = _no_improve_streak(history)
+
+    if level == 1:
+        # Reset ALL reward knobs to the current .env / config defaults (keep brain).
+        # The evolved config may have drifted into a bad region; a clean slate often helps.
+        for knob in BOUNDS:
+            env_val = os.getenv(knob)
+            if env_val is not None:
+                new[knob] = env_val
+        reason = (f"[PLATEAU L1] {streak} iters no improvement — "
+                  f"reset reward knobs to .env defaults (brain kept)")
+        return new, reason, False
+
+    if level == 2:
+        # Rotate training map: MAP01↔MAP02 (different density = different gradient).
+        current = env.get("MAPS", doom_map)
+        nxt = "MAP02" if current == "MAP01" else "MAP01"
+        new["MAPS"] = nxt
+        reason = (f"[PLATEAU L2] {streak} iters no improvement — "
+                  f"switching map {current} → {nxt} (new density/spawn signal)")
+        return new, reason, False
+
+    if level == 3:
+        # Revert to the best-ever iter's config + raise ENT_COEF to un-freeze policy.
+        if history:
+            best_h = max(history, key=lambda h: h["score"])
+            new = dict(best_h["env"])
+            # Un-freeze: raise entropy coefficient so the policy can explore again.
+            ent = float(new.get("ENT_COEF", cfg.ent_coef))
+            new["ENT_COEF"] = str(min(ent * 1.5, BOUNDS["ENT_COEF"][1]))
+            reason = (f"[PLATEAU L3] {streak} iters no improvement — "
+                      f"reverted to best iter {best_h['iter']} "
+                      f"(score {best_h['score']:.2f}) + raised ENT_COEF → {new['ENT_COEF']}")
+        else:
+            reason = f"[PLATEAU L3] {streak} iters no improvement — no history, using defaults"
+        return new, reason, False
+
+    # Level 4: nuclear option — fresh brain, default config, other map.
+    current = env.get("MAPS", doom_map)
+    nxt = "MAP02" if current == "MAP01" else "MAP01"
+    new = dict(env)  # keep perception flags (obs shape must stay compatible)
+    new["MAPS"] = nxt
+    # Reset all reward knobs to defaults.
+    for knob in BOUNDS:
+        env_val = os.getenv(knob)
+        if env_val is not None:
+            new[knob] = env_val
+    reason = (f"[PLATEAU L4] {streak} iters no improvement — "
+              f"FRESH BRAIN on {nxt} with default rewards. "
+              f"Policy was entrenched; restarting from scratch.")
+    return new, reason, True  # needs_fresh=True
+
+
 # writer.suggest speaks in lowercase knobs; map them onto the supervisor's env vars.
 # (Exploration knobs COVERAGE/EXIT aren't in writer.suggest — the heuristic owns those.)
 LLM_KNOB_TO_ENV = {
@@ -986,7 +1089,13 @@ def main() -> None:
         # an IndexError (the opposite of the graceful-continue we want).
         reason = ("baseline" if i == 0 or not history
                   else history[-1].get("_next_reason", "adjust"))
-        print(f"\n===== ITER {i} ({'fresh' if fresh else 'resume'}) — {reason} =====")
+        # Level-4 plateau escape: the previous iter flagged this as a fresh-brain restart.
+        if getattr(args, "_escape_fresh_next", False):
+            fresh = True
+            args._escape_fresh_next = False
+            # Also update doom_map from the env in case the escape rotated the map.
+            doom_map = env.get("MAPS", doom_map)
+        print(f"\n===== ITER {i} ({'ESCAPE-FRESH' if fresh and i > 0 else 'fresh' if fresh else 'resume'}) — {reason} =====")
         # A single iteration crash (ViZDoom hiccup, OOM, transient subprocess failure)
         # must NOT abort the whole self-improvement run — that's the opposite of autonomy.
         # Catch it, keep the best brain found so far, and continue / finish gracefully.
@@ -1031,19 +1140,36 @@ def main() -> None:
         else:
             best_score = max(best_score, sc)
 
-        # Coach: LangGraph graph (--graph) OR the legacy heuristic cascade.
-        if getattr(args, "graph", False) and _coach is not None:
-            cr = _coach.run(metrics=m, env=env, history=history)
-            nxt, nxt_reason = cr["next_env"], cr["reason"]
-            # Print the per-node trace so the auto loop is fully observable.
-            for line in cr.get("log", []):
-                print(f"  {line}")
+        # Plateau Escape: check if the loop is stuck before proposing the next tweak.
+        # When stuck, override the proposal with a structural intervention (map switch,
+        # config reset, or fresh brain) instead of another small reward nudge.
+        _escape_fresh = False
+        _p_level = _stagnation_level(history)
+        if _p_level > 0:
+            nxt, nxt_reason, _escape_fresh = plateau_escape(
+                cfg, env, history, _p_level, doom_map, algo)
+            print(f"[autonomous] {nxt_reason}")
+            # If escape requires a fresh brain, flag it for the next train_chunk call.
+            # We mark it on args so the next loop iteration picks it up.
+            if _escape_fresh:
+                print("[autonomous] next iteration will start a FRESH brain (plateau L4).")
+                args._escape_fresh_next = True
         else:
-            nxt, nxt_reason = propose_next(cfg, env, m, args.llm, algo=algo)
+            args._escape_fresh_next = False
+            # Coach: LangGraph graph (--graph) OR the legacy heuristic cascade.
+            if getattr(args, "graph", False) and _coach is not None:
+                cr = _coach.run(metrics=m, env=env, history=history)
+                nxt, nxt_reason = cr["next_env"], cr["reason"]
+                for line in cr.get("log", []):
+                    print(f"  {line}")
+            else:
+                nxt, nxt_reason = propose_next(cfg, env, m, args.llm, algo=algo)
+
         history.append({
             "iter": i, "metrics": m, "score": sc, "kept": kept,
             "reason": reason, "env": dict(env), "_next_reason": nxt_reason,
             "_next_env": dict(nxt),  # the config to apply next — needed to --resume cleanly
+            "plateau_level": _p_level,
         })
         env = nxt  # apply the proposed tweak for the next iteration
         write_log(cfg, history)  # update the log every iter (resumable, observable)
