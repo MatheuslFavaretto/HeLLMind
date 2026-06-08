@@ -765,6 +765,8 @@ def cmd_auto(a) -> int:
         cmd.append("--fast")
     if getattr(a, "graph", False):
         cmd.append("--graph")
+    if getattr(a, "no_assists", False):
+        cmd.append("--no-assists")
     if a.llm:
         cmd.append("--llm")
     _algo = getattr(a, "algo", "ppo")
@@ -772,8 +774,9 @@ def cmd_auto(a) -> int:
         cmd += ["--algo", _algo]
     env = {"USE_LSTM": "1"} if a.lstm else None
     _algo_tag = f" · {_algo.upper()}" if _algo != "ppo" else ""
+    _solo_tag = " · SOLO (no assists)" if getattr(a, "no_assists", False) else ""
     return run(cmd, env, title=f"🤖 Autonomous loop · {a.iterations} iters × {a.steps:,} steps"
-                               f"{_algo_tag}{' · LLM' if a.llm else ''}{' · LSTM' if a.lstm else ''}")
+                               f"{_algo_tag}{_solo_tag}{' · LLM' if a.llm else ''}{' · LSTM' if a.lstm else ''}")
 
 
 def cmd_notes(a) -> int:
@@ -1383,6 +1386,9 @@ def build_parser() -> argparse.ArgumentParser:
                     help="LangGraph coach: observe→diagnose→hypothesize→propose graph (default on).")
     au.add_argument("--algo", default="ppo", choices=["ppo", "dqn"],
                     help="RL algorithm: ppo (default) or dqn (QR-DQN, off-policy + replay buffer).")
+    au.add_argument("--no-assists", dest="no_assists", action="store_true",
+                    help="Disable ALL gameplay assists (auto-aim, auto-door-nav, auto-best-weapon, "
+                         "auto-use). Trains a SOLO brain that must learn everything itself.")
     au.set_defaults(fn=cmd_auto)
 
     sub.add_parser("shell", help="Interactive chat-style REPL (type /command to run)").set_defaults(fn=cmd_shell)
