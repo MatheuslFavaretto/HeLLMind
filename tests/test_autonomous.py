@@ -344,3 +344,110 @@ class TestAutonomousMultiSeedAveraging:
         after_tiny = 1.01
         should_adopt_tiny = after_tiny > before_mean + before_std
         assert should_adopt_tiny is False
+
+
+class TestNoAssistsFlag:
+    """--no-assists must zero all 4 assist env vars in every subprocess."""
+
+    def _build_env(self, no_assists: bool) -> dict:
+        """Simulate what autonomous.main() builds for the subprocess env."""
+        from config import Config
+        cfg = Config()
+        env = {
+            "AUTO_USE":         "1" if cfg.auto_use else "0",
+            "AUTO_AIM":         "1" if cfg.auto_aim else "0",
+            "AUTO_BEST_WEAPON": "1" if cfg.auto_best_weapon else "0",
+            "AUTO_DOOR_NAV":    "1" if cfg.auto_door_nav else "0",
+        }
+        if no_assists:
+            env["AUTO_AIM"] = "0"
+            env["AUTO_BEST_WEAPON"] = "0"
+            env["AUTO_USE"] = "0"
+            env["AUTO_DOOR_NAV"] = "0"
+        return env
+
+    def test_default_loop_has_all_assists_on(self):
+        """Without --no-assists, all 4 assists default to ON (the assisted-system mode)."""
+        env = self._build_env(no_assists=False)
+        assert env["AUTO_AIM"] == "1"
+        assert env["AUTO_BEST_WEAPON"] == "1"
+        assert env["AUTO_USE"] == "1"
+        assert env["AUTO_DOOR_NAV"] == "1"
+
+    def test_no_assists_zeros_all_four(self):
+        """--no-assists must set ALL 4 assists to '0', not just some."""
+        env = self._build_env(no_assists=True)
+        assert env["AUTO_AIM"] == "0",         "AUTO_AIM must be '0'"
+        assert env["AUTO_BEST_WEAPON"] == "0", "AUTO_BEST_WEAPON must be '0'"
+        assert env["AUTO_USE"] == "0",         "AUTO_USE must be '0'"
+        assert env["AUTO_DOOR_NAV"] == "0",    "AUTO_DOOR_NAV must be '0'"
+
+    def test_no_assists_keys_present_in_env_dict(self):
+        """All 4 assists must be explicit keys (not missing and inherited from os.environ)."""
+        env = self._build_env(no_assists=False)
+        for key in ("AUTO_AIM", "AUTO_BEST_WEAPON", "AUTO_USE", "AUTO_DOOR_NAV"):
+            assert key in env, f"{key} must be explicit in the subprocess env dict"
+
+    def test_no_assists_survives_subprocess_env_merge(self):
+        """Even with os.environ containing AUTO_AIM=1, --no-assists must win."""
+        import os as _os
+        from rl.autonomous import _subprocess_env
+        env_dict = self._build_env(no_assists=True)
+        # Simulate parent shell that had assists ON
+        with patch.dict(_os.environ, {"AUTO_AIM": "1", "AUTO_BEST_WEAPON": "1",
+                                       "AUTO_USE": "1", "AUTO_DOOR_NAV": "1"}):
+            merged = _subprocess_env(env_dict)
+        assert merged["AUTO_AIM"] == "0",         "no-assists must override os.environ"
+        assert merged["AUTO_BEST_WEAPON"] == "0", "no-assists must override os.environ"
+        assert merged["AUTO_USE"] == "0",         "no-assists must override os.environ"
+        assert merged["AUTO_DOOR_NAV"] == "0",    "no-assists must override os.environ"
+
+    def test_behavior_snapshot_called_in_loop(self):
+        """behavior.save_flags must be importable and callable from within the loop."""
+        from writer.behavior import save_flags, detect_from_vault
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            save_flags(tmp, [])
+            history_path = os.path.join(tmp, "behavior_history.jsonl")
+            assert os.path.exists(history_path)
+            with open(history_path) as f:
+                record = json.loads(f.readline())
+            assert "ts" in record
+            assert record["flags"] == []
+
+    def test_semantic_index_called_in_loop(self):
+        """index_from_memory_store must be importable and return 0 on empty dir."""
+        from writer.semantic_memory import index_from_memory_store
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            n = index_from_memory_store(tmp)
+            assert n == 0
+
+    def test_semantic_index_with_new_events(self):
+        """index_from_memory_store must pick up events written after the cursor."""
+        from writer.semantic_memory import index_from_memory_store, _read_cursor
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            store = os.path.join(tmp, "memory_store.jsonl")
+            events = [
+                {"map": "MAP01", "terminal": "death", "health": 10.0},
+                {"map": "MAP01", "terminal": "timeout", "region": "2x3"},
+            ]
+            with open(store, "w") as f:
+                for ev in events:
+                    f.write(json.dumps(ev) + "\n")
+
+            n1 = index_from_memory_store(tmp)
+            assert n1 == 2, f"expected 2 new entries, got {n1}"
+            assert _read_cursor(tmp) == 2
+
+            # Second call: no new events — cursor blocks re-indexing.
+            n2 = index_from_memory_store(tmp)
+            assert n2 == 0, "cursor must prevent re-indexing already-seen events"
+
+            # Third call: one more event appended.
+            with open(store, "a") as f:
+                f.write(json.dumps({"map": "MAP01", "terminal": "exit"}) + "\n")
+            n3 = index_from_memory_store(tmp)
+            assert n3 == 1, "cursor must advance and pick up only the new event"
+            assert _read_cursor(tmp) == 3

@@ -909,7 +909,13 @@ def main() -> None:
         "LIVING_REWARD": str(cfg.living_reward),
         "COMBAT_EXPLORE_SPLIT": "1" if cfg.combat_explore_split else "0",
         "COMBAT_EXPLORE_FACTOR": str(cfg.combat_explore_factor),
-        "AUTO_USE": "1" if cfg.auto_use else "0",
+        # All 4 assists pinned explicitly so subprocesses don't inherit the shell's env.
+        # Without this, AUTO_AIM/AUTO_BEST_WEAPON/AUTO_DOOR_NAV were missing → each
+        # subprocess defaulted to "1" via config.py regardless of what the parent set.
+        "AUTO_USE":         "1" if cfg.auto_use else "0",
+        "AUTO_AIM":         "1" if cfg.auto_aim else "0",
+        "AUTO_BEST_WEAPON": "1" if cfg.auto_best_weapon else "0",
+        "AUTO_DOOR_NAV":    "1" if cfg.auto_door_nav else "0",
         "DISCOVERY_REWARD": str(cfg.discovery_reward),
     }
 
@@ -1042,6 +1048,29 @@ def main() -> None:
         env = nxt  # apply the proposed tweak for the next iteration
         write_log(cfg, history)  # update the log every iter (resumable, observable)
         _refresh_db(cfg)  # keep the SQLite read-view in sync (events + this run)
+
+        # Behavior snapshot: detect flags from current telemetry and append to
+        # behavior_history.jsonl so `doom-cli behavior --trends` has data across runs.
+        try:
+            from writer.behavior import detect_from_vault, save_flags
+            b_flags = detect_from_vault(cfg)
+            save_flags(cfg.memory_dir, b_flags)
+            if b_flags:
+                top = sorted(b_flags, key=lambda f: -f.confidence)[0]
+                print(f"[autonomous] behavior snapshot: {len(b_flags)} flag(s) "
+                      f"(top: {top.name} {top.confidence:.0%})")
+        except Exception as e:
+            print(f"[autonomous] behavior snapshot skipped ({type(e).__name__}): {e}")
+
+        # Semantic index: pull new episodic events from memory_store.jsonl into the
+        # vector DB so `doom-cli semantic recall` has up-to-date data mid-loop.
+        try:
+            from writer.semantic_memory import index_from_memory_store
+            n_sem = index_from_memory_store(cfg.memory_dir)
+            if n_sem:
+                print(f"[autonomous] semantic index: +{n_sem} events")
+        except Exception as e:
+            print(f"[autonomous] semantic index skipped ({type(e).__name__}): {e}")
 
     if not history:
         print("[autonomous] no iteration completed — nothing to report.")
