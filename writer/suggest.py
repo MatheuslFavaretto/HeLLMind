@@ -44,7 +44,8 @@ def suggest(cfg: Config, model: Optional[str] = None) -> Optional[str]:
 
     llm = LLMWriter(model=model or cfg.llm_model, host=cfg.ollama_host,
                     num_ctx=cfg.llm_num_ctx, num_predict=cfg.llm_num_predict,
-                    keep_alive=cfg.llm_keep_alive)
+                    keep_alive=cfg.llm_keep_alive,
+                    timeout=getattr(cfg, "llm_timeout", 120.0))
     try:
         res = llm.generate_reward_suggestions(stats, weights)
         tweaks = [t for t in res.tweaks if t.knob in ENV_VAR]

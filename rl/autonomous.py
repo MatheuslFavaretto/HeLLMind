@@ -408,7 +408,8 @@ def llm_propose(cfg: Config, env: dict, m: dict) -> Optional[tuple[dict, str]]:
         weights = cfg.reward_weights()
         llm = LLMWriter(model=cfg.llm_model, host=cfg.ollama_host,
                         num_ctx=cfg.llm_num_ctx, num_predict=cfg.llm_num_predict,
-                        keep_alive=cfg.llm_keep_alive)
+                        keep_alive=cfg.llm_keep_alive,
+                        timeout=getattr(cfg, 'llm_timeout', 120.0))
         res = llm.generate_reward_suggestions(stats, weights)
     except Exception as e:
         print(f"[autonomous] LLM proposer unavailable ({e}); using heuristic.")
@@ -463,8 +464,12 @@ def semantic_recall(memory_dir: str, m: dict, top_k: int = 3) -> tuple[Optional[
         meta = meta or {}
         chg = meta.get("change")
         if chg and meta.get("kept") and float(meta.get("score", 0)) > 0 and score >= 0.6:
-            return dict(chg), (f"semantic recall ({score:.2f} similar past run "
-                               f"scored {float(meta.get('score',0)):.2f}): {str(meta.get('reason',''))[:70]}")
+            note = (f"semantic recall ({score:.2f} similar past run "
+                    f"scored {float(meta.get('score', 0)):.2f})")
+            why = str(meta.get("reason", "")).strip()
+            if why:  # don't append an empty ': ' tail (read as a broken log line)
+                note += f": {why[:70]}"
+            return dict(chg), note
     return None, ""
 
 
@@ -514,7 +519,8 @@ def llm_propose_open(cfg: Config, env: dict, m: dict) -> Optional[tuple[dict, st
         user = f"METRICS:\n{keymetrics}\n\n{catalog}\n\nReturn the changes and a one-line reason."
         llm = LLMWriter(model=cfg.llm_model, host=cfg.ollama_host,
                         num_ctx=cfg.llm_num_ctx, num_predict=cfg.llm_num_predict,
-                        keep_alive=cfg.llm_keep_alive)
+                        keep_alive=cfg.llm_keep_alive,
+                        timeout=getattr(cfg, 'llm_timeout', 120.0))
         content = llm._chat(system, user, _Proposal.model_json_schema())
         prop = _Proposal.model_validate_json(content)
     except Exception as e:
@@ -853,7 +859,8 @@ def write_final_report(
             stats = aggregate_events(events)
             llm = LLMWriter(model=cfg.llm_model, host=cfg.ollama_host,
                             num_ctx=cfg.llm_num_ctx, num_predict=cfg.llm_num_predict,
-                            keep_alive=cfg.llm_keep_alive)
+                            keep_alive=cfg.llm_keep_alive,
+                        timeout=getattr(cfg, 'llm_timeout', 120.0))
             # Build a prompt from the autonomy session
             session_summary = (
                 f"Autonomy session on {doom_map}: {len(history)} iterations, "

@@ -221,6 +221,10 @@ class Config:
     llm_num_ctx: int = int(os.getenv("LLM_NUM_CTX", "4096"))
     llm_num_predict: int = int(os.getenv("LLM_NUM_PREDICT", "700"))
     llm_keep_alive: str = os.getenv("LLM_KEEP_ALIVE", "5m")
+    # Read timeout per LLM call. The old 300s default meant a stalled Ollama blocked the
+    # auto loop for 5 minutes PER CALL between training chunks; 700 tokens on a 3b model
+    # takes ~20-40s on an M-series, so 120s is generous while bounding the damage.
+    llm_timeout: float = float(os.getenv("LLM_TIMEOUT", "120"))
     # Max new concept notes to generate per checkpoint (each is an extra LLM call).
     max_new_concepts_per_ckpt: int = int(os.getenv("MAX_NEW_CONCEPTS_PER_CKPT", "2"))
 
