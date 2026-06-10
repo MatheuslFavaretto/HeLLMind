@@ -311,13 +311,16 @@ without tying up your machine. Full step-by-step in **[`COLAB.md`](COLAB.md)**.
 # Run  —  `auto` is the DEFAULT/recommended training mode (it self-tunes). `train`/`dqn` are
 #         one-shot escape hatches with no self-improvement.
 doom-cli auto              # ⭐ DEFAULT: the main loop — train → eval → self-tune → repeat (resumes)
+doom-cli auto --no-assists # …SOLO mode: all gameplay assists off (the network must aim+navigate itself)
 doom-cli auto --algo dqn   # …same loop, QR-DQN engine (off-policy, replay buffer — V2)
 doom-cli auto --graph      # …with the LangGraph coach (observe→diagnose→hypothesize→propose)
 doom-cli dqn               # one-shot QR-DQN training (no self-tuning)
-doom-cli train             # one-shot PPO training (no self-tuning)
-doom-cli curriculum2       # progressive curriculum: my_way_home → deadly_corridor → MAP01
+doom-cli train             # one-shot PPO training (no self-tuning; also takes --no-assists)
+doom-cli curriculum2       # transfer pipeline: mywh (nav) → navigate (MAP01) → full — one brain
 doom-cli bc                # behavioral cloning from your recorded demos
 doom-cli watch --overlay   # watch the agent play, with HUD + minimap overlay
+doom-cli watch --maps MAP02   # …on a specific map (eval takes --maps too)
+doom-cli prune             # GC old step-checkpoints (dry-run; --apply deletes, keeps _final + newest 10)
 
 # Measure
 doom-cli eval --temperature 0.5   # honest metrics (kills, exploration, exit-rate)
@@ -349,6 +352,25 @@ channels off gives **~1.5× faster training** if you're compute-limited (ViZDoom
 CPU-render-bound, so fewer channels = more frames/hour). `N_ENVS=8` uses 8 of the M-series' 10
 cores by default.
 
+**Resume safety nets** (all on by default):
+- `LR_MIN_FACTOR=0.1` — floors the LR schedule. SB3's progress is GLOBAL on resume, so a
+  chunk resumed on a long-trained brain used to start at ~0% LR and the brain was
+  effectively **frozen** (measured: lr 9e-08, clip_fraction 0). The floor keeps every
+  resumed chunk learning at ≥10% of base LR.
+- `AUTO_PRUNE_KEEP=10` — after each auto-loop chunk, keep only the newest 10 step-snapshots
+  of the family being trained (resume only loads the newest; 12GB of dead snapshots
+  observed). `0` disables. Other families are only touched by an explicit `doom-cli prune --apply`.
+- **Plateau Escape** — when the auto loop stops improving it escalates structural
+  interventions instead of more reward nudges: L1 reset knobs → L2 switch map → L3 revert
+  to the regime's best config + raise entropy → L4 clear the reward history (timestamped
+  backup) and rotate map. The brain checkpoint is **never** discarded at any level.
+
+**Transfer pipeline** (`doom-cli curriculum2`): `my_way_home` now runs in the campaign
+engine via PWAD overlay (`SCENARIO_WAD`), so its nav training uses the SAME 19-action brain
+as the full maps — weights genuinely transfer. Measured 2026-06-10: nav trained on mywh
+(exit 25%) lifted assists-off MAP01 exploration **5.3% → 13.9% (2.6×)**. Stages train with
+nav assists OFF so gains are attributable to the network, not the autopilot.
+
 `SEMANTIC_CHANNEL=1` (off by default) feeds the DETECTIONS into the network as an extra obs
 channel — each on-screen object painted by category (enemy/weapon/health/…) plus doors projected
 from the WAD — so the policy SEES "what is where" instead of inferring from raw pixels. In a
@@ -372,12 +394,18 @@ across the V2 curriculum (full table: [`reports/CURRICULUM_RESULTS.md`](reports/
   the V2 thesis: *it's compute, not features.*
 - ✅ **Combat works** — `deadly_corridor`: **81% shooting accuracy**, advances and kills
   (QR-DQN on MAP01: 2 kills/ep, 0% deaths, 0.97 combat-engagement).
-- ✅ **The machinery works** — every feature above is wired, tested (435 tests), and the
+- ✅ **Skill transfer works (2026-06-10)** — the headline 93% above was a 5-action brain that
+  could never transfer. The campaign brain (19 actions, PWAD overlay) now reaches the mywh exit
+  in **25%** of episodes, and that nav skill lifted assists-off MAP01 exploration
+  **5.3% → 13.9% (2.6×)** with combat rewards zeroed. The trade-off it exposed: more roaming =
+  more monster contact = 80% deaths — **survival is the current binding constraint**.
+- ✅ **The machinery works** — every feature above is wired, tested (594 tests), and the
   self-improvement loop tunes the agent and accumulates memory across runs.
-- 🧱 **The wall is the full map + compute** — on real freedoom2 MAP01, 1M steps explores only
-  **4%** (the toy scenarios are far smaller). The skills are proven *in isolation*; combining
-  them on a large, enemy-harassed level needs the tens-of-millions-of-steps budget the ViZDoom
-  champions had — hence **Colab** ([`COLAB.md`](COLAB.md)). Not a missing feature; a compute gap.
+- 🧱 **The wall is solo competence + compute** — every long-trained brain learned WITH gameplay
+  assists doing the aiming/door-finding; remove them and it collapses (the assists-confound).
+  The honest path — `--no-assists` from the start — is slower but uncorrupted. Plus the
+  frozen-LR bug (fixed: `LR_MIN_FACTOR`) silently crippled every resumed chunk for weeks;
+  numbers before 2026-06-10 understate what the architecture can do.
 
 > The project's own rule: *don't pile cognitive machinery on a weak agent — every feature
 > must be shown to help on honest (deterministic/tempered) eval, not just produce a note.*
