@@ -62,7 +62,9 @@ def score(m: dict, profile: Optional[str] = None) -> float:
     kill_conv  = m.get("kill_conversion", 0.0)                 # [0,1] finishes what it sees
     kills      = min(m.get("kills_per_episode", 0.0), 5.0) / 5.0   # [0,1] capped tiebreaker
     explored   = m.get("explored_fraction", 0.0)              # [0,1] still must move
-    exit_prog  = m.get("exit_progress", 0.0)                  # [0,1]
+    # Geodesic route_progress when available (euclidean exit_progress LIES in a maze —
+    # the closest straight-line approach can be a wall pocket); euclidean as fallback.
+    exit_prog  = m.get("route_progress") or m.get("exit_progress", 0.0)
     exit_r     = m.get("exit_rate", 0.0)                      # [0,1] (binary per episode)
     # Penalties (the bad behaviours to drive DOWN) — default 0 so empty metrics score 0.
     wasted     = m.get("wasted_shot_rate", 0.0)              # [0,1] spraying at nothing

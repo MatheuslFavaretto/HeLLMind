@@ -318,6 +318,8 @@ class CampaignDoomEnv(gym.Env):
         self._exit_pos: Optional[Tuple[float, float]] = None   # memorised once per map
         self._prev_exit_dist: Optional[float] = None           # distance at last step
         self._spawn_exit_dist: Optional[float] = None          # spawn→exit dist (this episode)
+        self._spawn_geo_dist: Optional[float] = None           # geodesic spawn→exit dist
+        self._closest_geo_dist: Optional[float] = None         # closest geodesic approach
         self._closest_exit_dist: Optional[float] = None        # closest the agent got to it
         # Go-Explore "return, then explore": frontier-goal archive + goal-conditioned reward.
         self._goal_prob = float(r.get("goexplore_goal_prob", 0.0))
@@ -753,6 +755,11 @@ class CampaignDoomEnv(gym.Env):
                 self._geo_field = None  # fall back to euclidean below
         if self._exit_ref is not None and self._spawn_xy is not None:
             self._prev_exit_dist = self._dist_to_exit(*self._spawn_xy)
+        # Geodesic route penetration (metric): euclidean exit_progress LIES on this map
+        # (closest straight-line approach is a wall pocket); route_progress measures how
+        # far ALONG THE REAL ROUTE the agent got. The exit score profile optimises it.
+        self._spawn_geo_dist = self._prev_exit_dist
+        self._closest_geo_dist = self._prev_exit_dist
         if self._exit_ref is not None and self._spawn_xy is not None:
             sx, sy = self._spawn_xy
             ex, ey = self._exit_ref
@@ -1089,6 +1096,8 @@ class CampaignDoomEnv(gym.Env):
             shaped += exit_bonus
             self._last_reward_parts["exit"] = exit_bonus
             self._prev_exit_dist = cur_dist
+            if self._closest_geo_dist is not None:
+                self._closest_geo_dist = min(self._closest_geo_dist, cur_dist)
         # Metric ONLY (reward-independent): closest the agent got to the exit REFERENCE (WAD or
         # memorised), tracked every step so exit_progress is meaningful even at 0% exit_rate.
         if self._exit_ref is not None and self._closest_exit_dist is not None and not done:
@@ -1190,9 +1199,15 @@ class CampaignDoomEnv(gym.Env):
             # (so the position is known); None otherwise.
             if reached_exit:
                 doom["exit_progress"] = 1.0
+                doom["route_progress"] = 1.0
             elif self._spawn_exit_dist and self._closest_exit_dist is not None:
                 frac = 1.0 - (self._closest_exit_dist / self._spawn_exit_dist)
                 doom["exit_progress"] = float(max(0.0, min(1.0, frac)))
+            # Geodesic counterpart: fraction of the REAL route covered (closest geodesic
+            # approach / spawn geodesic distance). The honest progress number in a maze.
+            if not reached_exit and self._spawn_geo_dist and self._closest_geo_dist is not None:
+                gfrac = 1.0 - (self._closest_geo_dist / self._spawn_geo_dist)
+                doom["route_progress"] = float(max(0.0, min(1.0, gfrac)))
             doom["base_return"] = self._ep_base  # native episode return (no shaping)
             doom["coverage_cells"] = len(self._visited)  # for frontier curriculum
             doom["enemies_seen"] = len(self._enemies_seen)  # distinct enemies seen this episode
