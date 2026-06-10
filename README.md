@@ -1,436 +1,249 @@
 <div align="center">
 
-# 🔥 HeLLMind
+# HeLLMind
 
-**He·LLM·ind** — *Hell* (Doom) + *LLM* + *Mind*
-
-A Doom agent that **learns, remembers, and improves itself** — and writes the whole story
-into an Obsidian knowledge graph. A local LLM documents and steers it, never blocking the
-training loop. **100% local, no API key, no cost.**
+**Hell (Doom) · LLM · Mind** — a self-improving reinforcement-learning agent for Doom
+that documents its own training into an Obsidian knowledge graph.
 
 ![python](https://img.shields.io/badge/python-3.12-blue)
 ![license](https://img.shields.io/badge/license-MIT-green)
-![tests](https://img.shields.io/badge/tests-435%20passing-brightgreen)
+![tests](https://img.shields.io/badge/tests-600%20passing-brightgreen)
 ![local](https://img.shields.io/badge/100%25-local-orange)
+
+*Runs entirely on local hardware. No API keys, no cloud dependency.*
 
 </div>
 
 ---
 
-## What it is, in one minute
+## Overview
 
-You train a neural network to play Doom with reinforcement learning — **PPO** (on-policy) or
-**QR-DQN** (off-policy with a replay buffer, the sample-efficient V2 engine). That part is
-normal. What makes HeLLMind different is everything **around** it:
+HeLLMind trains a neural network to play Doom (ViZDoom + freedoom2) with PPO or QR-DQN.
+What distinguishes it from a standard RL training script is the closed loop built around
+the agent:
 
-- The agent **senses** much more than raw pixels (its own health, a map of where it's been,
-  3D depth, enemy detection…).
-- It **remembers across runs** (deaths, frontiers, what worked) and **feeds that back** into
-  its own training.
-- It **forms hypotheses, runs A/B experiments, and keeps what's proven** — a self-improvement
-  loop, not just a training script.
-- A local **LLM documents** all of it into an Obsidian graph, in batch, so it never slows the
-  RL loop.
-- You can even **play yourself** and the agent learns from your demonstration.
+- **Rich perception** — beyond pixels: spatial memory, depth buffer, health/ammo state,
+  ground-truth enemy detection, optional automap and semantic channels.
+- **Persistent memory** — deaths, frontiers, exits, and validated configuration changes
+  survive across runs (JSONL source of truth, SQLite query view, vector DB for semantic
+  recall) and feed back into training decisions.
+- **A supervising loop** (`doom-cli auto`) — trains in chunks, evaluates honestly,
+  proposes one configuration change per iteration, keeps it only if the composite score
+  holds, and reverts it otherwise. Structural interventions (map rotation, config resets)
+  fire automatically when the loop plateaus.
+- **Self-documentation** — a local LLM (Ollama) distils events into lessons, hypotheses,
+  and an Obsidian graph, in batch, without ever blocking the RL loop.
+- **Human-in-the-loop options** — record your own play and bootstrap the policy via
+  behavioral cloning.
 
-Everything is on by default — clone it, run one command, and the full agent is working.
+## Key results (measured, dated)
 
----
+All numbers from deterministic or tempered (T=0.5) evaluation. *Solo* = all gameplay
+assists disabled (`--no-assists`): the network aims and navigates by itself.
 
-## 🧠 How the agent is built (the architecture)
+| Result | Value | Date |
+|---|---|---|
+| Solo kills per episode (MAP02) | **13.9** (baseline ~1) | 2026-06-10 |
+| Solo shooting accuracy | **30%** (historic ceiling 3–5%) | 2026-06-10 |
+| Skill transfer, nav → MAP01 | exploration **5.3% → 13.9% (2.6×)** | 2026-06-10 |
+| Exit rate, my_way_home (transferable 19-action brain) | **25%** | 2026-06-10 |
+| Exit rate, my_way_home (dedicated 5-action brain) | 93% at 901k steps | 2026-06-05 |
+| Exit rate, campaign maps | 0% — open problem | — |
 
-Think of it as a creature with **senses → a brain → memory → a coach**.
+Two caveats apply to numbers older than 2026-06-10. First, all long-trained brains
+learned with gameplay assists enabled, which corrupts credit assignment (the network is
+rewarded for actions the assist executed); solo performance is the honest measure.
+Second, a learning-rate scheduling bug silently froze every resumed training chunk
+(effective LR ≈ 0%); it is fixed (`LR_MIN_FACTOR`), and older numbers understate the
+architecture's capability.
+
+## Architecture
 
 ```
-                        ┌─────────────────────── THE AGENT ───────────────────────┐
-   ViZDoom (Doom)  ───▶ │  SENSES (observation)          BRAIN (neural net)        │ ──▶ action
-                        │  • pixels (what it sees)        • CNN reads the image     │
-                        │  • spatial memory (where I've   • + a small net reads     │
-                        │    been)                          health/ammo             │
-                        │  • depth (3D distance)          • MultiInputPolicy         │
-                        │  • automap (opt-in layout)      • PPO or QR-DQN engine     │
-                        │  • health + ammo (its state)    └──────────────────────  │
-                        │  • on-screen enemy detection                              │
-                        └────────────────────────────┬─────────────────────────────┘
-                                                     │  every episode
-                                                     ▼
-   ┌──────────────────────── MEMORY (persists across runs) ────────────────────────┐
-   │  deaths + context · frontier cells · exit positions · lessons · learned config │
-   └────────────────────────────────────┬──────────────────────────────────────────┘
-                                         │  drives decisions
-                                         ▼
-   ┌──────────────────────── COACH (the self-improvement loop) ────────────────────┐
-   │  behaviour flags → hypotheses → A/B experiments → adopt what's proven          │
-   │  + reward auto-tuning + curriculum + LLM documentation (batch, never blocks)   │
-   └───────────────────────────────────────────────────────────────────────────────┘
+                      ┌──────────────────── THE AGENT ────────────────────┐
+ ViZDoom (Doom) ────▶ │  SENSES                    BRAIN                  │ ──▶ action
+                      │  pixels · spatial memory   CNN + MLP fusion       │
+                      │  depth · health/ammo       (MultiInputPolicy)     │
+                      │  enemy detection           PPO or QR-DQN          │
+                      └─────────────────────┬──────────────────────────────┘
+                                            │ every episode
+                                            ▼
+ ┌────────────────────── MEMORY (persists across runs) ──────────────────────┐
+ │ deaths + context · frontier cells · exit positions · lessons · learned    │
+ │ config · semantic vector DB                                               │
+ └─────────────────────────────────┬──────────────────────────────────────────┘
+                                   │ informs decisions
+                                   ▼
+ ┌────────────────────── COACH (the self-improvement loop) ──────────────────┐
+ │ behaviour flags → hypotheses → A/B experiments → adopt what is proven     │
+ │ reward auto-tuning · plateau escape · curriculum · batch LLM documentation │
+ └────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 1. Senses — what the agent perceives
+### Perception
 
-The agent learns from reward, not labels. By default it perceives **all** of these:
+| Channel | Purpose | Default |
+|---|---|---|
+| Pixels (84×84, frame-stacked) | primary view | on |
+| Spatial memory | second channel marking visited areas | on |
+| Depth buffer | per-pixel distance — 3D structure for navigation | on |
+| Health + ammo | the agent knows its own state (DFP/Arnold approach) | on |
+| Enemy detection (labels) | ground-truth "enemy on screen" | on |
+| Semantic channel | detections painted into the input by category | off (`SEMANTIC_CHANNEL=1`) |
+| Automap | top-down explored layout | off (`AUTOMAP=1`, ~10% throughput cost) |
 
-| Sense | What it gives the agent | Inspired by |
-|-------|-------------------------|-------------|
-| **Pixels** (84×84, stacked) | the raw view | every Doom RL agent |
-| **Spatial memory** | a 2nd image channel showing where it has already been | exploration research |
-| **Depth buffer** | per-pixel distance → 3D structure for navigation | UNREAL / Arnold |
-| **Health + ammo** | normalised numbers fed into the net → it KNOWS when it's weak | **DFP / Arnold (the ViZDoom winners)** |
-| **Enemy detection** | ground-truth "is an enemy on screen?" from the labels buffer | Arnold's aux signal |
-| **Automap** *(opt-in)* | a top-down map of the explored layout — `AUTOMAP=1` (off by default for speed) | navigation agents |
+### Action space
 
-### 2. Brain — the neural network
+15 combined actions (movement + turning + attack + use + weapon switch), or 19 with
+`STRAFE=1` (adds strafe-while-firing and retreat-while-firing). The brain checkpoint
+name encodes every flag that changes the observation shape or action count, so
+incompatible brains can never cross-load.
 
-A **CNN** reads the stacked image, a **small network** reads the health/ammo vector, and they
-combine (`MultiInputPolicy`). Two interchangeable RL engines train it:
+### Training engines
 
-- **PPO** (default, on-policy) — a **stochastic** policy: it outputs a *distribution* over actions.
-  It **samples** while training (exploration) and in eval we use **tempered sampling
-  (`--temperature 0.5`)**, NOT pure argmax — pure argmax can freeze into a bad action
-  (“argmax-collapse”) when entropy is low.
-- **QR-DQN** (`--algo dqn`, off-policy) — value-based, so action = **argmax over Q-values** by
-  nature. Replay buffer + continuous updates make it more sample-efficient on discrete Doom.
+- **PPO** (default) — stochastic policy. Evaluation uses tempered sampling
+  (`--temperature 0.5`) rather than pure argmax: a low-entropy policy's argmax can
+  collapse onto a single passive action while the learned distribution is sound.
+- **QR-DQN** (`--algo dqn`) — off-policy with replay buffer; more sample-efficient on
+  discrete actions. The supervising loop is engine-aware (tunes `DQN_EPS_FINAL` instead
+  of `ENT_COEF`).
 
-**Action space:** 15 combined actions (move+turn+shoot+use+weapon), or **19 with `STRAFE=1`** —
-the extra 4 are combat-survival moves (circle-strafe-while-firing, retreat-while-firing). The
-policy picks one combined action per step.
+### Reward design
 
-**Perception channels (obs):** pixels + spatial-memory + depth (+ optional **semantic channel**,
-`SEMANTIC_CHANNEL=1`, which paints the detections — enemy/door/item by category — INTO the input
-so the net *sees* “what is where” instead of inferring from raw pixels; a 3-seed A/B showed
-+31% exploration). Run `doom-cli intel` to see the exact architecture and parameter count.
+Four active signal groups (a deliberate reduction from ~12 — surplus shaping terms are
+reward-hacking surface):
 
-**Why PPO is the default (and when to reach for QR-DQN).** The `auto` loop runs **PPO** by
-default — not because QR-DQN is worse (it actually scored well: ~2 kills/ep, 0 deaths), but
-because the whole pipeline is built around PPO:
-
-| Reason PPO is default | Detail |
+| Signal | Role |
 |---|---|
-| **Imitation is PPO-only** | behavioral cloning (your demos / assist-as-teacher) clones into a PPO policy; QR-DQN is value-based and can't be bootstrapped from demos the same way |
-| **Scenario curricula are PPO-only** | `my_way_home`, `defend_the_center` (isolated aim) — `train_dqn` only does campaign maps |
-| **All recent work is PPO** | semantic channel, the 19-action brain, the staged curriculum |
+| Combat (kill / hit / miss / death / damage) | primary objective |
+| RND curiosity | rewards unfamiliar states; never saturates |
+| Frontier + coverage | pays only net outward progress; circling cannot farm it |
+| Exit proximity | dense gradient toward a known exit position |
 
-**The honest case FOR QR-DQN:** it's an **off-policy** method with a replay buffer, so it
-**reuses** each frame many times — often **more sample-efficient on discrete actions** (Doom is
-discrete). That's exactly the lever for the laptop **compute wall** (no cloud). The smart
-auto-tuner is already algo-aware (it un-freezes via `DQN_EPS_FINAL` instead of `ENT_COEF`). The
-cost of switching: you lose the PPO brains + the BC bootstrap, and the DQN loop was historically
-more fragile (≈10 bugs fixed). Try it with `doom-cli auto --algo dqn`.
+Combat and exploration are decoupled at the reward level: enemy visible → combat focus;
+screen clear → exploration focus. The loop measures the two regimes independently
+(`combat_engagement`, `explored_fraction`) and tunes them with separate levers.
 
-### 3. Senses for exploration & combat (reward shaping)
+### The supervising loop
 
-V2 collapsed a ~12-term reward zoo down to **4 active buckets** (the rest were reward-hacking
-surface). The active defaults:
+Each iteration: train a chunk (resuming the existing brain) → evaluate → score against
+a selectable objective profile → propose one change → keep or revert. The proposal step
+consults, in order: metric diagnosis (aim offset, wasted shots, revisit rate, reward
+breakdown), cross-run behavior trends, the persistent memory policy (death patterns;
+never repeats a disproven change), semantic recall of similar past situations, and
+optionally an LLM with the full parameter registry.
 
-| Signal | What it does |
-|--------|--------------|
-| **Combat** (kill / hit / miss / death) | the primary objective — kills and hits dominate, dying is expensive |
-| **RND** (curiosity) | rewards visiting unfamiliar places — never saturates |
-| **Frontier / coverage** | pays only *net outward* progress (spinning in circles can't farm it) |
-| **Exit proximity** | once the exit is found once, a dense gradient guides the agent back |
-| **Auto-USE (doors)** | holds USE every frame so **doors open / switches fire on contact** |
-| **Combat/exploration split** | gates which objective the reward emphasises by enemy visibility |
+**Objective profiles** (`SCORE_PROFILE`): `combat` (default — aim quality first) or
+`exit` (completion and survival first). The same loop optimises different goals on
+different maps without code changes.
 
-**Opt-in (off by default, flip in `.env`):** Go-Explore frontier goals (`GOEXPLORE_GOAL_PROB`),
-discovery reward, engagement reward, weapon-variety, bestiary-weighted kills. Each was demoted
-in V2 because it added tuning surface without a proven win — re-enable individually if needed.
+**Plateau escape.** When no improvement holds for N iterations, the loop escalates
+structural interventions instead of further reward nudges: reset knobs → switch map →
+revert to the regime's best config and raise entropy → clear the reward-evolution
+history (timestamped backup). The brain checkpoint is never discarded at any level, and
+baselines are regime-local — scores from different maps or config eras are never
+compared against each other.
 
-**Combat / exploration decoupling** (inspired by the ViZDoom champions like Arnold, who used
-separate nav + combat networks). HeLLMind does a lighter version: **one brain**, but the
-reward pursues **one objective at a time**, gated by ground-truth enemy visibility — enemy on
-screen → combat focus (exploration pulls damped so it fights instead of wandering off); screen
-clear → exploration focus (blind shots not punished). It also measures the two regimes
-separately (`combat_engagement` = does it shoot when it sees enemies?), so the coach can tune
-combat and exploration **independently**. *(Honest note: this is reward-level decoupling, not
-yet two separate networks.)*
-
-### 4. Memory — what persists across runs
-
-Stored on disk (JSONL for safe writes, SQLite as the queryable view):
-
-- **Death patterns** (health, region, which enemy) — used to target the agent's real weakness.
-- **Frontier archive** (Go-Explore) — grows every run; the agent can be sent further over time.
-- **Exit memory** — the first time it reaches an exit, the position is saved forever.
-- **Learned config** — any reward change *proven* to help is kept permanently.
-- **Lessons / bestiary** — LLM-extracted insights and a factual monster database.
-
-### 5. Coach — the self-improvement loop
-
-`doom-cli auto` trains a chunk, measures it honestly, and nudges one reward knob toward the
-weakest metric — **keeping the change only if it helped, undoing it if it hurt.** It diagnoses
-combat and exploration **separately** (low `combat_engagement` → un-freeze the policy; low
-exploration → push the frontier levers) and every adjustment is written to a structured
-**rollback log** (`doom-cli rollback`) so a regression can never stick. It resumes by default
-and accumulates, so you can just leave it running. The full cycle is the
-[knowledge loop](#-the-knowledge-loop) below.
-
-### Learning from YOU (behavioral cloning)
-
-You can play a few rounds yourself; the agent clones your play as a starting point, then RL
-refines it. This is the strongest lever for the hardest problem (reaching the exit) — it
-turns "explore a maze blindly" into "fine-tune something that already roughly works".
-
-```bash
-python scripts/record_demo.py --map MAP01 --episodes 3 --strafe --minutes 10  # you play
-doom-cli bc --epochs 10                                                         # it learns from you
-doom-cli auto --map MAP01 --iterations 8 --steps 100000                         # RL refines
-```
-
-> Note: recording needs a game window, so play on your own machine (not headless Colab).
-
----
-
-## 🧩 Features & technologies — what's on
-
-Legend: ✅ **active by default** · ⬜ **built, off by default** (flip a flag) · 🔬 **built, not yet wired into the loop**
-
-| Area | Feature / tech | State | Flag / note |
-|---|---|---|---|
-| **RL engine** | PPO (stochastic, MultiInputPolicy) | ✅ | the default brain |
-| | QR-DQN (off-policy, replay buffer) | ⬜ | `--algo dqn` |
-| | Recurrent PPO (LSTM) | ⬜ | `USE_LSTM=1` |
-| **Perception (obs)** | Pixels + frame-stack | ✅ | `FRAME_STACK=2` |
-| | Spatial memory channel | ✅ | `SPATIAL_MEMORY=1` |
-| | Depth buffer channel | ✅ | `DEPTH_PERCEPTION=1` |
-| | Game-vars (health/ammo) | ✅ | `GAME_VARS=1` |
-| | Labels (ground-truth detections) | ✅ | `USE_LABELS=1` |
-| | **Semantic channel** (detections → obs) | ⬜ | `SEMANTIC_CHANNEL=1` — +31% explore (3-seed A/B) |
-| | Automap channel | ⬜ | `AUTOMAP=1` (off: ~10% slower) |
-| **Actions** | Strafe + combat-survival (19 actions) | ✅ | `STRAFE=1` (dodge/retreat while firing) |
-| **Reward shaping** | Kill/hit/damage/death, engagement | ✅ | combat core |
-| | Coverage + frontier (anti-circle) | ✅ | exploration |
-| | RND intrinsic curiosity | ✅ | `USE_RND=1` |
-| | Go-Explore frontier goals | ✅ | `GOEXPLORE_GOAL_PROB` |
-| | Discovery / exit-proximity | ✅ | guides to objects/exit |
-| | Combat⇄explore split | ✅ | `COMBAT_EXPLORE_SPLIT=1` |
-| **Mechanical assists** | Auto-USE / auto-aim / best-weapon / door-nav (vision) | ✅ | crutches; turn OFF to train the net solo |
-| **Door/exit from WAD** | door + exit positions parsed from the map | ✅ | minimap + exit_progress metric |
-| **Imitation** | Behavioral cloning from human demos | ✅ | `doom-cli bc` |
-| | Assist-as-teacher demos | ✅ | `scripts/record_assist_demos.py` |
-| | Demo retrieval (`--recall`) | 🔬 | built; didn't beat baseline (distribution shift) |
-| **Self-improvement** | Auto loop (train→eval→diagnose→tune→keep/revert) | ✅ | **the default mode** |
-| | LangGraph coach | ⬜ | `auto --graph` |
-| | Rich-metric diagnosis (spray/circling/reward-mix) | ✅ | auto reads aim/wasted/breakdown |
-| | LLM tunes ANY param (full registry) | ✅ | `rl/tuning_registry.py` (needs Ollama) |
-| | Lessons + memory-policy + rollback + learned-config | ✅ | the vault flow |
-| | Semantic memory (vector DB) in the loop | ✅ | coach recalls similar past situations by meaning + records each outcome |
-| **Curriculum** | Staged skill curriculum (combat→nav→objectives) | ⬜ | `scripts/skill_curriculum.py` |
-| | Scenario curriculum (my_way_home→corridor→MAP01) | ⬜ | `doom-cli curriculum2` |
-| **Observability** | Rich metrics (aim/move/weapons/perception panels) | ✅ | `doom-cli eval` |
-| | HTML report (charts/formulas/recs) | ✅ | `eval --html` |
-| | Prometheus + Grafana dashboards | ⬜ | `monitoring/` + `PROMETHEUS_GATEWAY=` |
-| **Cognition / docs** | Obsidian notes, bestiary, knowledge graph | ✅ | `DOCS_ENABLED=1` (local Ollama) |
-
----
-
-## 🧠 The knowledge loop (how it learns about its own learning)
-
-HeLLMind is **two interlocking loops**. A **fast loop** tunes the agent (play → eval →
-propose → keep/revert). A **slow loop** accumulates knowledge (events → lessons → an Obsidian
-graph). The bridge is the *propose* step: it consults the accumulated memory, so the more the
-slow loop turns, the smarter the fast loop's decisions get.
-
-**What the `propose` step actually consults (the full vault flow):**
-
-1. **Rich-metric diagnosis** — not just kills/explored, but `aim_offset` (is it centring enemies?),
-   `wasted_shot_rate` (spraying?), `revisit_rate` (circling?), and the **reward breakdown** (is the
-   reward 82% exploration when the goal is combat?). It picks the knob that targets the weakest one.
-2. **Lessons** — events → `aggregate_events` → an LLM distils reusable lessons across runs.
-3. **Memory-policy** — death patterns → knob suggestions that AVOID changes a past run disproved.
-4. **Semantic memory** — *"have I seen a situation like this before, and what worked?"* It matches
-   past iterations by MEANING (not keywords) and fills in proven settings; it records every
-   outcome (wins **and** regressions) so it never re-recommends what failed.
-5. **LLM proposer (full registry)** — given the catalog of **every** tunable parameter (name,
-   range, effect) + the metrics, the LLM may change ANY knob, validated/clamped against the registry.
-6. **Tradeoff / keep-revert** — the new config is kept only if the composite score holds; a
-   regression is rolled back and remembered. The loop can only improve or hold.
-
-So each turn the agent looks at **far more** than before, draws on the **whole** vault (lessons +
-memory-policy + semantic + learned-config), and self-corrects — bounded only by training frames.
-
-```mermaid
-flowchart TD
-    P["① PLAY · train a chunk"]
-    R["② RECORD · events → JSONL (append-only truth)"]
-    V["③ VIEW · db build → SQLite"]
-    E["④ EVALUATE · tempered eval (T=0.5)"]
-    A["⑤ ANALYSE · death patterns, circling, passivity"]
-    PR["⑥ PROPOSE · heuristic + memory + LLM → reward delta"]
-    D{"⑦ improved?"}
-    PERS["⑧ PERSIST · learned_config · frontier · exit (ratchets)"]
-    DOC["⑨ DOCUMENT · LLM → Obsidian graph (batch, never blocks RL)"]
-
-    P --> R --> V --> E --> A --> PR --> D
-    D -- kept --> PERS
-    D -- regressed --> REV["revert the delta"]
-    PERS --> P
-    REV --> P
-    V -. feeds .-> DOC
-    DOC -. lessons inform .-> PR
-    PERS -. applied on boot .-> P
-```
-
-**Three rules keep it honest:**
-1. **JSONL writes, SQLite only reads** — documentation never corrupts the source of truth.
-2. **The LLM is decoupled & batch** — if the local model is down, RL keeps training.
-3. **Knowledge is adopted only if PROVEN** — a lesson or knob enters `learned_config` only if
-   it survives tempered eval. This gate is what stops the agent from "learning" noise (you can
-   watch rejected iterations in `doom-cli timeline`).
-
-Knowledge lives in four layers: **JSONL** (raw truth) → **SQLite** (queryable view) →
-**Obsidian** (human-readable graph) → **learned_config + stores** (machine-applied). Full
-diagram in [`vault/00-index/Knowledge Loop.md`](vault/00-index/Knowledge%20Loop.md).
-
----
-
-## 🚀 Quick start (local)
+## Installation
 
 ```bash
 git clone https://github.com/MatheuslFavaretto/HeLLMind.git && cd HeLLMind
 python3.12 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-
-doom-cli auto --map MAP01 --iterations 8 --steps 100000   # train + self-improve
-doom-cli intel                                            # see the neural network + stats
-doom-cli eval --temperature 0.5                           # measure how it actually plays
 ```
 
-Everything is enabled by default in `.env`. The brain lives in the vault and is **reused**
-automatically — run `auto` again and it continues. Use `--clear` to start over.
+Optional: [Ollama](https://ollama.com) with `qwen2.5:7b-instruct` for LLM documentation
+and proposals. Everything degrades gracefully without it.
 
-## ☁️ Run on Google Colab (free GPU)
-
-The honest gap vs the ViZDoom champions is **compute** — they trained on GPU clusters for
-days. A free Colab GPU + Google Drive + the resume loop lets you accumulate far more training
-without tying up your machine. Full step-by-step in **[`COLAB.md`](COLAB.md)**.
-
----
-
-## 🎮 Commands
+## Usage
 
 ```bash
-# Run  —  `auto` is the DEFAULT/recommended training mode (it self-tunes). `train`/`dqn` are
-#         one-shot escape hatches with no self-improvement.
-doom-cli auto              # ⭐ DEFAULT: the main loop — train → eval → self-tune → repeat (resumes)
-doom-cli auto --no-assists # …SOLO mode: all gameplay assists off (the network must aim+navigate itself)
-doom-cli auto --algo dqn   # …same loop, QR-DQN engine (off-policy, replay buffer — V2)
-doom-cli auto --graph      # …with the LangGraph coach (observe→diagnose→hypothesize→propose)
-doom-cli dqn               # one-shot QR-DQN training (no self-tuning)
-doom-cli train             # one-shot PPO training (no self-tuning; also takes --no-assists)
-doom-cli curriculum2       # transfer pipeline: mywh (nav) → navigate (MAP01) → full — one brain
-doom-cli bc                # behavioral cloning from your recorded demos
-doom-cli watch --overlay   # watch the agent play, with HUD + minimap overlay
-doom-cli watch --maps MAP02   # …on a specific map (eval takes --maps too)
-doom-cli prune             # GC old step-checkpoints (dry-run; --apply deletes, keeps _final + newest 10)
+# Train (the supervising loop is the recommended mode; it resumes by default)
+doom-cli auto                          # train → eval → self-tune → repeat
+doom-cli auto --no-assists             # solo mode: the network aims and navigates itself
+doom-cli auto --map MAP02 --algo dqn   # specific map, QR-DQN engine
+doom-cli curriculum2                   # transfer pipeline: nav (my_way_home) → MAP01 → full
 
-# Measure
-doom-cli eval --temperature 0.5   # honest metrics (kills, exploration, exit-rate)
-doom-cli benchmark                # ablation: prove each layer (RND/memory/full) adds value
-doom-cli intel                    # neural-net proof + training + memory + disk
-doom-cli timeline                 # evolution per auto iteration (explored/exit/kills/score)
-doom-cli audit                    # is it REALLY learning? (entropy, KL, value loss)
-doom-cli progress                 # learning curve across checkpoints
-doom-cli status                   # brain + memory + config at a glance
+# Watch and measure
+doom-cli watch --overlay               # live window with HUD + minimap
+doom-cli eval --temperature 0.5        # honest metrics: kills, exploration, exit rate
+doom-cli benchmark                     # ablation: prove each layer adds value
+doom-cli progress                      # learning curve across checkpoints
+doom-cli intel                         # network architecture, parameters, memory, disk
 
-# Cognition / memory
-doom-cli diagnose     # eval + behavior flags + next-step suggestion
-doom-cli behavior     # detect circling / passive / low-exploration / shoot-spam
-doom-cli hypothesize  # turn behaviour into falsifiable hypotheses
-doom-cli experiment   # run a multi-seed A/B to validate a hypothesis
-doom-cli knowledge    # long-term knowledge in 3 tiers: facts / hypotheses / validated
-doom-cli rollback     # structured audit trail — every adjustment + keep/revert verdict
-doom-cli learned      # reward knobs the agent has PROVEN help
-doom-cli db query --runs   # per-iteration metrics straight from the SQLite view
-doom-cli recall       # query episodic memory (by keyword / enemy / region)
-doom-cli semantic     # vector-DB recall — find past situations by MEANING, not keywords
-doom-cli bestiary     # factual monster database
-doom-cli curriculum   # map difficulty + forgetting alerts
+# Cognition and memory
+doom-cli diagnose                      # eval + behavior flags + next-step suggestion
+doom-cli behavior --trends             # chronic behavior patterns across runs
+doom-cli hypothesize                   # behavior flags → falsifiable hypotheses
+doom-cli experiment                    # multi-seed A/B validation of a hypothesis
+doom-cli recall / semantic / bestiary  # episodic, semantic, and monster memory
+
+# Maintenance
+doom-cli prune --apply                 # GC step-checkpoints (keeps _final + newest 10)
+doom-cli status                        # brain + memory + config at a glance
 ```
 
-Toggle anything in `.env`. `DEPTH_PERCEPTION` is on by default; `AUTOMAP` is **off** (it costs
-~10% throughput and `SPATIAL_MEMORY` already covers map coverage). Turning the heavy perception
-channels off gives **~1.5× faster training** if you're compute-limited (ViZDoom is
-CPU-render-bound, so fewer channels = more frames/hour). `N_ENVS=8` uses 8 of the M-series' 10
-cores by default.
-
-**Resume safety nets** (all on by default):
-- `LR_MIN_FACTOR=0.1` — floors the LR schedule. SB3's progress is GLOBAL on resume, so a
-  chunk resumed on a long-trained brain used to start at ~0% LR and the brain was
-  effectively **frozen** (measured: lr 9e-08, clip_fraction 0). The floor keeps every
-  resumed chunk learning at ≥10% of base LR.
-- `AUTO_PRUNE_KEEP=10` — after each auto-loop chunk, keep only the newest 10 step-snapshots
-  of the family being trained (resume only loads the newest; 12GB of dead snapshots
-  observed). `0` disables. Other families are only touched by an explicit `doom-cli prune --apply`.
-- **Plateau Escape** — when the auto loop stops improving it escalates structural
-  interventions instead of more reward nudges: L1 reset knobs → L2 switch map → L3 revert
-  to the regime's best config + raise entropy → L4 clear the reward history (timestamped
-  backup) and rotate map. The brain checkpoint is **never** discarded at any level.
-
-**Transfer pipeline** (`doom-cli curriculum2`): `my_way_home` now runs in the campaign
-engine via PWAD overlay (`SCENARIO_WAD`), so its nav training uses the SAME 19-action brain
-as the full maps — weights genuinely transfer. Measured 2026-06-10: nav trained on mywh
-(exit 25%) lifted assists-off MAP01 exploration **5.3% → 13.9% (2.6×)**. Stages train with
-nav assists OFF so gains are attributable to the network, not the autopilot.
-
-`SEMANTIC_CHANNEL=1` (off by default) feeds the DETECTIONS into the network as an extra obs
-channel — each on-screen object painted by category (enemy/weapon/health/…) plus doors projected
-from the WAD — so the policy SEES "what is where" instead of inferring from raw pixels. In a
-**3-seed** controlled fresh-1M A/B on MAP01 (only this flag differs) it gives a **modest but
-consistent** gain: exploration **0.227 vs 0.173** (+31%, gap > seed-to-seed std) and shooting
-accuracy **0.131 vs 0.090**. (A single seed first showed a 2× exit-progress jump — that didn't
-replicate across 3 seeds; multi-seed corrected the claim.) Changes the obs shape → needs `--fresh` (brain tag
-`_se`). Watch what the net sees with `eval --overlay` (the "SEES" panel).
-
----
-
-## 📊 Where it stands (honest)
-
-This is a research/learning project, and it says so plainly. Measured on deterministic eval
-across the V2 curriculum (full table: [`reports/CURRICULUM_RESULTS.md`](reports/CURRICULUM_RESULTS.md)):
-
-- ✅ **First map completed** — on ViZDoom's `my_way_home` (exit-finding scenario), a PPO agent
-  reaches the exit in **93% of episodes** at 901k steps (0% deaths, ~103-step solutions). The
-  project's first **exit-rate > 0** — the roadmap's headline milestone.
-- ✅ **More compute works** — same agent, 401k → 901k steps: exit-rate **50% → 93%**. Validates
-  the V2 thesis: *it's compute, not features.*
-- ✅ **Combat works** — `deadly_corridor`: **81% shooting accuracy**, advances and kills
-  (QR-DQN on MAP01: 2 kills/ep, 0% deaths, 0.97 combat-engagement).
-- ✅ **Skill transfer works (2026-06-10)** — the headline 93% above was a 5-action brain that
-  could never transfer. The campaign brain (19 actions, PWAD overlay) now reaches the mywh exit
-  in **25%** of episodes, and that nav skill lifted assists-off MAP01 exploration
-  **5.3% → 13.9% (2.6×)** with combat rewards zeroed. The trade-off it exposed: more roaming =
-  more monster contact = 80% deaths — **survival is the current binding constraint**.
-- ✅ **The machinery works** — every feature above is wired, tested (594 tests), and the
-  self-improvement loop tunes the agent and accumulates memory across runs.
-- 🧱 **The wall is solo competence + compute** — every long-trained brain learned WITH gameplay
-  assists doing the aiming/door-finding; remove them and it collapses (the assists-confound).
-  The honest path — `--no-assists` from the start — is slower but uncorrupted. Plus the
-  frozen-LR bug (fixed: `LR_MIN_FACTOR`) silently crippled every resumed chunk for weeks;
-  numbers before 2026-06-10 understate what the architecture can do.
-
-> The project's own rule: *don't pile cognitive machinery on a weak agent — every feature
-> must be shown to help on honest (deterministic/tempered) eval, not just produce a note.*
-
----
-
-## 🗂️ Code layout
-
-```
-doom/            ViZDoom env (campaign.py), entities, RND, overlay, env adapter
-rl/              train (PPO) · train_dqn (QR-DQN) · eval · autonomous (the loop) · coach_graph
-                 bc · audit · introspect · algo · curriculum · progressive_curriculum · experiment
-writer/          LLM client · documenter · learned_config · memory_policy · semantic_memory (vector DB)
-                 memory/coverage/exit/frontier stores · db (SQLite) · behavior · hypothesize
-instrumentation/ metrics · tracker · game variables
-scripts/         record_demo (you play) · make_gif · probe_map
-doom_cli.py      one unified CLI · config.py all settings (.env → dataclass)
-```
-
-## 🧪 Tests
+Behavioral cloning from your own play:
 
 ```bash
-doom-cli tests        # 435 tests — no ViZDoom / Ollama needed (synthetic data)
+python scripts/record_demo.py --map MAP01 --episodes 3 --strafe   # you play
+doom-cli bc --epochs 10                                           # clone
+doom-cli auto --map MAP01                                         # RL refines
 ```
 
-## 📜 License
+## Configuration
+
+All settings live in `.env`. Notable defaults:
+
+| Setting | Default | Effect |
+|---|---|---|
+| `N_ENVS` | 8 | parallel environments (ViZDoom is CPU-bound) |
+| `STRAFE` | 1 | 19-action space with dodge/retreat combos |
+| `LR_MIN_FACTOR` | 0.1 | floors the LR schedule — resumed chunks always keep learning |
+| `AUTO_PRUNE_KEEP` | 10 | in-loop checkpoint GC for the family being trained |
+| `SCORE_PROFILE` | combat | what the loop optimises (`combat` / `exit`) |
+| `AUTO_AIM` etc. | 1 | gameplay assists — disable with `--no-assists` for solo training |
+| `SCENARIO_WAD` | — | PWAD overlay: scenario maps with the full campaign action space |
+
+Reliability guarantees baked into the loop:
+
+- **Resume is the default everywhere.** Brain weights are the only asset that compounds;
+  no command discards a trained brain without an explicit `--fresh`.
+- **`LR_MIN_FACTOR`** — SB3 computes schedule progress globally on resume, which used to
+  freeze long-trained brains (measured: effective LR 9e-08, zero policy movement). Fixed
+  and floored.
+- **Train/eval parity** — curriculum stages build their environment once and share it
+  between training and evaluation, so they can never silently run on different maps.
+- **JSONL writes, SQLite reads** — documentation can never corrupt the source of truth.
+- **Knowledge is adopted only if proven** — a config change enters `learned_config` only
+  after surviving tempered evaluation.
+
+## Project structure
+
+```
+doom/             ViZDoom environments (campaign.py is the main one), WAD parsing, RND, overlay
+rl/               train (PPO) · train_dqn (QR-DQN) · eval · autonomous (the loop) · coach_graph
+                  progressive_curriculum (transfer pipeline) · checkpoint_gc · bc · experiment
+writer/           memory stores (episodic/coverage/exit/frontier) · db (SQLite) · semantic_memory
+                  behavior · hypothesize · reflect · learned_config · LLM documentation
+instrumentation/  metrics, stats tracking, Prometheus export
+scripts/          record_demo · benchmark_device · probe_map · make_gif
+tests/            600 tests, pytest
+vault/            the Obsidian knowledge base (notes, brains, memory) — generated
+```
+
+## Testing
+
+```bash
+python -m pytest tests/ -q
+```
+
+600 tests cover the environments, training loops, the supervisor (scoring, plateau
+escape, checkpoint GC), curriculum parity, memory stores, and the CLI. The project's
+working rule: a feature is done when it has been observed working in a real run, not
+when its tests pass — several production bugs were found by reading run telemetry that
+tests had missed.
+
+## License
 
 MIT
