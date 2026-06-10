@@ -87,6 +87,10 @@ STAGE_DEFS = {
         "DAMAGE_TAKEN_PENALTY": "0.0",
         "EPISODE_TIMEOUT": "3500",
         "ENT_COEF": "0.05",
+        # Nav assists OFF, matching the mywh stage: auto-door-nav steers the agent and
+        # would inflate explored/exit — we couldn't tell transfer from assistance.
+        # (AUTO_USE stays on: doors opening on contact isn't navigation skill.)
+        "AUTO_AIM": "0", "AUTO_DOOR_NAV": "0",
     },
     "survive": {
         "_mode": "campaign",
