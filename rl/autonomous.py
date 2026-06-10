@@ -95,16 +95,46 @@ BOUNDS = {
 
 _ESCAPE_WINDOWS = {1: 5, 2: 10, 3: 15, 4: 20}   # level → iters-without-improvement
 _ESCAPE_IMPROVE_THRESHOLD = 0.03   # must beat best by this much to count as "improved"
-_MAP_ROTATION = ["MAP02", "MAP01", "MAP02", "MAP01"]  # rotation on level-2 escape
+_ESCAPE_MIN_WINDOW = 5             # min no-improve iters before ANY escape fires
+
+
+def _last_escape(history: list) -> tuple[int, int]:
+    """(index, level) of the most recent iter where an escape fired, or (-1, 0).
+
+    The escape iter is the regime boundary: scores before it belong to a different
+    config/map and must not be compared against scores after it."""
+    for idx in range(len(history) - 1, -1, -1):
+        lvl = history[idx].get("plateau_level") or 0
+        if lvl > 0:
+            return idx, lvl
+    return -1, 0
+
+
+def _session_best(history: list) -> float:
+    """Best score WITHIN the current regime (after the last escape). Used both by the
+    loop's keep/revert guardrail and by --resume, so an escape's intervention is judged
+    against its own baseline — not against a best from a config that no longer exists.
+    (Comparing a fresh MAP02 regime against an old MAP01 best of 0.95 made every new
+    config look like a regression and rolled the intervention back — the prod bug.)"""
+    start, _ = _last_escape(history)
+    window = history[start + 1:]
+    return max((h["score"] for h in window), default=-1e9)
 
 
 def _no_improve_streak(history: list) -> int:
-    """How many consecutive trailing iters have NOT beaten the best score so far."""
+    """Trailing iters that did NOT beat the best score — counted only WITHIN the current
+    regime (after the last escape). This gives each intervention a clean window to prove
+    itself; without the reset, one long-past best kept the streak ≥ threshold forever and
+    escapes fired on every single iteration (observed in prod: L4 at iter 50 of 51)."""
     if not history:
         return 0
-    best = max(h["score"] for h in history)
+    start, _ = _last_escape(history)
+    window = history[start + 1:]
+    if not window:
+        return 0
+    best = max(h["score"] for h in window)
     streak = 0
-    for h in reversed(history):
+    for h in reversed(window):
         if h["score"] >= best - _ESCAPE_IMPROVE_THRESHOLD:
             break
         streak += 1
@@ -112,8 +142,17 @@ def _no_improve_streak(history: list) -> int:
 
 
 def _stagnation_level(history: list) -> int:
-    """Return the plateau-escape level (0=ok, 1-4=escalating interventions)."""
+    """Return the plateau-escape level (0=ok, 1-4=escalating interventions).
+
+    First-ever escape: level from the absolute streak length (the _ESCAPE_WINDOWS table).
+    After a prior escape: escalate ONE level per failed intervention (L1→L2→L3→L4),
+    each fired only after the new regime has had _ESCAPE_MIN_WINDOW iters to prove itself."""
     streak = _no_improve_streak(history)
+    if streak < _ESCAPE_MIN_WINDOW:
+        return 0
+    _, last_lvl = _last_escape(history)
+    if last_lvl > 0:
+        return min(last_lvl + 1, 4)
     for level in sorted(_ESCAPE_WINDOWS, reverse=True):
         if streak >= _ESCAPE_WINDOWS[level]:
             return level
@@ -124,8 +163,11 @@ def plateau_escape(cfg: Config, env: dict, history: list,
                    level: int, doom_map: str, algo: str) -> tuple[dict, str, bool]:
     """Apply a structural intervention to break out of a score plateau.
 
-    Returns (new_env, reason, needs_fresh_brain).
-    The caller is responsible for passing --fresh to train_chunk when needs_fresh_brain=True.
+    Returns (new_env, reason, purge_history).
+    purge_history=True (L4 only) tells the loop to ALSO truncate its in-memory history
+    to just the escape marker — without that, the next write_log() rewrites the full
+    poisoned trail back to disk and the purge silently never happens (the prod bug).
+    The brain checkpoint is NEVER touched at any level.
     """
     new = dict(env)
     streak = _no_improve_streak(history)
@@ -151,9 +193,12 @@ def plateau_escape(cfg: Config, env: dict, history: list,
         return new, reason, False
 
     if level == 3:
-        # Revert to the best-ever iter's config + raise ENT_COEF to un-freeze policy.
-        if history:
-            best_h = max(history, key=lambda h: h["score"])
+        # Revert to the best config WITHIN the current regime + raise ENT_COEF.
+        # (Regime-local, not all-time: an old best may belong to another map/config.)
+        start, _ = _last_escape(history)
+        window = history[start + 1:] or history
+        if window:
+            best_h = max(window, key=lambda h: h["score"])
             new = dict(best_h["env"])
             # Un-freeze: raise entropy coefficient so the policy can explore again.
             ent = float(new.get("ENT_COEF", cfg.ent_coef))
@@ -182,14 +227,15 @@ def plateau_escape(cfg: Config, env: dict, history: list,
             new[knob] = env_val
     # Purge the reward-evolution history so the next session starts clean.
     # The brain checkpoint is untouched — only the config trail is cleared.
+    # Timestamped backup: repeated L4s must not overwrite each other's evidence.
     trail = os.path.join(cfg.memory_dir, "autonomy.jsonl")
     if os.path.exists(trail):
-        backup = trail + ".plateau_l4_backup"
-        os.rename(trail, backup)  # rename, not delete — reversible
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+        os.rename(trail, f"{trail}.plateau_l4_{stamp}")  # rename, not delete — reversible
     reason = (f"[PLATEAU L4] {streak} iters no improvement — "
               f"reward history cleared (backed up), switching {current}→{nxt}, "
               f"rewards reset to .env defaults. BRAIN KEPT (weights are real).")
-    return new, reason, False  # needs_fresh=False — brain survives
+    return new, reason, True  # purge_history=True — loop must truncate in-memory too
 
 
 # writer.suggest speaks in lowercase knobs; map them onto the supervisor's env vars.
@@ -1075,11 +1121,13 @@ def main() -> None:
     if not args.fresh:
         history = load_history(cfg)
         if history:
-            best_score = max(h["score"] for h in history)
+            # Regime-local best (post-escape window), NOT the all-time max: restoring an
+            # old-regime best made every post-escape iter look like a regression forever.
+            best_score = _session_best(history)
             env = history[-1].get("_next_env", env)  # the config queued for the next iter
             start_iter = len(history)
             print(f"[autonomous] --resume: restored {start_iter} prior iters "
-                  f"(best score {best_score:.2f}); continuing from iter {start_iter}.")
+                  f"(regime best {best_score:.2f}); continuing from iter {start_iter}.")
 
     # --iterations is the number of NEW iterations to run THIS session (not a global total).
     # So resuming a session that already has N iters and asking for 8 runs 8 MORE — otherwise
@@ -1152,11 +1200,16 @@ def main() -> None:
         # When stuck, override the proposal with a structural intervention instead of
         # another small reward nudge. Brain weights are NEVER discarded — only the
         # reward config history is reset (L4 renames autonomy.jsonl, doesn't delete it).
+        _purge = False
         _p_level = _stagnation_level(history)
         if _p_level > 0:
-            nxt, nxt_reason, _ = plateau_escape(
+            nxt, nxt_reason, _purge = plateau_escape(
                 cfg, env, history, _p_level, doom_map, algo)
             print(f"[autonomous] {nxt_reason}")
+            # New regime: the intervention must be judged against its OWN baseline.
+            # Keeping the old best made `kept` revert every post-escape config in one
+            # iteration (observed in prod) — the escape was undone before it could work.
+            best_score = -1e9
         else:
             # Coach: LangGraph graph (--graph) OR the legacy heuristic cascade.
             if getattr(args, "graph", False) and _coach is not None:
@@ -1173,6 +1226,10 @@ def main() -> None:
             "_next_env": dict(nxt),  # the config to apply next — needed to --resume cleanly
             "plateau_level": _p_level,
         })
+        if _purge:
+            # L4 purge that STICKS: keep only the escape marker so write_log persists a
+            # 1-entry trail (the file was already renamed to a timestamped backup).
+            history[:] = history[-1:]
         env = nxt  # apply the proposed tweak for the next iteration
         write_log(cfg, history)  # update the log every iter (resumable, observable)
         _refresh_db(cfg)  # keep the SQLite read-view in sync (events + this run)

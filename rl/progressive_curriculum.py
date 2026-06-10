@@ -108,10 +108,6 @@ STAGE_DEFS = {
     },
 }
 
-# Back-compat alias: old stage name still works
-STAGE_PROFILES = STAGE_DEFS
-
-
 # ── Core ───────────────────────────────────────────────────────────────────────
 
 # Campaign-only obs channels: the simple scenario env (doom/env.py DoomEnv) does NOT support

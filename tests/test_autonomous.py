@@ -346,6 +346,137 @@ class TestAutonomousMultiSeedAveraging:
         assert should_adopt_tiny is False
 
 
+def _hist(scores, plateau_at=None, env=None):
+    """Build a fake history list. plateau_at: {index: level} marks escape iters."""
+    plateau_at = plateau_at or {}
+    env = env or {"MAPS": "MAP01", "ENT_COEF": "0.03"}
+    return [{"iter": i, "score": s, "kept": False, "env": dict(env),
+             "plateau_level": plateau_at.get(i, 0)}
+            for i, s in enumerate(scores)]
+
+
+class TestPlateauEscape:
+    """Plateau detection + escalation. Each bug here was OBSERVED in a prod run
+    (51 iters: old best at iter 4 kept the streak ≥20 forever → L4 fired every iter,
+    its purge was undone by write_log, and `kept` reverted the intervention)."""
+
+    def test_no_streak_when_improving(self):
+        from rl.autonomous import _no_improve_streak
+        assert _no_improve_streak(_hist([0.1, 0.2, 0.3, 0.4])) == 0
+
+    def test_streak_counts_trailing_non_improvement(self):
+        from rl.autonomous import _no_improve_streak
+        # best 0.9 at index 1, then 6 iters far below it
+        h = _hist([0.5, 0.9] + [0.1] * 6)
+        assert _no_improve_streak(h) == 6
+
+    def test_streak_resets_after_escape_marker(self):
+        """THE prod bug: pre-escape best must not poison the post-escape window."""
+        from rl.autonomous import _no_improve_streak
+        # old regime: best 0.95 then stuck; escape at index 10; 3 mediocre iters after
+        scores = [0.95] + [0.05] * 10 + [0.10, 0.05, 0.04]
+        h = _hist(scores, plateau_at={10: 4})
+        # window = last 3 iters; best within window is 0.10 (its own baseline) —
+        # 0.05/0.04 trail it by > threshold(0.03). Without the marker reset the
+        # streak would be 13 (everything since the 0.95 at index 0).
+        assert _no_improve_streak(h) == 2
+
+    def test_no_escape_during_fresh_post_escape_window(self):
+        from rl.autonomous import _stagnation_level
+        scores = [0.95] + [0.05] * 20 + [0.1, 0.1]
+        h = _hist(scores, plateau_at={20: 4})
+        assert _stagnation_level(h) == 0  # only 2 iters in the new regime: give it time
+
+    def test_escalation_one_level_per_failed_intervention(self):
+        from rl.autonomous import _stagnation_level
+        # L1 fired at index 5; 6 flat iters after → escalate to exactly L2 (not L1, not L4)
+        scores = [0.5] * 5 + [0.05] + [0.3] + [0.01] * 6
+        h = _hist(scores, plateau_at={5: 1})
+        assert _stagnation_level(h) == 2
+
+    def test_escalation_caps_at_level_4(self):
+        from rl.autonomous import _stagnation_level
+        scores = [0.5] * 3 + [0.05] + [0.3] + [0.01] * 6
+        h = _hist(scores, plateau_at={3: 4})
+        assert _stagnation_level(h) == 4
+
+    def test_first_escape_level_from_absolute_streak(self):
+        from rl.autonomous import _stagnation_level
+        h = _hist([0.9] + [0.0] * 12)  # 12-iter streak, no prior escape
+        assert _stagnation_level(h) == 2  # 12 ≥ window[2]=10, < window[3]=15
+
+    def test_session_best_ignores_pre_escape_scores(self):
+        """`kept` guardrail bug: old-regime best 0.95 must not be the resume baseline."""
+        from rl.autonomous import _session_best
+        scores = [0.95] + [0.05] * 10 + [0.12, 0.08]
+        h = _hist(scores, plateau_at={10: 4})
+        assert _session_best(h) == pytest.approx(0.12)
+
+    def test_session_best_empty_window_is_minus_inf(self):
+        from rl.autonomous import _session_best
+        h = _hist([0.95, 0.05], plateau_at={1: 4})  # escape is the LAST entry
+        assert _session_best(h) == -1e9  # next iter sets the new baseline
+
+    def test_l4_returns_purge_and_keeps_brain(self, tmp_path):
+        from rl.autonomous import plateau_escape
+        from config import Config
+        cfg = Config()
+        cfg.memory_dir = str(tmp_path)
+        trail = os.path.join(str(tmp_path), "autonomy.jsonl")
+        open(trail, "w").write("{}\n")
+        h = _hist([0.9] + [0.0] * 25)
+        env = {"MAPS": "MAP01", "ENT_COEF": "0.03"}
+
+        new_env, reason, purge = plateau_escape(cfg, env, h, 4, "MAP01", "ppo")
+
+        assert purge is True, "L4 must tell the loop to truncate in-memory history"
+        assert new_env["MAPS"] == "MAP02", "L4 must rotate the map"
+        assert "BRAIN KEPT" in reason
+        assert not os.path.exists(trail), "trail must be renamed away"
+        backups = [f for f in os.listdir(str(tmp_path)) if "plateau_l4" in f]
+        assert len(backups) == 1, "backup must exist (timestamped rename)"
+
+    def test_l4_backups_do_not_overwrite_each_other(self, tmp_path):
+        from rl.autonomous import plateau_escape
+        from config import Config
+        import time
+        cfg = Config()
+        cfg.memory_dir = str(tmp_path)
+        trail = os.path.join(str(tmp_path), "autonomy.jsonl")
+        h = _hist([0.9] + [0.0] * 25)
+        env = {"MAPS": "MAP01"}
+        open(trail, "w").write("first\n")
+        plateau_escape(cfg, env, h, 4, "MAP01", "ppo")
+        time.sleep(1.1)  # timestamp has 1s resolution
+        open(trail, "w").write("second\n")
+        plateau_escape(cfg, env, h, 4, "MAP01", "ppo")
+        backups = [f for f in os.listdir(str(tmp_path)) if "plateau_l4" in f]
+        assert len(backups) == 2, "each L4 must produce its own backup"
+
+    def test_l1_resets_knobs_keeps_brain(self):
+        from rl.autonomous import plateau_escape
+        from config import Config
+        h = _hist([0.9] + [0.0] * 6)
+        with patch.dict(os.environ, {"COVERAGE_REWARD": "1.5"}):
+            new_env, reason, purge = plateau_escape(
+                Config(), {"COVERAGE_REWARD": "0.2", "MAPS": "MAP01"}, h, 1, "MAP01", "ppo")
+        assert purge is False
+        assert new_env["COVERAGE_REWARD"] == "1.5", "L1 must reset knob to .env default"
+
+    def test_l3_reverts_to_regime_local_best(self):
+        """L3 must pick the best WITHIN the current regime, not the all-time best."""
+        from rl.autonomous import plateau_escape
+        from config import Config
+        scores = [0.95] + [0.05] * 10 + [0.30, 0.08, 0.07, 0.06, 0.05, 0.04]
+        h = _hist(scores, plateau_at={10: 2})
+        h[11]["env"] = {"MAPS": "MAP02", "ENT_COEF": "0.02", "MARKER": "regime-best"}
+        new_env, reason, purge = plateau_escape(
+            Config(), {"MAPS": "MAP02"}, h, 3, "MAP01", "ppo")
+        assert purge is False
+        assert new_env.get("MARKER") == "regime-best", \
+            "L3 must revert to the post-escape best (iter 11), not iter 0's 0.95"
+
+
 class TestNoAssistsFlag:
     """--no-assists must zero all 4 assist env vars in every subprocess."""
 

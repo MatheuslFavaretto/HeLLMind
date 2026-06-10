@@ -194,6 +194,11 @@ COMMANDS = [
      "Removes ./.cache experiment dirs. Add --brain to also wipe the vault's brain and "
      "--memory to wipe the cognitive memory (asks for confirmation).",
      "doom-cli clean"),
+    ("🛠 Tools", "prune", "Delete old step-checkpoints (keeps _final + newest N per family)",
+     "The auto loop saves a snapshot every ~50k steps and never deletes (12GB observed). "
+     "Resume only loads the newest, so older snapshots are dead weight. Dry-run by default; "
+     "--apply deletes, --keep N controls how many to retain (default 10).",
+     "doom-cli prune --apply"),
     ("🧠 Cognition", "semantic", "Semantic memory (vector DB): search past episodes by meaning",
      "Embeds episodes as vectors (Ollama nomic-embed-text or TF-IDF fallback) and retrieves "
      "the most similar past situations. 'recall deaths near corridor' > keyword search.",
@@ -1215,6 +1220,51 @@ def cmd_semantic(a) -> int:
     return run(cmd, title=f"🔎 Semantic memory · {subcmd}")
 
 
+def cmd_prune(a) -> int:
+    """Prune old step-checkpoints, keeping `_final` + the newest N per brain family.
+    The auto loop saves every ~50k steps and never deletes — 12GB+ observed. Resume only
+    ever loads the newest file, so older snapshots are dead weight (keep a few for
+    `doom-cli progress` curves)."""
+    import re
+    from collections import defaultdict
+    from config import Config
+    cfg = Config()
+
+    families: dict = defaultdict(list)
+    for d in {cfg.checkpoint_dir, os.path.join(ROOT, "checkpoints")}:
+        if not os.path.isdir(d):
+            continue
+        for f in os.listdir(d):
+            m = re.match(r"^(.+?)_(\d+)_steps\.zip$", f)
+            if m:
+                p = os.path.join(d, f)
+                families[os.path.join(d, m.group(1))].append((int(m.group(2)), p))
+
+    to_delete, freed = [], 0
+    for fam, files in sorted(families.items()):
+        files.sort()  # by step count
+        victims = files[:-a.keep] if len(files) > a.keep else []
+        for _, p in victims:
+            to_delete.append(p)
+            freed += os.path.getsize(p)
+
+    if not to_delete:
+        console.print("[green]Nothing to prune.[/green]")
+        return 0
+    console.print(f"[yellow]{len(to_delete)} step-checkpoints prunable "
+                  f"({freed / 1e9:.1f} GB) — keeping newest {a.keep}/family + all _final[/yellow]")
+    for fam, files in sorted(families.items()):
+        if len(files) > a.keep:
+            console.print(f"  {os.path.basename(fam)}: {len(files)} → {a.keep}")
+    if not a.apply:
+        console.print("[dim]Dry-run. Re-run with --apply to delete.[/dim]")
+        return 0
+    for p in to_delete:
+        os.remove(p)
+    console.print(f"[green]Freed {freed / 1e9:.1f} GB.[/green]")
+    return 0
+
+
 def cmd_clean(a) -> int:
     import shutil
 
@@ -1456,6 +1506,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     cl = sub.add_parser("clean"); cl.add_argument("--brain", action="store_true")
     cl.add_argument("--memory", action="store_true"); cl.set_defaults(fn=cmd_clean)
+
+    pr = sub.add_parser("prune",
+                        help="Delete old step-checkpoints (keeps _final + newest N per family)")
+    pr.add_argument("--keep", type=int, default=10,
+                    help="Step-checkpoints to keep per brain family (default 10).")
+    pr.add_argument("--apply", action="store_true",
+                    help="Actually delete (default is a dry-run).")
+    pr.set_defaults(fn=cmd_prune)
 
     sem = sub.add_parser("semantic",
                          help="Semantic memory (vector DB): embed events, search by meaning")
