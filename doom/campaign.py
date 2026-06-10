@@ -1071,6 +1071,7 @@ class CampaignDoomEnv(gym.Env):
             + rnd_bonus * explore_scale,
             "move": self._move_reward * deltas["distance"],
             "base": base_reward,
+            "exit": 0.0,  # filled below — the geodesic gradient must be OBSERVABLE
         }
         # Exit proximity shaping: small reward for getting closer to the exit reference
         # (memorised exit when known, WAD-parsed exit otherwise), measured GEODESICALLY
@@ -1084,7 +1085,9 @@ class CampaignDoomEnv(gym.Env):
             # telescopes to (spawn_dist - final_dist) and oscillating A→B→A farms ZERO.
             # The old `if progress > 0` ratchet paid every re-approach — negligible at
             # scale 0.3, an exploit at the scales that actually compete with combat.
-            shaped += self._exit_prox_scale * progress * 0.001
+            exit_bonus = self._exit_prox_scale * progress * 0.001
+            shaped += exit_bonus
+            self._last_reward_parts["exit"] = exit_bonus
             self._prev_exit_dist = cur_dist
         # Metric ONLY (reward-independent): closest the agent got to the exit REFERENCE (WAD or
         # memorised), tracked every step so exit_progress is meaningful even at 0% exit_rate.
