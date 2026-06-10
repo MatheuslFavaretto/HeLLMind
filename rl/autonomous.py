@@ -28,33 +28,49 @@ PY = sys.executable
 
 
 # ---- the GOAL, as one number: explore the whole map, finish it, and survive/fight ----
-def score(m: dict) -> float:
-    """Composite goal score — COMBAT/AIM-prioritised (the user's goal: 'aim better, don't die').
+# What the auto loop OPTIMISES, selectable per run via SCORE_PROFILE (no code change
+# between goals). Every metric is ~[0,1]; the weights set priority.
+#   combat (default) — AIM QUALITY first ('aim better, don't die'). Unchanged behaviour.
+#   exit             — for the MAP01 exit hunt: completion + survival + coverage first,
+#                      with modest combat terms kept so the loop can't drift back to the
+#                      passive agent (observed iter 54: explored 18% + deaths 80% scored
+#                      BELOW 13%/100% under the combat profile — the wrong objective for
+#                      an exit hunt, the right one for a combat gym).
+SCORE_PROFILES = {
+    "combat": {"accuracy": 2.5, "kill_conv": 1.5, "kills": 0.5,
+               "explored": 1.0, "exit_prog": 1.0, "exit_r": 2.0,
+               "wasted": -1.5, "aim_off": -1.0, "death": -0.5},
+    "exit":   {"accuracy": 1.0, "kill_conv": 0.5, "kills": 0.25,
+               "explored": 1.5, "exit_prog": 2.0, "exit_r": 5.0,
+               "wasted": -0.75, "aim_off": -0.5, "death": -1.5},
+}
 
-    Priority by weight: AIM QUALITY (accuracy + finishing what it sees + NOT spraying + centring)
-    > survival > exploration > finishing. Every term is normalised to ~[0,1] so the weights set
-    priority; empty metrics → 0 (penalties act on the BAD terms so a blank dict stays 0).
 
-    Why this shape: the old score weighted explore 3.0 vs aim 1.0, so the auto-loop kept tuning
-    EXPLORATION (and the agent sprayed). To make it learn to AIM, the reward of the loop must
-    value aim. The big levers are now accuracy + kill_conversion and the anti-spray/anti-death
-    PENALTIES (wasted_shots, aim_offset, death_rate) — a kill-farming sprayer (low accuracy, high
-    wasted) scores low, while a precise fighter scores high. kills stays a small capped tiebreaker
-    so raw farming can't dominate. Exit terms are kept (secondary) so finishing still helps."""
+def score(m: dict, profile: Optional[str] = None) -> float:
+    """Composite goal score. Default profile: COMBAT/AIM-prioritised.
+
+    Why combat is shaped this way: the old score weighted explore 3.0 vs aim 1.0, so the
+    auto-loop kept tuning EXPLORATION (and the agent sprayed). The big levers are accuracy
+    + kill_conversion and the anti-spray/anti-death PENALTIES — a kill-farming sprayer
+    scores low, a precise fighter scores high; kills is a small capped tiebreaker.
+
+    Profile comes from SCORE_PROFILE env (set per run by the launcher) so the same loop
+    can optimise different goals on different maps without touching code."""
+    w = SCORE_PROFILES[profile or os.getenv("SCORE_PROFILE", "combat")]
     # Rewards (≥0)
     accuracy   = m.get("shooting_accuracy", 0.0)               # [0,1] aim
     kill_conv  = m.get("kill_conversion", 0.0)                 # [0,1] finishes what it sees
     kills      = min(m.get("kills_per_episode", 0.0), 5.0) / 5.0   # [0,1] capped tiebreaker
     explored   = m.get("explored_fraction", 0.0)              # [0,1] still must move
-    exit_prog  = m.get("exit_progress", 0.0)                  # [0,1] secondary
-    exit_r     = m.get("exit_rate", 0.0)                      # [0,1] secondary (binary)
+    exit_prog  = m.get("exit_progress", 0.0)                  # [0,1]
+    exit_r     = m.get("exit_rate", 0.0)                      # [0,1] (binary per episode)
     # Penalties (the bad behaviours to drive DOWN) — default 0 so empty metrics score 0.
     wasted     = m.get("wasted_shot_rate", 0.0)              # [0,1] spraying at nothing
     aim_off    = m.get("aim_offset", 0.0)                    # [0,1] enemy off-centre
     death      = m.get("death_rate", 0.0)                    # [0,1] dying
-    return (2.5 * accuracy + 1.5 * kill_conv + 0.5 * kills
-            + 1.0 * explored + 1.0 * exit_prog + 2.0 * exit_r
-            - 1.5 * wasted - 1.0 * aim_off - 0.5 * death)
+    return (w["accuracy"] * accuracy + w["kill_conv"] * kill_conv + w["kills"] * kills
+            + w["explored"] * explored + w["exit_prog"] * exit_prog + w["exit_r"] * exit_r
+            + w["wasted"] * wasted + w["aim_off"] * aim_off + w["death"] * death)
 
 
 # Reward knobs the supervisor is allowed to move, with hard bounds (the guardrails).

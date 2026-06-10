@@ -505,6 +505,55 @@ class TestPlateauEscape:
             "L3 must revert to the post-escape best (iter 11), not iter 0's 0.95"
 
 
+class TestScoreProfiles:
+    """SCORE_PROFILE selects what the loop optimises — combat (default) vs exit hunt."""
+
+    # The REAL iter-52 vs iter-54 metrics (autonomy.jsonl, 2026-06-10 solo MAP02 run)
+    # that exposed the objective mismatch: 52 shoots better, 54 survives + explores
+    # better. The combat profile prefers 52 (scores reproduce the logged 1.56/1.27);
+    # an exit hunt must prefer 54.
+    ITER52 = {"shooting_accuracy": 0.2934, "kill_conversion": 0.726,
+              "kills_per_episode": 10.6, "explored_fraction": 0.1311,
+              "exit_progress": 0.5432, "exit_rate": 0.0,
+              "wasted_shot_rate": 0.2246, "aim_offset": 0.5963, "death_rate": 1.0}
+    ITER54 = {"shooting_accuracy": 0.2628, "kill_conversion": 0.6712,
+              "kills_per_episode": 9.8, "explored_fraction": 0.1778,
+              "exit_progress": 0.4821, "exit_rate": 0.0,
+              "wasted_shot_rate": 0.3701, "aim_offset": 0.5988, "death_rate": 0.8}
+
+    def test_default_profile_is_combat_and_unchanged(self):
+        """No env var → combat profile → same value as the historical formula."""
+        from rl.autonomous import score
+        m = self.ITER52
+        legacy = (2.5 * m["shooting_accuracy"] + 1.5 * m["kill_conversion"]
+                  + 0.5 * min(m["kills_per_episode"], 5.0) / 5.0
+                  + 1.0 * m["explored_fraction"] + 1.0 * m["exit_progress"]
+                  + 2.0 * m["exit_rate"] - 1.5 * m["wasted_shot_rate"]
+                  - 1.0 * m["aim_offset"] - 0.5 * m["death_rate"])
+        assert score(m) == pytest.approx(legacy)
+
+    def test_exit_profile_prefers_survivor_explorer(self):
+        """Under the exit profile, iter 54 (explores more, dies less) must outscore
+        iter 52 — the combat profile prefers 52 (the observed objective mismatch)."""
+        from rl.autonomous import score
+        assert score(self.ITER52, "combat") > score(self.ITER54, "combat")  # the mismatch
+        assert score(self.ITER54, "exit") > score(self.ITER52, "exit")      # the fix
+
+    def test_exit_rate_dominates_exit_profile(self):
+        """Reaching the exit must beat any amount of combat polish under 'exit'."""
+        from rl.autonomous import score
+        finisher = {"exit_rate": 0.5, "explored_fraction": 0.2, "death_rate": 0.5}
+        fighter  = {"shooting_accuracy": 0.5, "kill_conversion": 1.0,
+                    "kills_per_episode": 10.0, "death_rate": 0.0}
+        assert score(finisher, "exit") > score(fighter, "exit")
+
+    def test_env_var_selects_profile(self):
+        from rl.autonomous import score
+        with patch.dict(os.environ, {"SCORE_PROFILE": "exit"}):
+            via_env = score(self.ITER54)
+        assert via_env == pytest.approx(score(self.ITER54, "exit"))
+
+
 class TestCheckpointGC:
     """rl.checkpoint_gc — shared by `doom-cli prune` and the auto loop's in-loop GC."""
 
