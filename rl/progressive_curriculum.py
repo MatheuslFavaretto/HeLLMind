@@ -228,8 +228,14 @@ def _eval_stage(profile: dict, doom_map: str, episodes: int = 20,
 
 def run(doom_map: str = "MAP01", steps_per_stage: int = 150_000,
         algo: str = "ppo", stages: list | None = None,
-        eval_episodes: int = 20) -> dict:
-    """Run the full progressive curriculum and return per-stage metrics."""
+        eval_episodes: int = 20, fresh: bool = False) -> dict:
+    """Run the full progressive curriculum and return per-stage metrics.
+
+    fresh defaults to FALSE: rl.train auto-resumes the newest compatible brain (or
+    starts from zero when none exists). The old `fresh=(i == 0)` default would have
+    WIPED the long-trained campaign brain the moment a campaign-mode stage (mywh)
+    ran first — weights are the only asset that compounds; never discard them by
+    default. Pass --fresh only to deliberately restart a brain family."""
     stages = stages or ["mywh", "corridor", "navigate", "full"]
     out_dir = os.path.join(ROOT, "reports",
                            f"curriculum-{time.strftime('%Y%m%d-%H%M%S')}")
@@ -238,7 +244,8 @@ def run(doom_map: str = "MAP01", steps_per_stage: int = 150_000,
 
     for i, stage in enumerate(stages):
         profile = STAGE_DEFS.get(stage, {})
-        _run_stage(stage, profile, doom_map, steps_per_stage, algo, fresh=(i == 0))
+        _run_stage(stage, profile, doom_map, steps_per_stage, algo,
+                   fresh=(fresh and i == 0))
 
         print(f"\n── eval: {stage} ({profile.get('_mode','campaign')}) ──")
         m = _eval_stage(profile, doom_map, eval_episodes, algo=algo)
@@ -292,10 +299,14 @@ def main() -> None:
                         "mywh/corridor use ViZDoom built-in scenarios; navigate/survive/full "
                         "use freedoom2 campaign mode.")
     p.add_argument("--eval-episodes", type=int, default=20)
+    p.add_argument("--fresh", action="store_true",
+                   help="Restart the FIRST stage's brain from zero. Default is resume — "
+                        "campaign-mode stages share the campaign brain family, and a "
+                        "default fresh would wipe a long-trained brain.")
     args = p.parse_args()
     run(doom_map=args.map, steps_per_stage=args.steps_per_stage,
         algo=args.algo, stages=args.stages.split(","),
-        eval_episodes=args.eval_episodes)
+        eval_episodes=args.eval_episodes, fresh=args.fresh)
 
 
 if __name__ == "__main__":

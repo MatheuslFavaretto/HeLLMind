@@ -609,6 +609,13 @@ class TestCurriculumFamilyParity:
         from rl.progressive_curriculum import check_family_parity
         assert check_family_parity("x", {"_mode": "scenario", "STRAFE": "0"}) == []
 
+    def test_curriculum_never_fresh_by_default(self):
+        """Locked contract: fresh=(i==0) by default would WIPE the long-trained campaign
+        brain now that mywh is a campaign-mode stage. Resume must be the default."""
+        import inspect
+        from rl.progressive_curriculum import run
+        assert inspect.signature(run).parameters["fresh"].default is False
+
 
 class TestNoAssistsFlag:
     """--no-assists must zero all 4 assist env vars in every subprocess."""
