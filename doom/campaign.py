@@ -715,14 +715,19 @@ class CampaignDoomEnv(gym.Env):
         self._prev_exit_dist = None
         self._spawn_exit_dist = None
         self._closest_exit_dist = None
-        # Reward shaping baseline: ONLY from a memorised (actually-reached) exit.
-        if self._exit_pos is not None and self._spawn_xy is not None:
-            sx, sy = self._spawn_xy
-            ex, ey = self._exit_pos
-            self._prev_exit_dist = ((ex - sx) ** 2 + (ey - sy) ** 2) ** 0.5
-        # Metric baseline: memorised exit if known, else the WAD exit — so exit_progress works
-        # even before the exit is ever reached. Independent of the reward above.
+        # Metric + shaping reference: memorised exit if known, else the WAD-parsed exit.
+        # The shaping used to gate on the MEMORISED exit only ("activates after the first
+        # successful exit") — a chicken-and-egg: the gradient meant to lead the agent to
+        # its first exit could never fire before that first exit. Two 5-iteration exit
+        # hunts (100 episodes each) ran with EXIT_PROX_SCALE set and the shaping silently
+        # OFF. The WAD exit position is exact (parsed from the exit linedef), is already
+        # trusted by the exit_progress metric, and exists from step zero — so the shaping
+        # now uses the same fallback. A memorised exit still wins when present.
         self._exit_ref = self._exit_pos or self._wad_exit_pos
+        if self._exit_ref is not None and self._spawn_xy is not None:
+            sx, sy = self._spawn_xy
+            ex, ey = self._exit_ref
+            self._prev_exit_dist = ((ex - sx) ** 2 + (ey - sy) ** 2) ** 0.5
         if self._exit_ref is not None and self._spawn_xy is not None:
             sx, sy = self._spawn_xy
             ex, ey = self._exit_ref
@@ -1042,11 +1047,14 @@ class CampaignDoomEnv(gym.Env):
             "move": self._move_reward * deltas["distance"],
             "base": base_reward,
         }
-        # Exit proximity shaping: small reward for getting closer to the memorised exit.
-        # Activates only after the first successful exit (self._exit_pos is set).
-        if self._exit_pos is not None and not done and self._prev_exit_dist is not None:
+        # Exit proximity shaping: small reward for getting closer to the exit reference
+        # (memorised exit when known, WAD-parsed exit otherwise — same fallback as the
+        # exit_progress metric, set in reset). Fires from step zero on maps whose exit
+        # the WAD declares; previously it waited for a first successful exit that the
+        # missing gradient itself made unreachable.
+        if self._exit_ref is not None and not done and self._prev_exit_dist is not None:
             px, py = raw["position_x"], raw["position_y"]
-            ex, ey = self._exit_pos
+            ex, ey = self._exit_ref
             cur_dist = ((ex - px) ** 2 + (ey - py) ** 2) ** 0.5
             progress = self._prev_exit_dist - cur_dist  # positive = got closer
             if progress > 0:

@@ -769,6 +769,28 @@ class TestLRFloor:
         assert 'custom_objects={"learning_rate": _lr_setting(cfg)}' in src
 
 
+class TestExitProximityShaping:
+    """The exit-prox gradient must have a target from step ZERO via the WAD-parsed exit.
+
+    It used to gate on the MEMORISED exit (set only after a first successful exit) —
+    a chicken-and-egg that kept the shaping silently OFF through two full exit hunts
+    (100 episodes each with EXIT_PROX_SCALE explicitly configured)."""
+
+    def test_shaping_baseline_set_from_wad_exit_without_memorised_exit(self):
+        from doom.campaign import CampaignDoomEnv, default_wad
+        env = CampaignDoomEnv(wad_path=default_wad(), doom_map="MAP01",
+                              episode_timeout=300)  # no memory_dir → no memorised exit
+        try:
+            env.reset()
+            assert env._exit_pos is None, "no exit_store → no memorised exit"
+            assert env._wad_exit_pos is not None, "MAP01's exit is in the WAD"
+            assert env._exit_ref == env._wad_exit_pos
+            assert env._prev_exit_dist is not None, \
+                "shaping baseline must exist from step zero (was None until first exit)"
+        finally:
+            env.close()
+
+
 class TestNoAssistsFlag:
     """--no-assists must zero all 4 assist env vars in every subprocess."""
 
