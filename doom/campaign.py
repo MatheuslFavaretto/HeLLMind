@@ -356,6 +356,8 @@ class CampaignDoomEnv(gym.Env):
         # For door/exit parsing: use the scenario PWAD when set (it contains the actual map),
         # otherwise fall back to the IWAD (freedoom2.wad / doom.wad).
         _map_wad = self._scenario_wad if self._scenario_wad else wad_path
+        self._map_wad = _map_wad  # the WAD that actually contains this map's geometry
+        self._geo_field = None    # geodesic distance-to-exit field (built in reset)
         # Door positions (from the WAD) — needed by auto-door-nav AND the semantic channel.
         self._doors = []
         if self._auto_door_nav or self._semantic:
@@ -482,6 +484,19 @@ class CampaignDoomEnv(gym.Env):
     def set_map(self, doom_map: str) -> None:
         """Schedule a map switch; applied on the next reset (used by the curriculum)."""
         self._pending_map = doom_map
+        self._geo_field = None  # new map = new geometry; rebuilt on next reset
+
+    def _dist_to_exit(self, px: float, py: float) -> float:
+        """Distance from (px, py) to the exit reference — geodesic (along walkable
+        paths) when the field covers the position, euclidean otherwise. Requires
+        self._exit_ref to be set."""
+        if self._geo_field:
+            from doom.geodesic import geodesic_distance
+            g = geodesic_distance(self._geo_field, px, py)
+            if g is not None:
+                return g
+        ex, ey = self._exit_ref
+        return ((ex - px) ** 2 + (ey - py) ** 2) ** 0.5
 
     @property
     def current_map(self) -> str:
@@ -724,10 +739,20 @@ class CampaignDoomEnv(gym.Env):
         # trusted by the exit_progress metric, and exists from step zero — so the shaping
         # now uses the same fallback. A memorised exit still wins when present.
         self._exit_ref = self._exit_pos or self._wad_exit_pos
+        # Geodesic field: distance ALONG WALKABLE PATHS, not straight-line. On MAP01 the
+        # exit is 600 units away euclidean but 3,648 along the real route (6×) — the
+        # euclidean gradient pinned the agent against the wall nearest the exit for
+        # three full hunts. EXIT_GEODESIC=0 restores euclidean.
+        if (self._exit_ref is not None and self._geo_field is None
+                and os.getenv("EXIT_GEODESIC", "1") in ("1", "true", "True")):
+            try:
+                from doom.geodesic import distance_field
+                self._geo_field = distance_field(self._map_wad, self._current_map,
+                                                 tuple(self._exit_ref))
+            except Exception:
+                self._geo_field = None  # fall back to euclidean below
         if self._exit_ref is not None and self._spawn_xy is not None:
-            sx, sy = self._spawn_xy
-            ex, ey = self._exit_ref
-            self._prev_exit_dist = ((ex - sx) ** 2 + (ey - sy) ** 2) ** 0.5
+            self._prev_exit_dist = self._dist_to_exit(*self._spawn_xy)
         if self._exit_ref is not None and self._spawn_xy is not None:
             sx, sy = self._spawn_xy
             ex, ey = self._exit_ref
@@ -1048,14 +1073,12 @@ class CampaignDoomEnv(gym.Env):
             "base": base_reward,
         }
         # Exit proximity shaping: small reward for getting closer to the exit reference
-        # (memorised exit when known, WAD-parsed exit otherwise — same fallback as the
-        # exit_progress metric, set in reset). Fires from step zero on maps whose exit
-        # the WAD declares; previously it waited for a first successful exit that the
-        # missing gradient itself made unreachable.
+        # (memorised exit when known, WAD-parsed exit otherwise), measured GEODESICALLY
+        # (along walkable paths) when the field is available — euclidean "closer" is a
+        # lie in a maze and pinned the agent against the wall nearest the exit. Fires
+        # from step zero on maps whose exit the WAD declares.
         if self._exit_ref is not None and not done and self._prev_exit_dist is not None:
-            px, py = raw["position_x"], raw["position_y"]
-            ex, ey = self._exit_ref
-            cur_dist = ((ex - px) ** 2 + (ey - py) ** 2) ** 0.5
+            cur_dist = self._dist_to_exit(raw["position_x"], raw["position_y"])
             progress = self._prev_exit_dist - cur_dist  # positive = got closer
             # SIGNED potential-based shaping: retreating pays the bonus back, so the sum
             # telescopes to (spawn_dist - final_dist) and oscillating A→B→A farms ZERO.

@@ -791,6 +791,57 @@ class TestExitProximityShaping:
             env.close()
 
 
+class TestGeodesicShaping:
+    """Exit shaping must measure distance ALONG WALKABLE PATHS. On MAP01 the exit is
+    600 units away euclidean but 3,648 geodesic (6×) — the euclidean gradient pinned
+    the agent against the wall nearest the exit through three full exit hunts."""
+
+    def test_field_covers_spawn_and_dwarfs_euclidean(self):
+        import math
+        from doom.geodesic import distance_field, geodesic_distance
+        from doom.campaign import default_wad
+        from doom.wad_doors import map_exit
+        wad = default_wad()
+        ex = map_exit(wad, "MAP01")
+        field = distance_field(wad, "MAP01", tuple(ex))
+        assert len(field) > 300, "MAP01's walkable area is hundreds of cells"
+        spawn = (-192, -192)  # player-1 start from the THINGS lump
+        g = geodesic_distance(field, *spawn)
+        e = math.dist(spawn, ex)
+        assert g is not None, "spawn must be reachable from the exit"
+        assert g > 3 * e, f"real route ({g}) is several times the straight line ({e:.0f})"
+
+    def test_env_baseline_is_geodesic(self):
+        from doom.campaign import CampaignDoomEnv, default_wad
+        env = CampaignDoomEnv(wad_path=default_wad(), doom_map="MAP01",
+                              episode_timeout=300)
+        try:
+            env.reset()
+            assert env._geo_field, "field must be built on reset (EXIT_GEODESIC default on)"
+            assert env._prev_exit_dist > 2000, \
+                "shaping baseline must be geodesic (3648), not euclidean (600)"
+        finally:
+            env.close()
+
+    def test_geodesic_opt_out(self):
+        from doom.campaign import CampaignDoomEnv, default_wad
+        with patch.dict(os.environ, {"EXIT_GEODESIC": "0"}):
+            env = CampaignDoomEnv(wad_path=default_wad(), doom_map="MAP01",
+                                  episode_timeout=300)
+            try:
+                env.reset()
+                assert env._geo_field is None
+                assert env._prev_exit_dist < 1000, "euclidean baseline when opted out"
+            finally:
+                env.close()
+
+    def test_segment_crossing(self):
+        from doom.geodesic import _segments_cross
+        assert _segments_cross(0, 0, 10, 0, 5, -5, 5, 5)      # crossing
+        assert not _segments_cross(0, 0, 10, 0, 20, -5, 20, 5)  # disjoint
+        assert not _segments_cross(0, 0, 10, 0, 0, 5, 10, 5)    # parallel
+
+
 class TestNoAssistsFlag:
     """--no-assists must zero all 4 assist env vars in every subprocess."""
 
