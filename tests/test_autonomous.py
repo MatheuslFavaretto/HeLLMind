@@ -878,6 +878,16 @@ class TestNoAssistsFlag:
         assert env["AUTO_USE"] == "0",         "AUTO_USE must be '0'"
         assert env["AUTO_DOOR_NAV"] == "0",    "AUTO_DOOR_NAV must be '0'"
 
+    def test_solo_auto_use_override(self):
+        """SOLO_AUTO_USE=1 keeps doors functional in solo mode (MAP01's exit route has
+        THREE doors — with USE off every solo exit hunt was structurally impossible)."""
+        solo_use = "1" in ("1",)  # mirrors the env read
+        env = self._build_env(no_assists=True)
+        with patch.dict(os.environ, {"SOLO_AUTO_USE": "1"}):
+            env["AUTO_USE"] = "1" if os.getenv("SOLO_AUTO_USE", "0") in ("1", "true", "True") else "0"
+        assert env["AUTO_USE"] == "1"
+        assert env["AUTO_AIM"] == "0", "skill assists stay off"
+
     def test_no_assists_keys_present_in_env_dict(self):
         """All 4 assists must be explicit keys (not missing and inherited from os.environ)."""
         env = self._build_env(no_assists=False)

@@ -1179,10 +1179,18 @@ def main() -> None:
     if args.no_assists:
         env["AUTO_AIM"] = "0"
         env["AUTO_BEST_WEAPON"] = "0"
-        env["AUTO_USE"] = "0"
         env["AUTO_DOOR_NAV"] = "0"
-        print("[autonomous] --no-assists: all gameplay assists DISABLED (solo brain mode). "
-              "Training will be harder — agent must learn aim + nav from scratch.")
+        # AUTO_USE is separable from the SKILL assists: doors opening on contact is map
+        # mechanics, not aim/navigation ability (the navigate curriculum stage keeps it
+        # on for the same reason). MAP01's optimal exit route passes through THREE doors
+        # — with USE off, every solo exit hunt was structurally impossible (the agent
+        # never learned FWD+USE and stayed locked in the spawn pocket; revisit 0.99).
+        # SOLO_AUTO_USE=1 keeps doors functional while the brain stays solo for
+        # aim/nav/weapons. Default 0 preserves strict-solo semantics.
+        solo_use = os.getenv("SOLO_AUTO_USE", "0") in ("1", "true", "True")
+        env["AUTO_USE"] = "1" if solo_use else "0"
+        print("[autonomous] --no-assists: skill assists DISABLED (solo brain mode); "
+              f"AUTO_USE={'ON (SOLO_AUTO_USE=1: doors open on contact)' if solo_use else 'off'}.")
 
     # Accumulate across sessions: overlay reward knobs the agent has PROVEN help (validated
     # experiments), then adopt any "improved" verdicts sitting in memory from prior runs.
