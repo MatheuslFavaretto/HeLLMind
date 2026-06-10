@@ -1,8 +1,8 @@
 name: CI
 
 on:
-  push:
-    branches: [main, master]
+  push:                     # every branch — feature work spends weeks off main and
+                            # was getting zero CI signal (16 untested commits observed)
   pull_request:
   workflow_dispatch:        # allow manual runs from any branch
 

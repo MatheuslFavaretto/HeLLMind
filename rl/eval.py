@@ -220,12 +220,25 @@ def main() -> None:
     p.add_argument("--html", nargs="?", const="reports/eval_report.html", default=None,
                    help="Write a full HTML report (metrics + charts + formulas + recommendations) "
                         "after the eval. Optional path (default reports/eval_report.html).")
+    p.add_argument("--seed", type=int, default=None,
+                   help="Pin EVERY rng (env layout + torch/numpy action sampling) so two evals "
+                        "are comparable. Without it, tempered sampling draws from an unseeded "
+                        "torch RNG and A/B numbers carry sampling noise.")
     args = p.parse_args()
 
     cfg = Config()
     cfg.n_envs = 1            # single env for a clean, reproducible eval
     cfg.docs_enabled = False  # no LLM/notes during eval
     cfg.memory_enabled = False
+    if args.seed is not None:
+        import random
+        import numpy as _np
+        import torch as _torch
+        cfg.seed = args.seed          # env reset seed (make_campaign_env: seed + rank)
+        random.seed(args.seed)
+        _np.random.seed(args.seed)
+        _torch.manual_seed(args.seed)  # tempered/stochastic action sampling
+        print(f"[eval] seed pinned: {args.seed} (env + torch + numpy)")
     if args.render:
         cfg.render = True
 
