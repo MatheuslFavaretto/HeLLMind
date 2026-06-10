@@ -199,12 +199,19 @@ def _best_device() -> str:
 
 
 def _lr_setting(cfg: Config):
-    """Learning-rate value or a linear-decay-to-0 schedule (a float `base` is captured, not
-    the cfg, so it stays picklable for SB3 save/load)."""
+    """Learning-rate value or a linear-decay schedule with a FLOOR (floats are captured,
+    not the cfg, so it stays picklable for SB3 save/load).
+
+    The floor matters on resume: SB3's progress_remaining is GLOBAL with
+    reset_num_timesteps=False — `1 - num/(num + chunk)` — so a chunk resumed on an
+    18M-step brain starts at progress≈0.02 and the unfloored schedule trained at
+    ~0.02%→0% of base LR. The brain was effectively FROZEN on every resumed chunk
+    (measured: lr 5e-06→9e-08, approx_kl 1.6e-05, clip_fraction 0)."""
     base = float(cfg.learning_rate)
     if not getattr(cfg, "lr_schedule", False):
         return base
-    return lambda progress_remaining: base * progress_remaining  # 1.0→0.0 over the call
+    floor = max(0.0, min(1.0, float(getattr(cfg, "lr_min_factor", 0.1))))
+    return lambda progress_remaining: base * max(progress_remaining, floor)
 
 
 def build_vec_env(cfg: Config, normalize: bool = False):
@@ -307,8 +314,12 @@ def main() -> None:
     device = _best_device()
     if resume_path:
         print(f"[brain] reusing this vault's learning: {resume_path}  [device={device}]")
+        # custom_objects: replace the PICKLED schedule from the zip with the current
+        # (floored) one — otherwise old brains keep their decay-to-zero schedule and
+        # resumed chunks train at ~0% LR forever, no matter what config says now.
         model = AlgoClass.load(resume_path, env=venv, device=device,
-                               tensorboard_log=cfg.tensorboard_log)
+                               tensorboard_log=cfg.tensorboard_log,
+                               custom_objects={"learning_rate": _lr_setting(cfg)})
         reset_timesteps = False
         # Restore the reward-normalization running stats so the reward scale is continuous
         # across resumes (otherwise each chunk re-warms the return std from scratch).

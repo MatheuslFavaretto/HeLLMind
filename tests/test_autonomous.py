@@ -617,6 +617,81 @@ class TestCurriculumFamilyParity:
         assert inspect.signature(run).parameters["fresh"].default is False
 
 
+class TestStageEnvParity:
+    """Train and eval must run the SAME game. They used to build their env separately
+    and diverged: train got SCENARIO_WAD, eval didn't → the mywh eval ran on freedoom2
+    MAP01 and reported 1.6 kills / 45% deaths on a map with NO enemies (prod run
+    2026-06-10). One shared builder makes the divergence impossible."""
+
+    def test_mywh_env_has_scenario_wad(self):
+        from rl.progressive_curriculum import STAGE_DEFS, stage_env
+        env = stage_env(STAGE_DEFS["mywh"], "MAP01")
+        assert env.get("SCENARIO_WAD", "").endswith("my_way_home.wad")
+        assert env["CAMPAIGN"] == "1"
+
+    def test_plain_campaign_stage_has_no_scenario_wad(self):
+        from rl.progressive_curriculum import STAGE_DEFS, stage_env
+        env = stage_env(STAGE_DEFS["navigate"], "MAP01")
+        assert "SCENARIO_WAD" not in env or env["SCENARIO_WAD"] == os.environ.get("SCENARIO_WAD", "")
+
+    def test_scenario_stage_forces_campaign_channels_off(self):
+        from rl.progressive_curriculum import STAGE_DEFS, stage_env
+        env = stage_env(STAGE_DEFS["corridor"], "MAP01")
+        assert env["CAMPAIGN"] == "0"
+        assert env["DOOM_SCENARIO"] == "deadly_corridor"
+        assert env["STRAFE"] == "0" and env["GAME_VARS"] == "0"
+
+    def test_memory_only_on_full_stage(self):
+        from rl.progressive_curriculum import STAGE_DEFS, stage_env
+        assert stage_env(STAGE_DEFS["full"], "MAP01", memory=True)["MEMORY_ENABLED"] == "1"
+        assert stage_env(STAGE_DEFS["mywh"], "MAP01")["MEMORY_ENABLED"] == "0"
+
+
+class TestLRFloor:
+    """The unfloored linear schedule froze every resumed chunk: SB3's progress is
+    GLOBAL (1 - num/(num+chunk)), so an 18M-step brain resumed for a 400k chunk
+    started at progress≈0.02 → LR 5e-06→9e-08, approx_kl 1.6e-05, clip_fraction 0.
+    Likely a root cause of the 47-iteration auto-loop plateau."""
+
+    def _cfg(self, schedule=True, floor=0.1):
+        from config import Config
+        cfg = Config()
+        cfg.lr_schedule = schedule
+        cfg.lr_min_factor = floor
+        return cfg
+
+    def test_floor_holds_at_low_progress(self):
+        from rl.train import _lr_setting
+        sched = _lr_setting(self._cfg())
+        base = 2.5e-4
+        assert sched(0.02) == pytest.approx(base * 0.1)   # resumed-chunk regime
+        assert sched(0.0) == pytest.approx(base * 0.1)    # never zero
+
+    def test_normal_decay_above_floor(self):
+        from rl.train import _lr_setting
+        sched = _lr_setting(self._cfg())
+        base = 2.5e-4
+        assert sched(1.0) == pytest.approx(base)
+        assert sched(0.5) == pytest.approx(base * 0.5)
+
+    def test_floor_zero_restores_decay_to_zero(self):
+        from rl.train import _lr_setting
+        sched = _lr_setting(self._cfg(floor=0.0))
+        assert sched(0.0) == 0.0
+
+    def test_schedule_off_is_constant(self):
+        from rl.train import _lr_setting
+        assert _lr_setting(self._cfg(schedule=False)) == pytest.approx(2.5e-4)
+
+    def test_resume_overrides_pickled_schedule(self):
+        """The .load path must pass custom_objects={'learning_rate': ...} — otherwise
+        old brains keep their pickled decay-to-zero schedule regardless of config."""
+        import inspect
+        from rl import train
+        src = inspect.getsource(train.main)
+        assert 'custom_objects={"learning_rate": _lr_setting(cfg)}' in src
+
+
 class TestNoAssistsFlag:
     """--no-assists must zero all 4 assist env vars in every subprocess."""
 

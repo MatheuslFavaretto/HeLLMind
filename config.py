@@ -71,10 +71,15 @@ class Config:
     # DETERMINISTIC (argmax) policy freezes — the exact gap measured on this agent.
     ent_coef: float = float(os.getenv("ENT_COEF", "0.03"))
     learning_rate: float = 2.5e-4
-    # Linearly decay the learning rate to 0 over each training call (a standard PPO practice
-    # that stabilises late training). On the chunked auto loop it's a per-chunk warm-restart
-    # decay. 1 = on.
+    # Linearly decay the learning rate over training (standard PPO practice). NOTE: SB3's
+    # progress is GLOBAL on resume (1 - num/(num+chunk)), NOT per-chunk — so a 100k chunk
+    # resumed at 18M steps starts at progress≈0.005 and the LR is effectively zero. That
+    # froze the long-trained brain for weeks (every auto-loop chunk trained at <1% LR).
+    # lr_min_factor floors the schedule so resumed chunks always keep learning.
     lr_schedule: bool = os.getenv("LR_SCHEDULE", "1") in ("1", "true", "True")
+    # Floor for the LR schedule as a fraction of learning_rate (0.1 = never below 10% of
+    # base). 0 restores the old decay-to-zero behaviour.
+    lr_min_factor: float = float(os.getenv("LR_MIN_FACTOR", "0.1"))
     # Normalise the (heavily shaped) reward with a running return std during training — helps
     # PPO's value function when shaping terms have very different scales. Obs are NOT
     # normalised (images stay raw). 1 = on.

@@ -134,6 +134,42 @@ def check_family_parity(stage: str, profile: dict) -> list[str]:
     return [k for k in _FAMILY_KEYS if k in profile]
 
 
+def _resolve_scenario_wad(profile: dict) -> str:
+    """Lazy PWAD path resolution (avoids the vizdoom import at module load time)."""
+    fn_name = profile.get("_scenario_wad_fn")
+    if not fn_name:
+        return ""
+    import rl.progressive_curriculum as _self
+    return getattr(_self, fn_name)()
+
+
+def stage_env(profile: dict, doom_map: str, memory: bool = False) -> dict:
+    """The subprocess env for a stage — built in ONE place for BOTH train and eval.
+
+    They used to be built separately and diverged: train got SCENARIO_WAD, eval
+    didn't, so the mywh eval silently ran on freedoom2 MAP01 and reported kills on
+    a map that has no enemies. One builder = train and eval can never disagree on
+    which game the stage is."""
+    mode = profile.get("_mode", "campaign")
+    env_overrides = {k: v for k, v in profile.items() if not k.startswith("_")}
+    if mode == "scenario":
+        # ViZDoom built-in scenario: use DoomEnv (CAMPAIGN=0). Campaign-only channels off.
+        return {**os.environ, "CAMPAIGN": "0",
+                "DOOM_SCENARIO": profile.get("_scenario", ""),
+                "DOCS_ENABLED": "0", "MEMORY_ENABLED": "0",
+                **_SCENARIO_FORCE_OFF, **env_overrides}
+    # Campaign mode: freedoom2 IWAD + optional scenario PWAD overlay.
+    env = {**os.environ, "CAMPAIGN": "1", "MAPS": doom_map,
+           "DOCS_ENABLED": "0", "MEMORY_ENABLED": "1" if memory else "0",
+           **env_overrides}
+    wad = _resolve_scenario_wad(profile)
+    if wad:
+        # PWAD overlay: the stage map lives in the PWAD, not in freedoom2.wad.
+        # CampaignDoomEnv loads IWAD as base and PWAD via set_doom_scenario_path.
+        env["SCENARIO_WAD"] = wad
+    return env
+
+
 def _run_stage(stage: str, profile: dict, doom_map: str,
                steps: int, algo: str, fresh: bool) -> None:
     mode     = profile.get("_mode", "campaign")
@@ -146,22 +182,9 @@ def _run_stage(stage: str, profile: dict, doom_map: str,
             f"[curriculum] stage '{stage}' overrides brain-family keys {bad} — "
             f"its weights could not transfer to the other campaign stages. "
             f"Set these via .env (globally) instead, so every stage agrees.")
-    # Resolve lazy scenario-WAD path (avoids vizdoom import at module load time).
-    scenario_wad = ""
-    if "_scenario_wad_fn" in profile:
-        fn_name = profile["_scenario_wad_fn"]
-        import rl.progressive_curriculum as _self
-        scenario_wad = getattr(_self, fn_name)()
-    # Strip internal keys before passing to the subprocess env.
-    env_overrides = {k: v for k, v in profile.items() if not k.startswith("_")}
 
+    base_env = stage_env(profile, doom_map, memory=(stage == "full"))
     if mode == "scenario":
-        # ViZDoom built-in scenario: use DoomEnv (CAMPAIGN=0). Campaign-only channels off.
-        base_env = {**os.environ, "CAMPAIGN": "0",
-                    "DOOM_SCENARIO": scenario,
-                    "DOCS_ENABLED": "0", "MEMORY_ENABLED": "0",
-                    **_SCENARIO_FORCE_OFF,
-                    **env_overrides}
         if algo == "dqn":
             cmd = [sys.executable, "-m", "rl.train_dqn",
                    "--timesteps", str(steps), "--n-envs", "1"]
@@ -169,15 +192,6 @@ def _run_stage(stage: str, profile: dict, doom_map: str,
             cmd = [sys.executable, "-m", "rl.train",
                    "--timesteps", str(steps)]
     else:
-        # Campaign mode: freedoom2 IWAD + optional scenario PWAD overlay.
-        base_env = {**os.environ, "CAMPAIGN": "1", "MAPS": doom_map,
-                    "DOCS_ENABLED": "0",
-                    "MEMORY_ENABLED": "1" if stage == "full" else "0",
-                    **env_overrides}
-        if scenario_wad:
-            # PWAD overlay: the stage map lives in the PWAD, not in freedoom2.wad.
-            # CampaignDoomEnv loads IWAD as base and PWAD via set_doom_scenario_path.
-            base_env["SCENARIO_WAD"] = scenario_wad
         if algo == "dqn":
             cmd = [sys.executable, "-m", "rl.train_dqn",
                    "--map", doom_map, "--timesteps", str(steps), "--n-envs", "1"]
@@ -189,7 +203,7 @@ def _run_stage(stage: str, profile: dict, doom_map: str,
         cmd.append("--fresh")
 
     tag = (f"scenario:{scenario}" if mode == "scenario"
-           else f"map:{doom_map}" + (f"+pwad" if scenario_wad else ""))
+           else f"map:{doom_map}" + ("+pwad" if base_env.get("SCENARIO_WAD") else ""))
     print(f"\n{'═'*64}")
     print(f"  STAGE: {stage.upper()}  |  algo: {algo}  |  steps: {steps:,}  |  {tag}")
     key = {k: v for k, v in env_overrides.items()
@@ -202,17 +216,8 @@ def _run_stage(stage: str, profile: dict, doom_map: str,
 
 def _eval_stage(profile: dict, doom_map: str, episodes: int = 20,
                 algo: str = "ppo") -> dict:
-    mode     = profile.get("_mode", "campaign")
-    scenario = profile.get("_scenario", "")
-    env_overrides = {k: v for k, v in profile.items() if not k.startswith("_")}
-
-    if mode == "scenario":
-        env = {**os.environ, "CAMPAIGN": "0", "DOOM_SCENARIO": scenario,
-               "DOCS_ENABLED": "0", "MEMORY_ENABLED": "0",
-               **_SCENARIO_FORCE_OFF, **env_overrides}
-    else:
-        env = {**os.environ, "CAMPAIGN": "1", "MAPS": doom_map,
-               "DOCS_ENABLED": "0", "MEMORY_ENABLED": "0", **env_overrides}
+    # Same env builder as training — eval MUST run on the same game the stage trained.
+    env = stage_env(profile, doom_map)
 
     cmd = [sys.executable, "-m", "rl.eval",
            "--episodes", str(episodes), "--json", "--algo", algo]
