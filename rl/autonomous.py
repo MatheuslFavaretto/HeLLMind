@@ -92,6 +92,11 @@ BOUNDS = {
     "GOEXPLORE_GOAL_PROB":   (0.0, 0.8),
     "COMBAT_EXPLORE_FACTOR": (0.05, 0.5),   # lowered floor: can suppress exploration harder
     "KILL_REWARD":           (2.0, 20.0),   # added: auto-loop can tune the primary lever
+    # Exit-proximity gradient scale. Walking spawn→exit (~2500 map units) pays
+    # scale×2500×0.001 total: at 0.3 that's 0.75 (one kill pays 10 — the agent rationally
+    # ignores the exit); at 10 it's 25 (competitive with combat). Signed/potential-based
+    # in the env, so high scales can't be farmed by oscillation.
+    "EXIT_PROX_SCALE":       (0.0, 20.0),
 }
 
 # ── Plateau Escape ────────────────────────────────────────────────────────────
@@ -287,9 +292,10 @@ def propose(env: dict, m: dict, algo: str = "ppo") -> tuple[dict, str]:
 
     def bump(key, factor=None, add=None):
         lo, hi = BOUNDS[key]
-        # Seed a missing knob from its lower bound so a *factor on an absent key isn't a no-op
-        # (e.g. DQN_EPS_FINAL isn't in the seed env, so v would start at 0 → stays 0).
-        v = float(new.get(key, lo))
+        # Seed a missing knob from the PROCESS env first (the launcher may have set it,
+        # e.g. EXIT_PROX_SCALE=10 — seeding from the lower bound would write 0 back into
+        # the loop env and silently OVERRIDE the launcher), then the lower bound.
+        v = float(new.get(key, os.getenv(key, lo)))
         v = v * factor if factor is not None else v + add
         new[key] = round(max(lo, min(hi, v)), 4)
 
@@ -375,11 +381,17 @@ def propose(env: dict, m: dict, algo: str = "ppo") -> tuple[dict, str]:
         bump("MISS_PENALTY", add=0.05)
         bump("HIT_REWARD", factor=1.2)
         return new, f"accuracy {m.get('shooting_accuracy',0):.0%} -> MISS_PENALTY {new['MISS_PENALTY']}, HIT_REWARD {new['HIT_REWARD']}"
-    # Last resort once survival/exploration/aim are healthy: nudge the exit reward itself.
+    # Last resort once survival/exploration/aim are healthy: nudge the exit levers.
     if m.get("exit_rate", 0.0) == 0.0:
         bump("EXIT_REWARD", factor=1.3)
         bump("COVERAGE_REWARD", factor=1.2)  # exploring helps find the exit
-        return new, f"never reached the exit -> raise EXIT_REWARD to {new['EXIT_REWARD']}, COVERAGE to {new['COVERAGE_REWARD']}"
+        # The DENSE lever: EXIT_REWARD only pays on success (no gradient until then);
+        # EXIT_PROX_SCALE pays every step toward the WAD exit — the one signal that
+        # exists before the first exit. Raise it aggressively while exit_rate is 0.
+        bump("EXIT_PROX_SCALE", factor=1.5)
+        return new, (f"never reached the exit -> EXIT_REWARD {new['EXIT_REWARD']}, "
+                     f"COVERAGE {new['COVERAGE_REWARD']}, "
+                     f"EXIT_PROX_SCALE {new.get('EXIT_PROX_SCALE', '?')}")
     # Everything healthy: anneal exploration bonus to consolidate the policy.
     bump("COVERAGE_REWARD", factor=0.8)
     return new, f"metrics healthy -> anneal COVERAGE_REWARD to {new['COVERAGE_REWARD']}"
@@ -1145,6 +1157,7 @@ def main() -> None:
         "FRONTIER_REWARD": str(cfg.frontier_reward),
         "EPISODE_TIMEOUT": str(cfg.episode_timeout),
         "COVERAGE_REWARD": str(cfg.coverage_reward), "EXIT_REWARD": str(cfg.exit_reward),
+        "EXIT_PROX_SCALE": str(cfg.exit_prox_scale),
         "HIT_REWARD": str(cfg.hit_reward), "MISS_PENALTY": str(cfg.miss_penalty),
         "DAMAGE_TAKEN_PENALTY": str(cfg.damage_taken_penalty),
         "DEATH_PENALTY": str(cfg.death_penalty), "MOVE_REWARD": str(cfg.move_reward),

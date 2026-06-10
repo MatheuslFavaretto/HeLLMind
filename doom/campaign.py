@@ -1057,8 +1057,11 @@ class CampaignDoomEnv(gym.Env):
             ex, ey = self._exit_ref
             cur_dist = ((ex - px) ** 2 + (ey - py) ** 2) ** 0.5
             progress = self._prev_exit_dist - cur_dist  # positive = got closer
-            if progress > 0:
-                shaped += self._exit_prox_scale * progress * 0.001  # tiny per-unit bonus
+            # SIGNED potential-based shaping: retreating pays the bonus back, so the sum
+            # telescopes to (spawn_dist - final_dist) and oscillating A→B→A farms ZERO.
+            # The old `if progress > 0` ratchet paid every re-approach — negligible at
+            # scale 0.3, an exploit at the scales that actually compete with combat.
+            shaped += self._exit_prox_scale * progress * 0.001
             self._prev_exit_dist = cur_dist
         # Metric ONLY (reward-independent): closest the agent got to the exit REFERENCE (WAD or
         # memorised), tracked every step so exit_progress is meaningful even at 0% exit_rate.
