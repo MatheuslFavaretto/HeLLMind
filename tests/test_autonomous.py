@@ -477,6 +477,139 @@ class TestPlateauEscape:
             "L3 must revert to the post-escape best (iter 11), not iter 0's 0.95"
 
 
+class TestCheckpointGC:
+    """rl.checkpoint_gc — shared by `doom-cli prune` and the auto loop's in-loop GC."""
+
+    def _mk(self, d, family, steps_list, final=True):
+        for s in steps_list:
+            open(os.path.join(d, f"{family}_{s}_steps.zip"), "wb").write(b"x" * 100)
+        if final:
+            open(os.path.join(d, f"{family}_final.zip"), "wb").write(b"x" * 100)
+
+    def test_prune_keeps_newest_n_and_final(self, tmp_path):
+        from rl.checkpoint_gc import prune
+        d = str(tmp_path)
+        self._mk(d, "ppo_campaign_a19", [1000, 2000, 3000, 4000, 5000])
+        victims, freed = prune([d], keep=2, apply=True)
+        assert len(victims) == 3 and freed == 300
+        left = sorted(os.listdir(d))
+        assert left == ["ppo_campaign_a19_4000_steps.zip",
+                        "ppo_campaign_a19_5000_steps.zip",
+                        "ppo_campaign_a19_final.zip"]
+
+    def test_dry_run_deletes_nothing(self, tmp_path):
+        from rl.checkpoint_gc import prune
+        d = str(tmp_path)
+        self._mk(d, "fam", [1, 2, 3, 4])
+        victims, _ = prune([d], keep=1, apply=False)
+        assert len(victims) == 3
+        assert len(os.listdir(d)) == 5  # all files still present
+
+    def test_family_filter_only_touches_that_family(self, tmp_path):
+        """The auto loop must NEVER GC a family other than the one it trains."""
+        from rl.checkpoint_gc import prune
+        d = str(tmp_path)
+        self._mk(d, "fam_a", [1, 2, 3, 4])
+        self._mk(d, "fam_b", [1, 2, 3, 4])
+        victims, _ = prune([d], keep=1, apply=True, family="fam_a")
+        assert all("fam_a" in v for v in victims)
+        assert len([f for f in os.listdir(d) if f.startswith("fam_b_") and "steps" in f]) == 4
+
+    def test_keep_zero_disables_gc(self, tmp_path):
+        from rl.checkpoint_gc import prune
+        d = str(tmp_path)
+        self._mk(d, "fam", [1, 2, 3])
+        victims, freed = prune([d], keep=0, apply=True)
+        assert victims == [] and freed == 0
+        assert len(os.listdir(d)) == 4
+
+    def test_newest_family_is_the_one_being_trained(self, tmp_path):
+        from rl.checkpoint_gc import newest_family
+        import time
+        d = str(tmp_path)
+        self._mk(d, "old_fam", [100])
+        time.sleep(0.05)
+        self._mk(d, "current_fam", [200])
+        assert newest_family(d) == "current_fam"
+
+    def test_newest_family_empty_dir(self, tmp_path):
+        from rl.checkpoint_gc import newest_family
+        assert newest_family(str(tmp_path)) is None
+
+
+class TestTrendBias:
+    """Cross-run behavior trends must drive a real knob decision (P2 milestone)."""
+
+    def _cfg(self, tmp_path):
+        from config import Config
+        cfg = Config()
+        cfg.memory_dir = str(tmp_path)
+        return cfg
+
+    def _persist_flag(self, memory_dir, name, runs=10):
+        from writer.behavior import save_flags, BehaviorFlag
+        for _ in range(runs):
+            save_flags(memory_dir, [BehaviorFlag(
+                name=name, confidence=0.8, description="d", evidence="e",
+                recommendation="r")])
+
+    def test_persistent_circling_bumps_frontier(self, tmp_path):
+        from rl.autonomous import trend_bias
+        cfg = self._cfg(tmp_path)
+        self._persist_flag(cfg.memory_dir, "circling")
+        env = {"FRONTIER_REWARD": "0.05"}
+        new = dict(env)
+        note = trend_bias(cfg, env, new)
+        assert note is not None and "circling" in note
+        assert float(new["FRONTIER_REWARD"]) == pytest.approx(0.065)  # ×1.3
+
+    def test_no_bias_without_history(self, tmp_path):
+        from rl.autonomous import trend_bias
+        cfg = self._cfg(tmp_path)
+        env = {"FRONTIER_REWARD": "0.05"}
+        new = dict(env)
+        assert trend_bias(cfg, env, new) is None
+        assert new == env
+
+    def test_heuristic_proposal_wins_over_trend(self, tmp_path):
+        """If this iteration's proposal already moved the counter-knob, don't double-bump."""
+        from rl.autonomous import trend_bias
+        cfg = self._cfg(tmp_path)
+        self._persist_flag(cfg.memory_dir, "circling")
+        env = {"FRONTIER_REWARD": "0.05"}
+        new = {"FRONTIER_REWARD": "0.10"}  # heuristic already raised it
+        assert trend_bias(cfg, env, new) is None
+        assert new["FRONTIER_REWARD"] == "0.10"
+
+    def test_bump_clamps_to_bounds(self, tmp_path):
+        from rl.autonomous import trend_bias, BOUNDS
+        cfg = self._cfg(tmp_path)
+        self._persist_flag(cfg.memory_dir, "circling")
+        hi = BOUNDS["FRONTIER_REWARD"][1]
+        env = {"FRONTIER_REWARD": str(hi)}  # already at ceiling
+        new = dict(env)
+        assert trend_bias(cfg, env, new) is None  # nothing to push
+        assert new["FRONTIER_REWARD"] == str(hi)
+
+
+class TestCurriculumFamilyParity:
+    """Campaign-mode stages must derive the SAME brain family or transfer silently dies."""
+
+    def test_all_campaign_stages_are_family_clean(self):
+        from rl.progressive_curriculum import STAGE_DEFS, check_family_parity
+        for stage, profile in STAGE_DEFS.items():
+            bad = check_family_parity(stage, profile)
+            assert not bad, f"stage '{stage}' overrides family keys {bad}"
+
+    def test_check_catches_a_violation(self):
+        from rl.progressive_curriculum import check_family_parity
+        assert check_family_parity("x", {"_mode": "campaign", "STRAFE": "0"}) == ["STRAFE"]
+
+    def test_scenario_stages_exempt(self):
+        from rl.progressive_curriculum import check_family_parity
+        assert check_family_parity("x", {"_mode": "scenario", "STRAFE": "0"}) == []
+
+
 class TestNoAssistsFlag:
     """--no-assists must zero all 4 assist env vars in every subprocess."""
 

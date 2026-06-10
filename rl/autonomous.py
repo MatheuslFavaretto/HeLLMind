@@ -501,6 +501,50 @@ def llm_propose_open(cfg: Config, env: dict, m: dict) -> Optional[tuple[dict, st
     return new, f"LLM(open): {prop.reason.strip()[:120]} ({', '.join(applied)})"
 
 
+# Cross-run behavior trend → the knob that counters it. A flag must be PERSISTENT
+# (≥60% of the trend window) before it biases anything — one bad eval doesn't count.
+_TREND_KNOB = {
+    "circling":         ("FRONTIER_REWARD", 1.3),
+    "low_exploration":  ("COVERAGE_REWARD", 1.25),
+    "route_repetition": ("GOEXPLORE_GOAL_PROB", 1.25),
+    "shoot_spam":       ("MISS_PENALTY", 1.25),
+    "passive":          ("ENGAGEMENT_REWARD", 1.3),
+}
+
+
+def trend_bias(cfg: Config, env: dict, new: dict) -> Optional[str]:
+    """Cross-run behavior trends drive ONE decision: if the top PERSISTENT flag's
+    counter-knob wasn't already touched by this iteration's proposal, bump it.
+
+    This is the Phase-2.5 payoff: 30+ behavior snapshots existed but informed no
+    decision. A flag seen in most runs is a chronic problem the per-iteration
+    heuristic keeps missing (it only sees ONE eval at a time). Mutates `new`
+    in place; returns a human-readable note, or None if nothing applied."""
+    try:
+        from writer.behavior import detect_trends
+        trends = [t for t in detect_trends(cfg.memory_dir)
+                  if t.verdict == "persistent" and t.name in _TREND_KNOB]
+    except Exception:
+        return None
+    if not trends:
+        return None
+    top = max(trends, key=lambda t: t.frequency)
+    knob, factor = _TREND_KNOB[top.name]
+    if str(new.get(knob)) != str(env.get(knob)):
+        return None  # this iteration's proposal already moved the counter-knob
+    lo, hi = BOUNDS.get(knob, (0.0, float("inf")))
+    try:
+        cur = float(new.get(knob, os.getenv(knob, 0.0)) or 0.0)
+    except (TypeError, ValueError):
+        return None
+    bumped = min(max(cur * factor if cur else lo + (hi - lo) * 0.1, lo), hi)
+    if bumped == cur:
+        return None  # already at the bound — nothing to push
+    new[knob] = str(round(bumped, 5))
+    return (f"persistent '{top.name}' across {top.occurrences}/{top.total_runs} runs "
+            f"-> {knob} {cur} -> {new[knob]}")
+
+
 def propose_next(cfg: Config, env: dict, m: dict, use_llm: bool,
                  algo: str = "ppo") -> tuple[dict, str]:
     """Pick the next reward config. The heuristic always runs (it owns exploration and
@@ -508,6 +552,10 @@ def propose_next(cfg: Config, env: dict, m: dict, use_llm: bool,
     mode across all runs, and never repeats a change a past experiment disproved); when
     --llm is on, the LLM refines combat too."""
     new, reason = propose(env, m, algo=algo)
+    # Cross-run behavior trends: counter the chronic flag the per-eval heuristic misses.
+    note = trend_bias(cfg, env, new)
+    if note:
+        reason = f"{reason}; {note}"
     # Memory-informed: draw on the whole persistent history, not just this iteration's eval.
     try:
         from writer.memory_policy import recall_proposal
@@ -1157,6 +1205,22 @@ def main() -> None:
         # Catch it, keep the best brain found so far, and continue / finish gracefully.
         try:
             train_chunk(env, doom_map, args.steps, fresh, algo=algo)
+            # Checkpoint GC: the chunk just wrote ~N step-snapshots; keep only the newest
+            # few of THIS family (resume loads the newest — older ones are dead weight,
+            # 12GB observed). Other families are never touched in-loop.
+            if cfg.auto_prune_keep > 0:
+                try:
+                    from rl.checkpoint_gc import newest_family, prune
+                    fam = newest_family(cfg.checkpoint_dir)
+                    if fam:
+                        pruned, freed = prune([cfg.checkpoint_dir],
+                                              keep=cfg.auto_prune_keep,
+                                              apply=True, family=fam)
+                        if pruned:
+                            print(f"[autonomous] checkpoint GC: -{len(pruned)} snapshots "
+                                  f"({freed / 1e6:.0f} MB) of {fam}")
+                except Exception as e:
+                    print(f"[autonomous] checkpoint GC skipped: {e}")
             # Score the tempered policy (PPO). QR-DQN is value-based (argmax) — temperature
             # can't apply, so score it deterministically (its honest measure).
             temp = (None if algo == "dqn"

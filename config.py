@@ -194,6 +194,11 @@ class Config:
 
     # ---------- Outputs ----------
     checkpoint_dir: str = os.getenv("CHECKPOINT_DIR", "./checkpoints")
+    # Checkpoint GC in the auto loop: after each train chunk, keep only the newest N
+    # step-snapshots of the family being trained (resume only loads the newest; a few
+    # are kept for `doom-cli progress`). 0 disables. Other families are never touched
+    # in-loop — prune those manually with `doom-cli prune --apply`.
+    auto_prune_keep: int = _int_env("AUTO_PRUNE_KEEP", "10")
     tensorboard_log: str = os.getenv("TENSORBOARD_LOG", "./tb")
     # Where the run's snapshots live until post-processing (which writes the notes).
     pending_dir: str = os.getenv("PENDING_DIR", "./.cache/pending_runs")

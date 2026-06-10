@@ -8,6 +8,7 @@ import glob
 import os
 import subprocess
 import sys
+from typing import Optional
 
 from rich.align import Align
 from rich.console import Console
@@ -708,10 +709,24 @@ def cmd_train(a) -> int:
                          f"{' · LSTM' if a.lstm else ''}")
 
 
-def cmd_watch(a) -> int:
-    cmd = [PY, "-m", "rl.eval", "--render", "--episodes", str(a.episodes)]
+def _eval_invocation(a) -> tuple[list, Optional[dict], str]:
+    """The arg/env plumbing watch & eval share (both wrap rl.eval):
+    --path, --maps (MAPS env), --lstm (USE_LSTM env), plus the title's map suffix."""
+    cmd = [PY, "-m", "rl.eval", "--episodes", str(a.episodes)]
     if a.path:
         cmd += ["--path", a.path]
+    env = {}
+    if getattr(a, "lstm", False):
+        env["USE_LSTM"] = "1"
+    if getattr(a, "maps", None):
+        env["MAPS"] = a.maps
+    map_note = f" · {a.maps}" if getattr(a, "maps", None) else ""
+    return cmd, env or None, map_note
+
+
+def cmd_watch(a) -> int:
+    cmd, env, map_note = _eval_invocation(a)
+    cmd.append("--render")
     # Default to tempered sampling: this agent's pure-argmax policy collapses to passive
     # (it looks "dead" — ignores enemies, won't shoot). T=0.5 shows the REAL learned behavior.
     # Pass --temperature 0 to watch the raw argmax.
@@ -719,34 +734,23 @@ def cmd_watch(a) -> int:
         cmd += ["--temperature", str(a.temperature)]
     if getattr(a, "overlay", False):
         cmd.append("--overlay")
-    env = {"USE_LSTM": "1"} if a.lstm else {}
-    if getattr(a, "maps", None):
-        env["MAPS"] = a.maps
     label = "argmax" if (a.temperature == 0) else f"tempered T={a.temperature}"
     overlay_note = " + overlay" if getattr(a, "overlay", False) else ""
-    map_note = f" · {a.maps}" if getattr(a, "maps", None) else ""
-    return run(cmd, env or None, title=f"🎮 Watching · {a.episodes} eps · {label}{map_note}{overlay_note}")
+    return run(cmd, env, title=f"🎮 Watching · {a.episodes} eps · {label}{map_note}{overlay_note}")
 
 
 def cmd_eval(a) -> int:
-    cmd = [PY, "-m", "rl.eval", "--episodes", str(a.episodes)]
-    if a.path:
-        cmd += ["--path", a.path]
+    cmd, env, map_note = _eval_invocation(a)
     if a.json:
         cmd.append("--json")
     if a.stochastic:
         cmd.append("--stochastic")
     if getattr(a, "temperature", None) is not None:
         cmd += ["--temperature", str(a.temperature)]
-    env = {"USE_LSTM": "1"} if a.lstm else {}
-    if getattr(a, "maps", None):
-        env["MAPS"] = a.maps
-    if getattr(a, "temperature", None) is not None:
         mode = f"tempered T={a.temperature}"
     else:
         mode = "stochastic" if a.stochastic else "deterministic"
-    map_note = f" · {a.maps}" if getattr(a, "maps", None) else ""
-    return run(cmd, env or None, title=f"📊 Evaluating · {a.episodes} {mode} episodes{map_note}")
+    return run(cmd, env, title=f"📊 Evaluating · {a.episodes} {mode} episodes{map_note}")
 
 
 def cmd_auto(a) -> int:
@@ -1222,45 +1226,27 @@ def cmd_semantic(a) -> int:
 
 def cmd_prune(a) -> int:
     """Prune old step-checkpoints, keeping `_final` + the newest N per brain family.
-    The auto loop saves every ~50k steps and never deletes — 12GB+ observed. Resume only
-    ever loads the newest file, so older snapshots are dead weight (keep a few for
-    `doom-cli progress` curves)."""
-    import re
-    from collections import defaultdict
+    Resume only ever loads the newest file, so older snapshots are dead weight (a few
+    are kept for `doom-cli progress` curves). Logic lives in rl.checkpoint_gc — the
+    autonomous loop calls the same code after each train chunk."""
     from config import Config
+    from rl.checkpoint_gc import prune, scan_families
     cfg = Config()
+    dirs = [cfg.checkpoint_dir, os.path.join(ROOT, "checkpoints")]
 
-    families: dict = defaultdict(list)
-    for d in {cfg.checkpoint_dir, os.path.join(ROOT, "checkpoints")}:
-        if not os.path.isdir(d):
-            continue
-        for f in os.listdir(d):
-            m = re.match(r"^(.+?)_(\d+)_steps\.zip$", f)
-            if m:
-                p = os.path.join(d, f)
-                families[os.path.join(d, m.group(1))].append((int(m.group(2)), p))
-
-    to_delete, freed = [], 0
-    for fam, files in sorted(families.items()):
-        files.sort()  # by step count
-        victims = files[:-a.keep] if len(files) > a.keep else []
-        for _, p in victims:
-            to_delete.append(p)
-            freed += os.path.getsize(p)
-
-    if not to_delete:
+    victims, freed = prune(dirs, keep=a.keep, apply=False)
+    if not victims:
         console.print("[green]Nothing to prune.[/green]")
         return 0
-    console.print(f"[yellow]{len(to_delete)} step-checkpoints prunable "
+    console.print(f"[yellow]{len(victims)} step-checkpoints prunable "
                   f"({freed / 1e9:.1f} GB) — keeping newest {a.keep}/family + all _final[/yellow]")
-    for fam, files in sorted(families.items()):
+    for fam, files in sorted(scan_families(dirs).items()):
         if len(files) > a.keep:
             console.print(f"  {os.path.basename(fam)}: {len(files)} → {a.keep}")
     if not a.apply:
         console.print("[dim]Dry-run. Re-run with --apply to delete.[/dim]")
         return 0
-    for p in to_delete:
-        os.remove(p)
+    prune(dirs, keep=a.keep, apply=True)
     console.print(f"[green]Freed {freed / 1e9:.1f} GB.[/green]")
     return 0
 

@@ -118,11 +118,34 @@ _SCENARIO_FORCE_OFF = {
     "AUTOMAP": "0", "STRAFE": "0",
 }
 
+# Env vars that change the brain FAMILY (obs shape / action count / policy class).
+# A campaign-mode stage profile must NEVER override these: the whole point of the
+# campaign-mode mywh stage is that its weights transfer to the full-map stages, and
+# transfer silently breaks the moment any of these differs between stages.
+_FAMILY_KEYS = ("STRAFE", "SPATIAL_MEMORY", "DEPTH_PERCEPTION", "AUTOMAP",
+                "GAME_VARS", "FRAME_STACK", "USE_LSTM", "SEMANTIC_CHANNEL")
+
+
+def check_family_parity(stage: str, profile: dict) -> list[str]:
+    """Family-affecting keys a campaign-mode stage profile illegally overrides.
+    Empty list = weights transfer cleanly between this stage and the others."""
+    if profile.get("_mode", "campaign") != "campaign":
+        return []  # scenario stages have their own brain family by design
+    return [k for k in _FAMILY_KEYS if k in profile]
+
 
 def _run_stage(stage: str, profile: dict, doom_map: str,
                steps: int, algo: str, fresh: bool) -> None:
     mode     = profile.get("_mode", "campaign")
     scenario = profile.get("_scenario", "")
+    # Transfer-parity preflight: a campaign stage overriding a family key would train
+    # a DIFFERENT brain and the cross-stage transfer would silently never happen.
+    bad = check_family_parity(stage, profile)
+    if bad:
+        raise SystemExit(
+            f"[curriculum] stage '{stage}' overrides brain-family keys {bad} — "
+            f"its weights could not transfer to the other campaign stages. "
+            f"Set these via .env (globally) instead, so every stage agrees.")
     # Resolve lazy scenario-WAD path (avoids vizdoom import at module load time).
     scenario_wad = ""
     if "_scenario_wad_fn" in profile:
