@@ -64,6 +64,7 @@ class StatsTracker:
         self.coverage_cells_per_ep: List[int] = []  # distinct cells per episode
         self.exit_progress_per_ep: List[float] = []  # how close to the exit (dense, fairer)
         self.route_progress_per_ep: List[float] = []  # geodesic: fraction of the REAL route
+        self.death_route_dist_per_ep: List[float] = []  # geodesic dist-to-exit at death
         self.enemies_seen_per_ep: List[int] = []     # distinct enemies seen per episode
         # Richer telemetry (aim / movement / weapons / perception).
         self.nearest_centered_samples: List[float] = []  # aim quality: enemy off-centre [0,1]
@@ -160,6 +161,8 @@ class StatsTracker:
                         self.exit_progress_per_ep.append(float(doom["exit_progress"]))
                     if "route_progress" in doom:
                         self.route_progress_per_ep.append(float(doom["route_progress"]))
+                    if "death_route_dist" in doom:
+                        self.death_route_dist_per_ep.append(float(doom["death_route_dist"]))
                     if "enemies_seen" in doom:
                         self.enemies_seen_per_ep.append(int(doom["enemies_seen"]))
                     if "seen_counts" in doom:
@@ -226,6 +229,11 @@ class StatsTracker:
             # binary exit_rate. Only populated once the exit position is known on the map.
             "exit_progress": _mean(self.exit_progress_per_ep),
             "route_progress": _mean(self.route_progress_per_ep),
+            # Best single episode: the route FRONTIER (mean hides one breakthrough run).
+            "route_progress_best": max(self.route_progress_per_ep, default=0.0),
+            # Mean geodesic distance-to-exit at death: ~3650 = dying in the spawn pocket,
+            # ~2240 = dying in the gauntlet (= the agent is finally pushing the route).
+            "death_route_dist": _mean(self.death_route_dist_per_ep),
             "mean_reward": _mean(self.episode_rewards),
             "mean_base_reward": _mean(self.base_returns),  # native, shaping-independent
             "mean_episode_length": _mean(self.episode_lengths),

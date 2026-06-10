@@ -1208,6 +1208,13 @@ class CampaignDoomEnv(gym.Env):
             if not reached_exit and self._spawn_geo_dist and self._closest_geo_dist is not None:
                 gfrac = 1.0 - (self._closest_geo_dist / self._spawn_geo_dist)
                 doom["route_progress"] = float(max(0.0, min(1.0, gfrac)))
+            # WHERE on the route it died (geodesic distance-to-exit at the death spot).
+            # Deaths near 2240 = inside the known gauntlet (progress!); deaths near the
+            # spawn distance (~3650) = still stuck in the pocket. The single most
+            # diagnostic number for the exit hunt.
+            if dead and self._exit_ref is not None and self._last_vars:
+                doom["death_route_dist"] = float(self._dist_to_exit(
+                    self._last_vars["position_x"], self._last_vars["position_y"]))
             doom["base_return"] = self._ep_base  # native episode return (no shaping)
             doom["coverage_cells"] = len(self._visited)  # for frontier curriculum
             doom["enemies_seen"] = len(self._enemies_seen)  # distinct enemies seen this episode
