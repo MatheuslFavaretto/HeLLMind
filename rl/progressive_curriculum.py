@@ -206,7 +206,7 @@ def _run_stage(stage: str, profile: dict, doom_map: str,
            else f"map:{doom_map}" + ("+pwad" if base_env.get("SCENARIO_WAD") else ""))
     print(f"\n{'═'*64}")
     print(f"  STAGE: {stage.upper()}  |  algo: {algo}  |  steps: {steps:,}  |  {tag}")
-    key = {k: v for k, v in env_overrides.items()
+    key = {k: v for k, v in profile.items()
            if any(x in k for x in ("EXIT_REWARD", "DEATH_PENALTY", "COVERAGE_REWARD"))}
     if key:
         print(f"  reward profile: {key}")
