@@ -102,3 +102,32 @@ class DoomDocumentationCallback(BaseCallback):
         self._last_write_step = self.num_timesteps
         self.tracker.reset_window()
         return True
+
+
+class BootTimingCallback(BaseCallback):
+    """Wall-clock probe for the learn() boot path.
+
+    Prints the time from training_start to the FIRST env step. Motivation: a ~70-minute
+    pre-stepping stall was observed once (SB3's cumulative fps read 16 while the marginal
+    rate was ~440 steps/s) and was impossible to localise after the fact — this pins
+    whether a slow chunk lost its time before stepping (env boot, normalize restore,
+    MPS warmup) or during the rollout itself.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self._t_start: Optional[float] = None
+        self._first_step_logged = False
+
+    def _on_training_start(self) -> None:
+        import time
+        self._t_start = time.monotonic()
+        print(f"[boot] training_start (steps so far: {self.model.num_timesteps:,})")
+
+    def _on_step(self) -> bool:
+        if not self._first_step_logged and self._t_start is not None:
+            import time
+            dt = time.monotonic() - self._t_start
+            print(f"[boot] first env step after {dt:.1f}s")
+            self._first_step_logged = True
+        return True

@@ -371,6 +371,12 @@ def main() -> None:
               f"+{cfg.total_timesteps:,} (target {learn_total:,}).")
 
     callbacks = []
+    # Boot-timing probe: a ~70-minute pre-stepping stall was observed once on a campaign
+    # chunk (cumulative fps read 16 while the marginal rate was ~440 steps/s) and could
+    # not be diagnosed after the fact. This prints two wall-clock marks — training_start
+    # and the first env step — so the next stall shows WHERE the time went.
+    from rl.callbacks import BootTimingCallback
+    callbacks.append(BootTimingCallback())
     # In campaign mode, the curriculum switches maps by timesteps. Closed loop:
     # weight each map's budget by past deaths AND under-exploration there (from memory)
     # -> the agent trains MORE where it died MORE or explored LESS. No memory = uniform.
