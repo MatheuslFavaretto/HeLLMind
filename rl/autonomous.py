@@ -99,11 +99,22 @@ _ESCAPE_MIN_WINDOW = 5             # min no-improve iters before ANY escape fire
 
 
 def _last_escape(history: list) -> tuple[int, int]:
-    """(index, level) of the most recent iter where an escape fired, or (-1, 0).
+    """(index, level) of the most recent REGIME BOUNDARY, or (-1, 0).
 
-    The escape iter is the regime boundary: scores before it belong to a different
-    config/map and must not be compared against scores after it."""
+    A regime boundary is an escape iter (plateau_level > 0) OR a map switch (env.MAPS
+    differs from the current map — set by plateau L2/L4 or an explicit --map override).
+    Scores before the boundary belong to a different config/map and must not be
+    compared against scores after it; map switches return level 0 so escalation
+    restarts from the absolute-streak table rather than continuing the old ladder."""
+    if not history:
+        return -1, 0
+    current_map = (history[-1].get("env") or {}).get("MAPS")
     for idx in range(len(history) - 1, -1, -1):
+        # Map check FIRST: an escape that fired on a different map belongs to the OLD
+        # ladder — continuing min(level+1) from it would jump straight to L4 on the
+        # new map. The switch itself is the boundary (level 0 = fresh ladder).
+        if (history[idx].get("env") or {}).get("MAPS") != current_map:
+            return idx, 0
         lvl = history[idx].get("plateau_level") or 0
         if lvl > 0:
             return idx, lvl
@@ -1173,6 +1184,14 @@ def main() -> None:
             # old-regime best made every post-escape iter look like a regression forever.
             best_score = _session_best(history)
             env = history[-1].get("_next_env", env)  # the config queued for the next iter
+            # An EXPLICIT --map must win over the restored trail: the loop later derives
+            # doom_map from env["MAPS"] (so plateau map-rotations survive restarts), which
+            # would silently send `--map MAP01` back to the trail's old map otherwise.
+            if args.map and env.get("MAPS") != args.map:
+                print(f"[autonomous] --map {args.map} overrides the restored trail map "
+                      f"({env.get('MAPS')}). New regime: baseline resets.")
+                env["MAPS"] = args.map
+                best_score = -1e9  # scores from another map aren't comparable
             start_iter = len(history)
             print(f"[autonomous] --resume: restored {start_iter} prior iters "
                   f"(regime best {best_score:.2f}); continuing from iter {start_iter}.")

@@ -453,6 +453,33 @@ class TestPlateauEscape:
         backups = [f for f in os.listdir(str(tmp_path)) if "plateau_l4" in f]
         assert len(backups) == 2, "each L4 must produce its own backup"
 
+    def test_map_switch_is_a_regime_boundary(self):
+        """An explicit --map override (or L2/L4 rotation) changes env.MAPS — scores
+        across maps aren't comparable, so the streak must reset at the switch."""
+        from rl.autonomous import _no_improve_streak, _session_best, _last_escape
+        h = _hist([0.9] + [0.05] * 10)                       # MAP02 regime, stuck
+        for e in h:
+            e["env"] = {"MAPS": "MAP02"}
+        h += _hist([0.10, 0.05])                              # 2 iters on MAP01
+        for e in h[-2:]:
+            e["env"] = {"MAPS": "MAP01"}
+        idx, lvl = _last_escape(h)
+        assert (idx, lvl) == (10, 0), "boundary at the last MAP02 entry, not an escape"
+        assert _no_improve_streak(h) == 1                     # only MAP01 iters counted
+        assert _session_best(h) == pytest.approx(0.10)        # MAP01-local best
+
+    def test_map_switch_does_not_continue_escalation_ladder(self):
+        """After a map switch (lvl 0 boundary) escalation restarts from the absolute
+        table — it must NOT do last_level+1 from an escape that belonged to the old map."""
+        from rl.autonomous import _stagnation_level
+        h = _hist([0.9] + [0.0] * 4, plateau_at={4: 3})       # L3 fired on MAP02
+        for e in h:
+            e["env"] = {"MAPS": "MAP02"}
+        h += _hist([0.5] + [0.0] * 6)                          # 7 iters on MAP01, stuck
+        for e in h[-7:]:
+            e["env"] = {"MAPS": "MAP01"}
+        assert _stagnation_level(h) == 1                       # fresh ladder: 6-streak → L1
+
     def test_l1_resets_knobs_keeps_brain(self):
         from rl.autonomous import plateau_escape
         from config import Config
@@ -469,9 +496,10 @@ class TestPlateauEscape:
         from config import Config
         scores = [0.95] + [0.05] * 10 + [0.30, 0.08, 0.07, 0.06, 0.05, 0.04]
         h = _hist(scores, plateau_at={10: 2})
-        h[11]["env"] = {"MAPS": "MAP02", "ENT_COEF": "0.02", "MARKER": "regime-best"}
+        # Same map throughout — this test is about the ESCAPE-marker window, not maps.
+        h[11]["env"] = {"MAPS": "MAP01", "ENT_COEF": "0.02", "MARKER": "regime-best"}
         new_env, reason, purge = plateau_escape(
-            Config(), {"MAPS": "MAP02"}, h, 3, "MAP01", "ppo")
+            Config(), {"MAPS": "MAP01"}, h, 3, "MAP01", "ppo")
         assert purge is False
         assert new_env.get("MARKER") == "regime-best", \
             "L3 must revert to the post-escape best (iter 11), not iter 0's 0.95"
