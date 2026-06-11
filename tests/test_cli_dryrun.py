@@ -36,6 +36,7 @@ DRYRUN_ARGV = {
     "curriculum":  [],
     "curriculum2": ["--stages", "mywh", "--steps", "1000"],
     "prune":       [],          # dry-run by default: reads dirs, deletes nothing
+    "report":      ["--out", "/tmp/hellmind_dryrun_report.html", "--last", "5"],
     "progress":    [],
     "timeline":    [],
     "knowledge":   [],
@@ -91,6 +92,56 @@ TRACKER_HEADLINE_KEYS = [
     "hits_taken_per_episode", "aim_offset", "wasted_shot_rate", "kill_conversion",
     "revisit_rate", "combat_fraction", "combat_engagement", "combat_accuracy",
 ]
+
+
+def test_episode_stats_ci_math():
+    """The t-CI must be exact: for [1..10], mean=5.5, s=3.0277, t(9)=2.262 →
+    half-width = 2.262·3.0277/√10 = 2.1659."""
+    from instrumentation.stats_tracker import StatsTracker
+    tr = StatsTracker(["ATTACK"])
+    tr.episode_rewards = list(range(1, 11))
+    tr.episode_lengths = [100] * 10
+    s = tr.snapshot(0)
+    st = s["episode_stats"]["episode_reward"]
+    assert st["n"] == 10
+    assert st["mean"] == pytest.approx(5.5)
+    assert st["std"] == pytest.approx(3.02765, abs=1e-4)
+    half = (st["ci95_hi"] - st["ci95_lo"]) / 2
+    assert half == pytest.approx(2.262 * 3.02765 / 10 ** 0.5, abs=1e-3)
+    # n=1: degenerate interval, no crash
+    assert s["episode_stats"]["episode_length"]["std"] >= 0
+
+
+def test_thesis_report_renders_from_synthetic_trail(tmp_path):
+    """End-to-end: trail → HTML with methodology, trajectory chart, regime cut,
+    formulas and limitations. Regime boundary must be detected from the map switch."""
+    import json as _json
+    from writer.thesis_report import render, _regime_boundaries
+    rows = []
+    for i in range(8):
+        rows.append({"iter": i, "score": 0.1 * i, "kept": i % 2 == 0,
+                     "env": {"MAPS": "MAP01" if i < 4 else "MAP02"},
+                     "plateau_level": 1 if i == 6 else 0,
+                     "metrics": {"route_progress": 0.05 * i, "exit_rate": 0.0,
+                                 "kills_per_episode": 5.0, "death_rate": 0.2,
+                                 "timeout_rate": 0.8, "explored_fraction": 0.1,
+                                 "eval_meta": {"episodes": 10, "temperature": 0.5,
+                                               "seed": 42, "map": "MAP02",
+                                               "assists": {"auto_aim": False}},
+                                 "episode_stats": {"episode_reward": {
+                                     "mean": 1.0, "std": 0.5, "n": 10,
+                                     "median": 1.0, "ci95_lo": 0.64,
+                                     "ci95_hi": 1.36}}}})
+    with open(tmp_path / "autonomy.jsonl", "w") as f:
+        for r in rows:
+            f.write(_json.dumps(r) + "\n")
+    cuts = _regime_boundaries(rows)
+    assert 4 in cuts, "map switch at iter 4 must be a regime boundary"
+    assert 6 in cuts, "plateau escape at iter 6 must be a regime boundary"
+    html = render(str(tmp_path))
+    for needle in ("Methodology", "1.000 ± 0.360", "Formulas", "Limitations",
+                   "temperature=0.5", "data:image/png"):
+        assert needle in html, f"report missing: {needle}"
 
 
 def test_metrics_json_carries_every_headline_tracker_key():

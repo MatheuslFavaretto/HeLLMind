@@ -195,6 +195,11 @@ COMMANDS = [
      "Removes ./.cache experiment dirs. Add --brain to also wipe the vault's brain and "
      "--memory to wipe the cognitive memory (asks for confirmation).",
      "doom-cli clean"),
+    ("📊 Measure", "report", "Thesis-grade report: trajectories, 95% CIs, methodology, formulas",
+     "Builds reports/thesis_report.html from the autonomy trail: optimisation trajectory with "
+     "regime boundaries marked, per-episode distributions with Student-t confidence intervals, "
+     "the exact formulas used, and an explicit limitations section. Honest by construction.",
+     "doom-cli report"),
     ("🛠 Tools", "prune", "Delete old step-checkpoints (keeps _final + newest N per family)",
      "The auto loop saves a snapshot every ~50k steps and never deletes (12GB observed). "
      "Resume only loads the newest, so older snapshots are dead weight. Dry-run by default; "
@@ -1284,6 +1289,17 @@ def cmd_semantic(a) -> int:
     return run(cmd, title=f"🔎 Semantic memory · {subcmd}")
 
 
+def cmd_report(a) -> int:
+    """Thesis-grade experiment report: trajectories with regime boundaries, 95% CIs,
+    methodology block, formulas and limitations. Honest by construction."""
+    from config import Config
+    from writer.thesis_report import write
+    path = write(Config().memory_dir, path=a.out, last_n=a.last)
+    console.print(f"[green]report →[/green] [bold]{path}[/bold]   "
+                  f"[dim](abra no navegador)[/dim]")
+    return 0
+
+
 def cmd_prune(a) -> int:
     """Prune old step-checkpoints, keeping `_final` + the newest N per brain family.
     Resume only ever loads the newest file, so older snapshots are dead weight (a few
@@ -1560,6 +1576,14 @@ def build_parser() -> argparse.ArgumentParser:
     pr.add_argument("--apply", action="store_true",
                     help="Actually delete (default is a dry-run).")
     pr.set_defaults(fn=cmd_prune)
+
+    rp = sub.add_parser("report",
+                        help="Thesis-grade report: trajectories, 95% CIs, methodology, formulas")
+    rp.add_argument("--out", default="reports/thesis_report.html",
+                    help="Output HTML path (default reports/thesis_report.html).")
+    rp.add_argument("--last", type=int, default=60,
+                    help="How many trailing auto-loop iterations to analyse (default 60).")
+    rp.set_defaults(fn=cmd_report)
 
     sem = sub.add_parser("semantic",
                          help="Semantic memory (vector DB): embed events, search by meaning")

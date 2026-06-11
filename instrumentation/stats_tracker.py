@@ -15,6 +15,15 @@ from instrumentation.action_stats import (
 )
 from instrumentation.game_vars import LEVELS
 
+# Two-sided 97.5th-percentile critical values of Student's t by degrees of freedom
+# (df = n−1). Beyond df=30 the normal approximation (1.960) is standard. Hardcoded so
+# confidence intervals need no scipy dependency.
+_T95 = {1: 12.706, 2: 4.303, 3: 3.182, 4: 2.776, 5: 2.571, 6: 2.447, 7: 2.365,
+        8: 2.306, 9: 2.262, 10: 2.228, 11: 2.201, 12: 2.179, 13: 2.160, 14: 2.145,
+        15: 2.131, 16: 2.120, 17: 2.110, 18: 2.101, 19: 2.093, 20: 2.086, 21: 2.080,
+        22: 2.074, 23: 2.069, 24: 2.064, 25: 2.060, 26: 2.056, 27: 2.052, 28: 2.048,
+        29: 2.045, 30: 2.042}
+
 # Cell size (in map units) when discretizing position to estimate map COVERAGE
 # (how many distinct cells the agent stepped on).
 COVERAGE_CELL = 96.0
@@ -222,6 +231,24 @@ class StatsTracker:
         def _min(xs):
             return float(np.min(xs)) if xs else 0.0
 
+        def _dist(xs):
+            """Per-episode distribution stats: mean, sample std (ddof=1), n, 95% CI
+            (Student's t, two-sided — correct for the small n of an eval window),
+            and median. The CI is the difference between a thesis-grade claim
+            ('13.9 ± 4.2 kills, n=10') and an anecdote ('13.9 kills')."""
+            if not xs:
+                return None
+            a = np.asarray(xs, dtype=float)
+            n = int(a.size)
+            mean = float(a.mean())
+            if n < 2:
+                return {"mean": mean, "std": 0.0, "n": n, "median": mean,
+                        "ci95_lo": mean, "ci95_hi": mean}
+            std = float(a.std(ddof=1))
+            half = _T95.get(n - 1, 1.960) * std / (n ** 0.5)
+            return {"mean": mean, "std": std, "n": n, "median": float(np.median(a)),
+                    "ci95_lo": mean - half, "ci95_hi": mean + half}
+
         snap = {
             "num_timesteps": int(num_timesteps),
             "steps_in_window": int(self.steps_in_window),
@@ -296,6 +323,21 @@ class StatsTracker:
             "shots_missed": misses,
             "shooting_accuracy": float(accuracy),
             "kills_per_episode": (d.get("killcount", 0.0) / n_eps) if n_eps else 0.0,
+            # Per-episode DISTRIBUTIONS (mean/std/n/median/95% t-CI) for every metric
+            # with per-episode samples — a mean without an interval is an anecdote.
+            "episode_stats": {
+                k: v for k, v in {
+                    "episode_reward": _dist(self.episode_rewards),
+                    "episode_length": _dist(self.episode_lengths),
+                    "base_return": _dist(self.base_returns),
+                    "coverage_cells": _dist(self.coverage_cells_per_ep),
+                    "exit_progress": _dist(self.exit_progress_per_ep),
+                    "route_progress": _dist(self.route_progress_per_ep),
+                    "death_route_dist": _dist(self.death_route_dist_per_ep),
+                    "enemies_seen": _dist(self.enemies_seen_per_ep),
+                    "weapon_switches": _dist(self.weapon_switches_per_ep),
+                }.items() if v is not None
+            },
             # Combat vs exploration regime (needs USE_LABELS). combat_fraction = how much
             # time it spent facing enemies; combat_engagement = of that time, how often it
             # actually SHOT (low = the passivity the user saw); combat_accuracy = aim in

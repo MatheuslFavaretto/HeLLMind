@@ -189,18 +189,28 @@ def evaluate(cfg: Config, path: str, button_names: list, episodes: int = 20,
     return snap
 
 
-def build_metrics(s: dict) -> dict:
+def build_metrics(s: dict, eval_meta: dict | None = None) -> dict:
     """The METRICS_JSON contract: tracker summary → the dict every consumer reads
     (autonomous loop scoring, curriculum evals, experiments, reports).
 
     A metric does NOT exist until it's in this dict — the tracker computed
     route_progress for a full evaluation while every consumer read None, because this
     used to be an inline literal nobody remembered to extend. It's a function now so
-    tests can assert parity between tracker aggregates and what actually ships."""
+    tests can assert parity between tracker aggregates and what actually ships.
+
+    eval_meta (methodology): episodes, temperature, seed, assists state, brain path +
+    steps. Without it a report can't state HOW a number was measured — the difference
+    between a result and an anecdote."""
     cov = s.get("map_coverage", {}) or {}
     n_eps = max(s.get("episodes", 1), 1)
     terminals = s.get("terminals", {})
+    extra = {}
+    if s.get("episode_stats"):
+        extra["episode_stats"] = s["episode_stats"]  # mean/std/n/median/95% t-CI per metric
+    if eval_meta:
+        extra["eval_meta"] = eval_meta
     return {
+        **extra,
         "kills_per_episode": float(s["kills_per_episode"]),
         "shooting_accuracy": float(s["shooting_accuracy"]),
         "success_rate": float(s["success_rate"]),
@@ -436,7 +446,18 @@ def main() -> None:
 
     if args.json:
         import json
-        print("METRICS_JSON " + json.dumps(build_metrics(s)))
+        eval_meta = {
+            "episodes": args.episodes,
+            "temperature": args.temperature,
+            "seed": args.seed,
+            "stochastic": bool(args.stochastic),
+            "map": cfg.maps[0] if cfg.campaign else cfg.scenario,
+            "brain": _os.path.basename(path) if path else None,
+            "assists": {"auto_aim": cfg.auto_aim, "auto_use": cfg.auto_use,
+                        "auto_best_weapon": cfg.auto_best_weapon,
+                        "auto_door_nav": cfg.auto_door_nav},
+        }
+        print("METRICS_JSON " + json.dumps(build_metrics(s, eval_meta=eval_meta)))
 
 
 if __name__ == "__main__":
