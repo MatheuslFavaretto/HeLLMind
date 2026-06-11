@@ -195,6 +195,11 @@ COMMANDS = [
      "Removes ./.cache experiment dirs. Add --brain to also wipe the vault's brain and "
      "--memory to wipe the cognitive memory (asks for confirmation).",
      "doom-cli clean"),
+    ("🧠 Cognition", "vault", "Backfill the Obsidian graph from the autonomy trail",
+     "Generates one densely-linked note per auto-loop iteration, one per hunt (regime "
+     "segment), concept stubs for every mechanism that fired, and a Graph Index that "
+     "guarantees no note is an orphan. No LLM needed — factual, instant, idempotent.",
+     "doom-cli vault"),
     ("📊 Measure", "report", "Thesis-grade report: trajectories, 95% CIs, methodology, formulas",
      "Builds reports/thesis_report.html from the autonomy trail: optimisation trajectory with "
      "regime boundaries marked, per-episode distributions with Student-t confidence intervals, "
@@ -1289,6 +1294,19 @@ def cmd_semantic(a) -> int:
     return run(cmd, title=f"🔎 Semantic memory · {subcmd}")
 
 
+def cmd_vault(a) -> int:
+    """Backfill the Obsidian graph from the autonomy trail (no LLM): one note per
+    iteration + one per hunt + concept stubs + a Graph Index that de-orphans every note."""
+    from config import Config
+    from writer.trail_notes import sync
+    cfg = Config()
+    c = sync(cfg.memory_dir, cfg.vault_path)
+    console.print(f"[green]vault sync →[/green] {c['iterations']} iteration notes · "
+                  f"{c['hunts']} hunt notes · {c['concepts']} new concepts · "
+                  f"{c['orphans_linked']} orphans connected via [bold]Graph Index[/bold]")
+    return 0
+
+
 def cmd_report(a) -> int:
     """Thesis-grade experiment report: trajectories with regime boundaries, 95% CIs,
     methodology block, formulas and limitations. Honest by construction."""
@@ -1576,6 +1594,10 @@ def build_parser() -> argparse.ArgumentParser:
     pr.add_argument("--apply", action="store_true",
                     help="Actually delete (default is a dry-run).")
     pr.set_defaults(fn=cmd_prune)
+
+    vt = sub.add_parser("vault",
+                        help="Backfill the Obsidian graph from the autonomy trail")
+    vt.set_defaults(fn=cmd_vault)
 
     rp = sub.add_parser("report",
                         help="Thesis-grade report: trajectories, 95% CIs, methodology, formulas")

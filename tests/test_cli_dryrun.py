@@ -37,6 +37,7 @@ DRYRUN_ARGV = {
     "curriculum2": ["--stages", "mywh", "--steps", "1000"],
     "prune":       [],          # dry-run by default: reads dirs, deletes nothing
     "report":      ["--out", "/tmp/hellmind_dryrun_report.html", "--last", "5"],
+    "vault":       [],          # idempotent note backfill (writes into the real vault)
     "progress":    [],
     "timeline":    [],
     "knowledge":   [],

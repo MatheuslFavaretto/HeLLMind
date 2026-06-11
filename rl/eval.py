@@ -446,13 +446,14 @@ def main() -> None:
 
     if args.json:
         import json
+        import os.path as _osp  # NOT the html-block's `_os` (only bound when --html is passed)
         eval_meta = {
             "episodes": args.episodes,
             "temperature": args.temperature,
             "seed": args.seed,
             "stochastic": bool(args.stochastic),
             "map": cfg.maps[0] if cfg.campaign else cfg.scenario,
-            "brain": _os.path.basename(path) if path else None,
+            "brain": _osp.basename(path) if path else None,
             "assists": {"auto_aim": cfg.auto_aim, "auto_use": cfg.auto_use,
                         "auto_best_weapon": cfg.auto_best_weapon,
                         "auto_door_nav": cfg.auto_door_nav},
