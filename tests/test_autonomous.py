@@ -480,6 +480,21 @@ class TestPlateauEscape:
             e["env"] = {"MAPS": "MAP01"}
         assert _stagnation_level(h) == 1                       # fresh ladder: 6-streak → L1
 
+    def test_pinned_map_never_rotates(self):
+        """A directed run (--map given) must NEVER be yanked off its map by L2/L4 —
+        observed in prod: L2 switched an exit hunt MAP01→MAP02 mid-objective."""
+        from rl.autonomous import plateau_escape
+        from config import Config
+        h = _hist([0.9] + [0.0] * 25)
+        env = {"MAPS": "MAP01", "ENT_COEF": "0.03"}
+        new2, reason2, _ = plateau_escape(Config(), env, h, 2, "MAP01", "ppo", pin_map=True)
+        assert new2.get("MAPS", "MAP01") == "MAP01", "L2 pinned must keep the map"
+        assert "pinned" in reason2
+        new4, reason4, purge4 = plateau_escape(Config(), env, h, 4, "MAP01", "ppo",
+                                               pin_map=True)
+        assert new4["MAPS"] == "MAP01", "L4 pinned must keep the map"
+        assert purge4 is True  # purge still happens — only the rotation is suppressed
+
     def test_l1_resets_knobs_keeps_brain(self):
         from rl.autonomous import plateau_escape
         from config import Config

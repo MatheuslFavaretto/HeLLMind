@@ -194,7 +194,8 @@ def _stagnation_level(history: list) -> int:
 
 
 def plateau_escape(cfg: Config, env: dict, history: list,
-                   level: int, doom_map: str, algo: str) -> tuple[dict, str, bool]:
+                   level: int, doom_map: str, algo: str,
+                   pin_map: bool = False) -> tuple[dict, str, bool]:
     """Apply a structural intervention to break out of a score plateau.
 
     Returns (new_env, reason, purge_history).
@@ -202,6 +203,10 @@ def plateau_escape(cfg: Config, env: dict, history: list,
     to just the escape marker — without that, the next write_log() rewrites the full
     poisoned trail back to disk and the purge silently never happens (the prod bug).
     The brain checkpoint is NEVER touched at any level.
+
+    pin_map=True (the launcher passed an explicit --map): this is a DIRECTED run — a
+    map rotation would abandon the objective mid-hunt (observed: L2 yanked an exit hunt
+    off MAP01). L2 falls back to a knob-reset + entropy raise; L4 keeps the map.
     """
     new = dict(env)
     streak = _no_improve_streak(history)
@@ -218,6 +223,19 @@ def plateau_escape(cfg: Config, env: dict, history: list,
         return new, reason, False
 
     if level == 2:
+        if pin_map:
+            # Directed run: never rotate away from the pinned map. Reset knobs AND raise
+            # entropy (a stronger shake than L1) so the pinned objective gets new noise.
+            for knob in BOUNDS:
+                env_val = os.getenv(knob)
+                if env_val is not None:
+                    new[knob] = env_val
+            ent = float(new.get("ENT_COEF", cfg.ent_coef) or cfg.ent_coef)
+            new["ENT_COEF"] = str(min(ent * 1.5, BOUNDS["ENT_COEF"][1]))
+            reason = (f"[PLATEAU L2/pinned] {streak} iters no improvement — map pinned "
+                      f"({env.get('MAPS', doom_map)}); knobs reset + ENT_COEF → "
+                      f"{new['ENT_COEF']}")
+            return new, reason, False
         # Rotate training map: MAP01↔MAP02 (different density = different gradient).
         current = env.get("MAPS", doom_map)
         nxt = "MAP02" if current == "MAP01" else "MAP01"
@@ -252,7 +270,7 @@ def plateau_escape(cfg: Config, env: dict, history: list,
     #   - reset all reward knobs to .env defaults
     # No --fresh: never waste the trained brain.
     current = env.get("MAPS", doom_map)
-    nxt = "MAP02" if current == "MAP01" else "MAP01"
+    nxt = current if pin_map else ("MAP02" if current == "MAP01" else "MAP01")
     new = dict(env)  # keep perception flags (obs shape must stay compatible)
     new["MAPS"] = nxt
     for knob in BOUNDS:
@@ -1345,7 +1363,8 @@ def main() -> None:
         _p_level = _stagnation_level(history)
         if _p_level > 0:
             nxt, nxt_reason, _purge = plateau_escape(
-                cfg, env, history, _p_level, doom_map, algo)
+                cfg, env, history, _p_level, doom_map, algo,
+                pin_map=bool(args.map))  # explicit --map = directed run: never rotate
             print(f"[autonomous] {nxt_reason}")
             # New regime: the intervention must be judged against its OWN baseline.
             # Keeping the old best made `kept` revert every post-escape config in one
