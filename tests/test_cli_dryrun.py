@@ -79,3 +79,28 @@ def test_every_dryrun_command_exists_in_parser(parser):
     available = set(sub.choices)
     missing = set(DRYRUN_ARGV) - available
     assert not missing, f"dry-run list references unknown commands: {missing}"
+
+
+# Tracker aggregates that MUST reach every consumer through METRICS_JSON. A metric
+# doesn't exist until it's in build_metrics — the tracker computed route_progress for a
+# full evaluation while the loop scored None (the inline dict was never extended).
+TRACKER_HEADLINE_KEYS = [
+    "kills_per_episode", "shooting_accuracy", "exit_rate", "exit_progress",
+    "route_progress", "route_progress_best", "death_route_dist",
+    "weapon_switches_per_episode", "enemies_seen_per_episode",
+    "hits_taken_per_episode", "aim_offset", "wasted_shot_rate", "kill_conversion",
+    "revisit_rate", "combat_fraction", "combat_engagement", "combat_accuracy",
+]
+
+
+def test_metrics_json_carries_every_headline_tracker_key():
+    from rl.eval import build_metrics
+    fake_summary = {
+        "kills_per_episode": 1.0, "shooting_accuracy": 0.1, "success_rate": 0.5,
+        "mean_base_reward": 0.0, "mean_episode_length": 100.0,
+        "episodes": 10, "terminals": {"death": 5, "timeout": 5},
+        "map_coverage": {"explored_fraction": 0.1, "cells_visited": 50},
+    }
+    metrics = build_metrics(fake_summary)
+    missing = [k for k in TRACKER_HEADLINE_KEYS if k not in metrics]
+    assert not missing, f"tracker metrics that never reach METRICS_JSON: {missing}"

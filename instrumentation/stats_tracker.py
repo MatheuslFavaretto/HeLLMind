@@ -65,6 +65,9 @@ class StatsTracker:
         self.exit_progress_per_ep: List[float] = []  # how close to the exit (dense, fairer)
         self.route_progress_per_ep: List[float] = []  # geodesic: fraction of the REAL route
         self.death_route_dist_per_ep: List[float] = []  # geodesic dist-to-exit at death
+        self.weapon_switches_per_ep: List[int] = []   # NEXTW usage (weapon management)
+        self._cur_weapon: int | None = None           # per-step previous wielded slot
+        self._ep_weapon_switches = 0
         self.enemies_seen_per_ep: List[int] = []     # distinct enemies seen per episode
         # Richer telemetry (aim / movement / weapons / perception).
         self.nearest_centered_samples: List[float] = []  # aim quality: enemy off-centre [0,1]
@@ -108,6 +111,14 @@ class StatsTracker:
                     slot = int(doom["levels"].get("selected_weapon", 0))
                     self.weapon_shots[slot] += 1
                     self.weapon_hits[slot] += float(doom["deltas"].get("hitcount", 0.0))
+                # Weapon switches: forensics found 23% of deaths at empty/low ammo and
+                # NEXTW had never been measured — 0 switches/ep means the solo agent
+                # hasn't learned weapon management at all.
+                if "selected_weapon" in doom.get("levels", {}):
+                    w = int(doom["levels"]["selected_weapon"])
+                    if self._cur_weapon is not None and w != self._cur_weapon:
+                        self._ep_weapon_switches += 1
+                    self._cur_weapon = w
                 for n in LEVELS:
                     if n in doom["levels"]:  # tolerate vars a synthetic/old info omits
                         self.level_samples[n].append(doom["levels"][n])
@@ -148,6 +159,9 @@ class StatsTracker:
                 self.episode_rewards.append(float(ep["r"]))
                 self.episode_lengths.append(int(ep["l"]))
                 self.episodes_done += 1
+                self.weapon_switches_per_ep.append(self._ep_weapon_switches)
+                self._ep_weapon_switches = 0
+                self._cur_weapon = None  # next episode starts with its own baseline
                 if doom is not None:
                     if doom.get("success"):
                         self.episodes_success += 1
@@ -234,6 +248,9 @@ class StatsTracker:
             # Mean geodesic distance-to-exit at death: ~3650 = dying in the spawn pocket,
             # ~2240 = dying in the gauntlet (= the agent is finally pushing the route).
             "death_route_dist": _mean(self.death_route_dist_per_ep),
+            # NEXTW usage — 0 means the agent never manages weapons (forensics: 23% of
+            # deaths happened at empty/low ammo).
+            "weapon_switches_per_episode": _mean(self.weapon_switches_per_ep),
             "mean_reward": _mean(self.episode_rewards),
             "mean_base_reward": _mean(self.base_returns),  # native, shaping-independent
             "mean_episode_length": _mean(self.episode_lengths),

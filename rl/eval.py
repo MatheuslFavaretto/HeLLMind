@@ -189,6 +189,50 @@ def evaluate(cfg: Config, path: str, button_names: list, episodes: int = 20,
     return snap
 
 
+def build_metrics(s: dict) -> dict:
+    """The METRICS_JSON contract: tracker summary → the dict every consumer reads
+    (autonomous loop scoring, curriculum evals, experiments, reports).
+
+    A metric does NOT exist until it's in this dict — the tracker computed
+    route_progress for a full evaluation while every consumer read None, because this
+    used to be an inline literal nobody remembered to extend. It's a function now so
+    tests can assert parity between tracker aggregates and what actually ships."""
+    cov = s.get("map_coverage", {}) or {}
+    n_eps = max(s.get("episodes", 1), 1)
+    terminals = s.get("terminals", {})
+    return {
+        "kills_per_episode": float(s["kills_per_episode"]),
+        "shooting_accuracy": float(s["shooting_accuracy"]),
+        "success_rate": float(s["success_rate"]),
+        "exit_rate": float(s.get("exit_rate", 0.0)),
+        "exit_progress": float(s.get("exit_progress", 0.0)),  # dense: how close (euclidean)
+        # Geodesic route metrics (None-safe: tracker means are None when unmeasured).
+        "route_progress": float(s.get("route_progress") or 0.0),
+        "route_progress_best": float(s.get("route_progress_best") or 0.0),
+        "death_route_dist": float(s.get("death_route_dist") or 0.0),
+        "weapon_switches_per_episode": float(s.get("weapon_switches_per_episode") or 0.0),
+        "timeout_rate": float(terminals.get("timeout", 0)) / n_eps,
+        "death_rate": float(terminals.get("death", 0)) / n_eps,
+        "explored_fraction": float(cov.get("explored_fraction", 0.0)),
+        "cells_visited": float(cov.get("cells_visited", 0.0)),
+        "enemies_seen_per_episode": float(s.get("enemies_seen_per_episode", 0.0)),
+        "hits_taken_per_episode": float(s.get("hits_taken_per_episode", 0.0)),
+        "heals_consumed": float(s.get("heals_consumed", 0.0)),
+        # Skill-curriculum scoreboard: aim quality + spray + conversion + circling.
+        "aim_offset": float(s.get("aim_offset", 0.0)),
+        "wasted_shot_rate": float(s.get("wasted_shot_rate", 0.0)),
+        "kill_conversion": float(s.get("kill_conversion", 0.0)),
+        "revisit_rate": float(s.get("revisit_rate", 0.0)),
+        "reward_breakdown": s.get("reward_breakdown", {}),
+        "mean_base_reward": float(s["mean_base_reward"]),
+        "mean_episode_length": float(s["mean_episode_length"]),
+        # Combat vs exploration regime — so the coach tunes each one separately.
+        "combat_fraction": float(s.get("combat_fraction", 0.0)),
+        "combat_engagement": float(s.get("combat_engagement", 0.0)),
+        "combat_accuracy": float(s.get("combat_accuracy", 0.0)),
+    }
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description="Deterministically evaluate a saved brain.")
     p.add_argument("--episodes", type=int, default=20, help="Episodes to run.")
@@ -392,40 +436,7 @@ def main() -> None:
 
     if args.json:
         import json
-        cov = s.get("map_coverage", {}) or {}
-        n_eps = max(s.get("episodes", 1), 1)
-        terminals = s.get("terminals", {})
-        metrics = {
-            "kills_per_episode": float(s["kills_per_episode"]),
-            "shooting_accuracy": float(s["shooting_accuracy"]),
-            "success_rate": float(s["success_rate"]),
-            "exit_rate": float(s.get("exit_rate", 0.0)),
-            "exit_progress": float(s.get("exit_progress", 0.0)),  # dense: how close (euclidean)
-            # Geodesic route metrics (None-safe: tracker means are None when unmeasured).
-            "route_progress": float(s.get("route_progress") or 0.0),
-            "route_progress_best": float(s.get("route_progress_best") or 0.0),
-            "death_route_dist": float(s.get("death_route_dist") or 0.0),
-            "timeout_rate": float(terminals.get("timeout", 0)) / n_eps,
-            "death_rate": float(terminals.get("death", 0)) / n_eps,
-            "explored_fraction": float(cov.get("explored_fraction", 0.0)),
-            "cells_visited": float(cov.get("cells_visited", 0.0)),
-            "enemies_seen_per_episode": float(s.get("enemies_seen_per_episode", 0.0)),
-            "hits_taken_per_episode": float(s.get("hits_taken_per_episode", 0.0)),
-            "heals_consumed": float(s.get("heals_consumed", 0.0)),
-            # Skill-curriculum scoreboard: aim quality + spray + conversion + circling + reward mix.
-            "aim_offset": float(s.get("aim_offset", 0.0)),
-            "wasted_shot_rate": float(s.get("wasted_shot_rate", 0.0)),
-            "kill_conversion": float(s.get("kill_conversion", 0.0)),
-            "revisit_rate": float(s.get("revisit_rate", 0.0)),
-            "reward_breakdown": s.get("reward_breakdown", {}),
-            "mean_base_reward": float(s["mean_base_reward"]),
-            "mean_episode_length": float(s["mean_episode_length"]),
-            # Combat vs exploration regime — so the coach tunes each one separately.
-            "combat_fraction": float(s.get("combat_fraction", 0.0)),
-            "combat_engagement": float(s.get("combat_engagement", 0.0)),
-            "combat_accuracy": float(s.get("combat_accuracy", 0.0)),
-        }
-        print("METRICS_JSON " + json.dumps(metrics))
+        print("METRICS_JSON " + json.dumps(build_metrics(s)))
 
 
 if __name__ == "__main__":
