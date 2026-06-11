@@ -693,7 +693,11 @@ def train_chunk(env: dict, doom_map: str, steps: int, fresh: bool,
 
 def eval_brain(env: dict, episodes: int, temperature: Optional[float] = None,
                algo: str = "ppo") -> dict:
-    cmd = [PY, "-m", "rl.eval", "--episodes", str(episodes), "--json", "--algo", algo]
+    # --eval-envs 5: episodes are independent, so 5 parallel envs cut the ~8-minute
+    # serial eval to ~2 (the machine is idle between train chunks anyway). Per-episode
+    # stats are unaffected (each env's Monitor reports its own episodes).
+    cmd = [PY, "-m", "rl.eval", "--episodes", str(episodes), "--json", "--algo", algo,
+           "--eval-envs", "5"]
     # Score the TEMPERED policy, not the raw argmax: this agent's argmax collapses to a
     # passive action while the learned distribution explores+fights. Scoring argmax would
     # make the supervisor optimise a frozen policy. T (e.g. 0.5) measures real capability.

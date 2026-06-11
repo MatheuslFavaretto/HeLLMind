@@ -278,10 +278,18 @@ def main() -> None:
                    help="Pin EVERY rng (env layout + torch/numpy action sampling) so two evals "
                         "are comparable. Without it, tempered sampling draws from an unseeded "
                         "torch RNG and A/B numbers carry sampling noise.")
+    p.add_argument("--eval-envs", type=int, default=1,
+                   help="Parallel envs for evaluation (default 1 = legacy serial). "
+                        "Episodes are independent, so N envs ≈ N× faster evals; per-episode "
+                        "stats are unaffected.")
     args = p.parse_args()
 
     cfg = Config()
-    cfg.n_envs = 1            # single env for a clean, reproducible eval
+    # Parallel eval: 10 episodes × 3,150 steps on ONE env was ~8 min of a 22-min loop
+    # cycle (~36%). N parallel envs cut that ~N× — per-episode stats stay valid (each
+    # env's Monitor reports its own episodes; the tracker aggregates per episode).
+    # Default 1 preserves exact legacy reproducibility; the auto loop passes more.
+    cfg.n_envs = max(1, int(getattr(args, "eval_envs", 1) or 1))
     cfg.docs_enabled = False  # no LLM/notes during eval
     cfg.memory_enabled = False
     if args.seed is not None:

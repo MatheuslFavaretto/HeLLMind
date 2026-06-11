@@ -200,6 +200,11 @@ COMMANDS = [
      "segment), concept stubs for every mechanism that fired, and a Graph Index that "
      "guarantees no note is an orphan. No LLM needed — factual, instant, idempotent.",
      "doom-cli vault"),
+    ("📊 Measure", "replicate", "Multi-seed eval replication: cross-seed mean ± 95% CI",
+     "Runs a seeded evaluation per seed on the SAME brain and reports each headline metric "
+     "as a cross-seed mean ± Student-t CI, plus per-seed values. Turns single-seed numbers "
+     "into replicated claims (the biggest threats-to-validity item). Saves JSON for reports.",
+     "doom-cli replicate --seeds 41,42,43"),
     ("📊 Measure", "report", "Thesis-grade report: trajectories, 95% CIs, methodology, formulas",
      "Builds reports/thesis_report.html from the autonomy trail: optimisation trajectory with "
      "regime boundaries marked, per-episode distributions with Student-t confidence intervals, "
@@ -1294,6 +1299,67 @@ def cmd_semantic(a) -> int:
     return run(cmd, title=f"🔎 Semantic memory · {subcmd}")
 
 
+def cmd_replicate(a) -> int:
+    """Multi-seed replication of the headline numbers: runs a SEEDED eval per seed on
+    the same brain and reports cross-seed mean ± 95% CI. Turns 'single-seed anecdote'
+    into a replicated claim — the biggest item in the study's threats-to-validity."""
+    import json as _json
+    from instrumentation.stats_tracker import _T95
+
+    seeds = [int(s) for s in a.seeds.split(",") if s.strip()]
+    per_seed: dict = {}
+    for seed in seeds:
+        cmd = [PY, "-m", "rl.eval", "--episodes", str(a.episodes), "--json",
+               "--temperature", str(a.temperature), "--seed", str(seed),
+               "--eval-envs", str(a.eval_envs)]
+        env = dict(os.environ)
+        if a.maps:
+            env["MAPS"] = a.maps
+        console.print(f"[dim]seed {seed}…[/dim]")
+        out = subprocess.run(cmd, cwd=ROOT, env=env,
+                             capture_output=True, text=True).stdout
+        for line in out.splitlines():
+            if line.startswith("METRICS_JSON "):
+                per_seed[seed] = _json.loads(line[len("METRICS_JSON "):])
+                break
+    if not per_seed:
+        console.print("[yellow]no metrics produced (no brain / eval failed?)[/yellow]")
+        return 1
+
+    keys = ["kills_per_episode", "shooting_accuracy", "explored_fraction",
+            "exit_rate", "route_progress", "route_progress_best", "death_rate"]
+    n = len(per_seed)
+    t = _T95.get(n - 1, 1.960) if n > 1 else 0.0
+    table = Table(title=f"Replication — {n} seeds × {a.episodes} episodes "
+                        f"(T={a.temperature}{', ' + a.maps if a.maps else ''})",
+                  border_style=EMBER[2])
+    table.add_column("metric")
+    table.add_column("mean ± 95% CI (cross-seed)", style="bold")
+    table.add_column("per-seed")
+    summary = {}
+    for k in keys:
+        vals = [m.get(k) or 0.0 for m in per_seed.values()]
+        mean = sum(vals) / n
+        if n > 1:
+            sd = (sum((v - mean) ** 2 for v in vals) / (n - 1)) ** 0.5
+            half = t * sd / n ** 0.5
+        else:
+            sd = half = 0.0
+        summary[k] = {"mean": mean, "std": sd, "ci95_half": half, "n_seeds": n,
+                      "per_seed": dict(zip(map(str, per_seed), vals))}
+        table.add_row(k, f"{mean:.3f} ± {half:.3f}",
+                      "  ".join(f"{v:.2f}" for v in vals))
+    console.print(table)
+    out_path = a.out
+    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+    with open(out_path, "w", encoding="utf-8") as f:
+        _json.dump({"seeds": seeds, "episodes": a.episodes,
+                    "temperature": a.temperature, "maps": a.maps,
+                    "metrics": summary}, f, indent=2)
+    console.print(f"[green]replication →[/green] {out_path}")
+    return 0
+
+
 def cmd_vault(a) -> int:
     """Backfill the Obsidian graph from the autonomy trail (no LLM): one note per
     iteration + one per hunt + concept stubs + a Graph Index that de-orphans every note."""
@@ -1598,6 +1664,16 @@ def build_parser() -> argparse.ArgumentParser:
     vt = sub.add_parser("vault",
                         help="Backfill the Obsidian graph from the autonomy trail")
     vt.set_defaults(fn=cmd_vault)
+
+    rep = sub.add_parser("replicate",
+                         help="Multi-seed eval replication: cross-seed mean ± 95% CI")
+    rep.add_argument("--seeds", default="41,42,43", help="Comma-separated seeds.")
+    rep.add_argument("--episodes", type=int, default=20)
+    rep.add_argument("--temperature", type=float, default=0.5)
+    rep.add_argument("--maps", default=None, help="Map override (MAPS env).")
+    rep.add_argument("--eval-envs", type=int, default=5, dest="eval_envs")
+    rep.add_argument("--out", default="reports/replication.json")
+    rep.set_defaults(fn=cmd_replicate)
 
     rp = sub.add_parser("report",
                         help="Thesis-grade report: trajectories, 95% CIs, methodology, formulas")

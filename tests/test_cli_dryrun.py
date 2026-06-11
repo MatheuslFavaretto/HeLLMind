@@ -38,6 +38,8 @@ DRYRUN_ARGV = {
     "prune":       [],          # dry-run by default: reads dirs, deletes nothing
     "report":      ["--out", "/tmp/hellmind_dryrun_report.html", "--last", "5"],
     "vault":       [],          # idempotent note backfill (writes into the real vault)
+    "replicate":   ["--seeds", "1,2", "--episodes", "1",
+                    "--out", "/tmp/hellmind_dryrun_replication.json"],
     "progress":    [],
     "timeline":    [],
     "knowledge":   [],
