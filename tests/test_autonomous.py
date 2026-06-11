@@ -842,6 +842,49 @@ class TestGeodesicShaping:
         assert not _segments_cross(0, 0, 10, 0, 0, 5, 10, 5)    # parallel
 
 
+class TestRouteAwareGoals:
+    """Go-Explore goals must follow the ROUTE, not euclidean spread — and must never
+    target off-route cells (the dive-era archive is full of pit cells; a pit goal would
+    re-teach the exploit the reward fix sealed)."""
+
+    def _store(self, tmp_path, cells):
+        from writer.frontier_store import FrontierStore
+        st = FrontierStore(str(tmp_path))
+        rec = {"gen": 1, "cells": {k: {"x": x, "y": y, "visits": 1, "last_gen": 1}
+                                   for k, (x, y) in cells.items()}}
+        os.makedirs(st.dir, exist_ok=True)
+        with open(st._path("MAP01"), "w") as f:
+            json.dump(rec, f)
+        return st
+
+    def test_off_route_cells_never_sampled(self, tmp_path):
+        import random as _r
+        st = self._store(tmp_path, {"10,10": (640, 640), "20,20": (1280, 1280)})
+        # route_dist_fn: only (640,640) is on the route
+        fn = lambda x, y: 1000.0 if (x, y) == (640.0, 640.0) else None
+        for seed in range(5):
+            g = st.sample_goal("MAP01", (0, 0), rng=_r.Random(seed), route_dist_fn=fn)
+            assert g == (640.0, 640.0), "pit cell must never be a goal"
+
+    def test_deeper_on_route_outweighs_euclidean_far(self, tmp_path):
+        import random as _r
+        # A: euclidean-far but shallow on route (route dist 4000 of 5000)
+        # B: euclidean-near but DEEP on route (route dist 500 of 5000)
+        st = self._store(tmp_path, {"30,0": (2000, 0), "5,5": (320, 320)})
+        depths = {(2000.0, 0.0): 4000.0, (320.0, 320.0): 500.0}
+        fn = lambda x, y: depths.get((x, y), 5000.0)
+        wins = sum(1 for s in range(20)
+                   if st.sample_goal("MAP01", (0, 0), rng=_r.Random(s),
+                                     route_dist_fn=fn) == (320.0, 320.0))
+        assert wins >= 15, f"deep-on-route cell must dominate sampling (won {wins}/20)"
+
+    def test_no_route_fn_keeps_legacy_behaviour(self, tmp_path):
+        import random as _r
+        st = self._store(tmp_path, {"10,10": (640, 640)})
+        g = st.sample_goal("MAP01", (0, 0), rng=_r.Random(0))
+        assert g == (640.0, 640.0)
+
+
 class TestNoAssistsFlag:
     """--no-assists must zero all 4 assist env vars in every subprocess."""
 

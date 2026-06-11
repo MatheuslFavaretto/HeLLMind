@@ -804,7 +804,16 @@ class CampaignDoomEnv(gym.Env):
         self._goal_reached = False
         self._prev_goal_dist = None
         if self._frontier_store is not None and random.random() < self._goal_prob:
-            goal = self._frontier_store.sample_goal(self._current_map, self._spawn_xy)
+            # Route-aware Go-Explore: when the geodesic field exists, goals are weighted
+            # by depth ALONG the route (and pit/off-route cells are never goals — the
+            # dive-era archive is full of them). This is the door-consolidation lever:
+            # "return to my deepest on-route point, then push".
+            route_fn = None
+            if self._geo_field:
+                from doom.geodesic import geodesic_distance
+                route_fn = lambda x, y: geodesic_distance(self._geo_field, x, y)
+            goal = self._frontier_store.sample_goal(self._current_map, self._spawn_xy,
+                                                    route_dist_fn=route_fn)
             if goal is not None:
                 self._goal_xy = goal
                 gx, gy = goal

@@ -96,12 +96,17 @@ class FrontierStore:
         spawn_xy: Tuple[float, float],
         rng: Optional[random.Random] = None,
         min_dist: float = 200.0,
+        route_dist_fn=None,
     ) -> Optional[Tuple[float, float]]:
         """Pick a frontier cell to return to, weighting three signals (Go-Explore + frontier
         intelligence):
-          • distance / (1+visits)  — far + rarely-seen (the classic frontier score)
-          • EDGE bonus 1/(1+neighbours) — cells on the boundary of the explored region (few
-            archived neighbours) are TRUE frontiers; well-surrounded cells are interior.
+          • depth / (1+visits) — far + rarely-seen. Depth is GEODESIC route depth when
+            `route_dist_fn(x, y) -> dist_to_exit | None` is given (return-to-the-deepest-
+            point-ON-THE-ROUTE — the door-consolidation mechanism), euclidean-from-spawn
+            otherwise. Off-route cells (fn returns None) are SKIPPED entirely: the dive-era
+            archive contains pit cells, and sending the agent back into an inescapable pit
+            as a 'goal' would re-teach the exploit the reward fix just sealed.
+          • EDGE bonus 1/(1+neighbours) — cells on the boundary of the explored region.
           • AGING decay 0.9^(gen-last_gen) — fade frontiers that haven't paid off lately.
         Returns None if the archive has nothing far yet."""
         rng = rng or random
@@ -110,6 +115,7 @@ class FrontierStore:
         cells = rec.get("cells", {})
         gen = int(rec.get("gen", 0))
         keys = set(cells.keys())
+        spawn_route = route_dist_fn(sx, sy) if route_dist_fn else None
         weighted: List[Tuple[float, Tuple[float, float]]] = []
         for key, c in cells.items():
             try:
@@ -120,6 +126,14 @@ class FrontierStore:
             d = ((x - sx) ** 2 + (y - sy) ** 2) ** 0.5
             if d < min_dist:
                 continue  # too close to spawn to be a useful "return" target
+            if route_dist_fn is not None:
+                cell_route = route_dist_fn(x, y)
+                if cell_route is None:
+                    continue  # off the walkable route (pit etc.) — never a goal
+                if spawn_route is not None:
+                    d = max(0.0, spawn_route - cell_route)  # depth ALONG the route
+                    if d <= 0:
+                        continue
             neighbours = self._neighbour_count(key, keys)
             edge = 1.0 / (1.0 + neighbours)                      # prioritise the boundary
             age = gen - int(c.get("last_gen", gen))
