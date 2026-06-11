@@ -221,18 +221,22 @@ def distance_field(wad_path: str, map_name: str,
             floor_now = dst
         return True
 
-    # Seed: the exit linedef midpoint sits ON a wall (exit switches are walls), so seed
-    # every passable cell in a small neighbourhood of it.
+    # Seed: the exit midpoint cell + only the neighbours a PLAYER could step to it from.
+    # An unconditional 3x3 seed put dist=0 cells inside the pit NORTH of freedoom2
+    # MAP01's exit island — the whole (unescapable) pit flooded with near-zero values
+    # and the agent learned to DIVE IN ('route_progress 93%' at the bottom of a -480
+    # hole). Connectivity-checked seeding keeps the field on the walkable side.
     ex, ey = exit_xy
     ecx, ecy = ex // cell, ey // cell
-    dist: Dict[Tuple[int, int], float] = {}
-    q: deque = deque()
-    for ox in (-1, 0, 1):
-        for oy in (-1, 0, 1):
-            c = (ecx + ox, ecy + oy)
-            if cx0 - 1 <= c[0] <= cx1 + 1 and cy0 - 1 <= c[1] <= cy1 + 1:
-                dist[c] = 0.0
-                q.append(c)
+    center = (ecx, ecy)
+    dist: Dict[Tuple[int, int], float] = {center: 0.0}
+    q: deque = deque([center])
+    for ox, oy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+        c = (ecx + ox, ecy + oy)
+        if (cx0 - 1 <= c[0] <= cx1 + 1 and cy0 - 1 <= c[1] <= cy1 + 1
+                and passable(c, center)):   # player can walk c → exit cell
+            dist[c] = 0.0
+            q.append(c)
     while q:
         c = q.popleft()
         for nb in ((c[0] + 1, c[1]), (c[0] - 1, c[1]), (c[0], c[1] + 1), (c[0], c[1] - 1)):

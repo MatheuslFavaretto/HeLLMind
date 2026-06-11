@@ -360,6 +360,7 @@ class CampaignDoomEnv(gym.Env):
         _map_wad = self._scenario_wad if self._scenario_wad else wad_path
         self._map_wad = _map_wad  # the WAD that actually contains this map's geometry
         self._geo_field = None    # geodesic distance-to-exit field (built in reset)
+        self._geo_field_max = None  # cached max field value (off-route penalty base)
         # Door positions (from the WAD) — needed by auto-door-nav AND the semantic channel.
         self._doors = []
         if self._auto_door_nav or self._semantic:
@@ -487,16 +488,27 @@ class CampaignDoomEnv(gym.Env):
         """Schedule a map switch; applied on the next reset (used by the curriculum)."""
         self._pending_map = doom_map
         self._geo_field = None  # new map = new geometry; rebuilt on next reset
+        self._geo_field_max = None
 
     def _dist_to_exit(self, px: float, py: float) -> float:
-        """Distance from (px, py) to the exit reference — geodesic (along walkable
-        paths) when the field covers the position, euclidean otherwise. Requires
-        self._exit_ref to be set."""
+        """Distance from (px, py) to the exit reference. Geodesic when the field covers
+        the position; positions OFF the field are scored max_field + euclidean.
+
+        The off-field penalty is load-bearing: a plain euclidean fallback let the agent
+        learn to JUMP INTO THE PIT beside the exit island — off-field there, euclidean
+        read ~364u, and the signed gradient paid the dive as massive progress (observed:
+        route_progress_best pinned at a non-grid 93.3% with death 0%/timeout 100% — it
+        sat at the bottom of an inescapable -480 pit 'close' to the exit forever).
+        Off-route must always read WORSE than anywhere on the route."""
         if self._geo_field:
             from doom.geodesic import geodesic_distance
             g = geodesic_distance(self._geo_field, px, py)
             if g is not None:
                 return g
+            ex, ey = self._exit_ref
+            if self._geo_field_max is None:
+                self._geo_field_max = max(self._geo_field.values())
+            return self._geo_field_max + ((ex - px) ** 2 + (ey - py) ** 2) ** 0.5
         ex, ey = self._exit_ref
         return ((ex - px) ** 2 + (ey - py) ** 2) ** 0.5
 
