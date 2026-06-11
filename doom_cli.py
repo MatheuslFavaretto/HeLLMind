@@ -1008,6 +1008,33 @@ def cmd_intel(a) -> int:
                        f"kills={m.get('kills_per_episode',0):.2f} exit={m.get('exit_rate',0):.0%}")
     console.print(tr)
 
+    # ---- Route hunt (geodesic) — only when the latest iteration measured it ----
+    try:
+        import json as _json
+        trail = os.path.join(cfg.memory_dir, "autonomy.jsonl")
+        last = None
+        if os.path.exists(trail):
+            with open(trail, encoding="utf-8") as f:
+                for line in f:
+                    if line.strip():
+                        last = _json.loads(line)
+        lm = (last or {}).get("metrics", {})
+        if lm.get("route_progress") is not None:
+            rh = Table(title="🧭 Route hunt (geodesic — along the REAL walkable route)",
+                       border_style=EMBER[2])
+            rh.add_column("metric"); rh.add_column("value", style="bold")
+            rh.add_row("route penetration (mean / best ep)",
+                       f"{lm.get('route_progress', 0):.1%} / "
+                       f"{lm.get('route_progress_best', 0):.1%}")
+            if lm.get("death_route_dist"):
+                rh.add_row("deaths happen at",
+                           f"{lm['death_route_dist']:.0f} route-units from the exit")
+            rh.add_row("exit rate", f"{lm.get('exit_rate', 0):.0%}")
+            rh.add_row("as of", f"iter {last.get('iter')}")
+            console.print(rh)
+    except Exception:
+        pass  # the panel is informative only — never break intel over it
+
     # ---- Cognitive memory ----
     cg = cognition_stats(cfg.memory_dir)
     cm = Table(title="🧩 Cognitive memory (accumulated)", border_style=EMBER[2])
