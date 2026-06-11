@@ -235,7 +235,11 @@ def distance_field(wad_path: str, map_name: str,
         c = (ecx + ox, ecy + oy)
         if (cx0 - 1 <= c[0] <= cx1 + 1 and cy0 - 1 <= c[1] <= cy1 + 1
                 and passable(c, center)):   # player can walk c → exit cell
-            dist[c] = 0.0
+            # ONE cell of distance, not 0: a zero-valued doorstep leaves no gradient
+            # INTO the switch cell — observed: an eval episode stood at the doorstep
+            # (route_progress 100%) without pressing the exit. The last 64 units must
+            # still pay.
+            dist[c] = float(cell)
             q.append(c)
     while q:
         c = q.popleft()
