@@ -26,12 +26,32 @@ from doom.wad_doors import _lump_dir
 
 GRID_CELL = 64  # map units per grid cell (Doom corridors are ≥64 wide by convention)
 
-_Walls = Tuple[Tuple[int, int, int, int], ...]   # (x1, y1, x2, y2) per wall segment
+# (x1, y1, x2, y2, front_floor, back_floor) per segment; floors None = hard wall,
+# numeric = DIRECTIONAL step (drop always passable, climb only ≤ MAX_STEP).
+_Walls = Tuple[Tuple[int, int, int, int, Optional[int], Optional[int]], ...]
+
+
+# Lift/platform specials: the floor MOVES, so a step across these lines is traversable
+# even when the static heights differ (W1/WR/S1/SR lower-lift + raise variants).
+LIFT_SPECIALS = frozenset({10, 21, 62, 88, 120, 121, 122, 123})
+
+MAX_STEP = 24      # Doom's maximum climbable floor step, in map units
+MIN_HEADROOM = 56  # player height + margin: can't pass where ceiling-floor is lower
+
+# Exit specials must stay PASSABLE: the exit switch often sits on its own step
+# (freedoom2 MAP01: a 48u step ON the exit line) and USE activates it from below.
+from doom.wad_doors import EXIT_SPECIALS as _EXIT_SPECIALS
 
 
 def map_walls(wad_path: str, map_name: str) -> _Walls:
-    """Wall segments of a map: one-sided linedefs (no back sidedef) + ML_BLOCKING lines.
-    Doors are NOT walls (auto-USE opens them on contact), so door specials are skipped."""
+    """Wall segments of a map, HEIGHT-AWARE:
+    - one-sided linedefs + ML_BLOCKING lines (classic walls)
+    - two-sided lines whose floor step exceeds MAX_STEP (cliffs — found the hard way:
+      the 2D field guided the agent into a 120u cliff at 90% of MAP01's route, where it
+      paced until timeout for four straight evals)
+    - two-sided lines without MIN_HEADROOM of clearance (crushers/slits)
+    Doors are NOT walls (auto-USE opens them); lift lines are NOT walls (the floor
+    moves); exit-special lines are NOT walls (USE reaches the switch)."""
     from doom.wad_doors import DOOR_SPECIALS
     try:
         with open(wad_path, "rb") as f:
@@ -46,23 +66,57 @@ def map_walls(wad_path: str, map_name: str) -> _Walls:
     window = lumps[start: start + 12]
     ld = next(((o, s) for n, o, s in window if n == "LINEDEFS"), None)
     vx = next(((o, s) for n, o, s in window if n == "VERTEXES"), None)
+    sd = next(((o, s) for n, o, s in window if n == "SIDEDEFS"), None)
+    sec = next(((o, s) for n, o, s in window if n == "SECTORS"), None)
     if not ld or not vx:
         return ()
     verts = [struct.unpack("<hh", data[vx[0] + j * 4: vx[0] + j * 4 + 4])
              for j in range(vx[1] // 4)]
+    # SIDEDEFS (30 bytes) → owning sector; SECTORS (26 bytes) → floor/ceiling heights.
+    side_sector = []
+    if sd:
+        side_sector = [struct.unpack("<h", data[sd[0] + j * 30 + 28: sd[0] + j * 30 + 30])[0]
+                       for j in range(sd[1] // 30)]
+    sector_h = []
+    if sec:
+        sector_h = [struct.unpack("<hh", data[sec[0] + j * 26: sec[0] + j * 26 + 4])
+                    for j in range(sec[1] // 26)]
+
+    skip_specials = DOOR_SPECIALS | LIFT_SPECIALS | _EXIT_SPECIALS
     walls = []
     for j in range(ld[1] // 14):
         rec = data[ld[0] + j * 14: ld[0] + j * 14 + 14]
         if len(rec) < 14:
             break
-        v1, v2, flags, special, _tag, _front, back = struct.unpack("<7H", rec)
+        v1, v2, flags, special, _tag, front, back = struct.unpack("<7H", rec)
         if v1 >= len(verts) or v2 >= len(verts):
             continue
         one_sided = back == 0xFFFF
         blocking = bool(flags & 0x0001)  # ML_BLOCKING
-        if (one_sided or blocking) and special not in DOOR_SPECIALS:
-            (x1, y1), (x2, y2) = verts[v1], verts[v2]
-            walls.append((x1, y1, x2, y2))
+        impassable = one_sided or blocking
+        f_floor = b_floor = None
+        # Height check for two-sided lines (needs SIDEDEFS+SECTORS parsed).
+        if (not impassable and side_sector and sector_h
+                and front < len(side_sector) and back < len(side_sector)):
+            fs, bs = side_sector[front], side_sector[back]
+            if 0 <= fs < len(sector_h) and 0 <= bs < len(sector_h):
+                f_floor, f_ceil = sector_h[fs]
+                b_floor, b_ceil = sector_h[bs]
+                headroom = min(f_ceil, b_ceil) - max(f_floor, b_floor)
+                if headroom < MIN_HEADROOM:
+                    impassable = True
+        if special in skip_specials:
+            continue
+        (x1, y1), (x2, y2) = verts[v1], verts[v2]
+        if impassable:
+            walls.append((x1, y1, x2, y2, None, None))
+        elif f_floor is not None and abs(f_floor - b_floor) > MAX_STEP:
+            # DIRECTIONAL step: falling is always allowed, climbing only ≤ MAX_STEP.
+            # Front side is on the RIGHT of v1→v2; floors attached for the passability
+            # check at BFS time. (An undirected cliff-wall model made the exit alcove a
+            # 20-cell island and 'unreachable' — the player legitimately DROPS into
+            # lower areas all over the route.)
+            walls.append((x1, y1, x2, y2, f_floor, b_floor))
     return tuple(walls)
 
 
@@ -98,18 +152,73 @@ def distance_field(wad_path: str, map_name: str,
     # Bucket walls by the grid cells their bounding box touches → ~O(1) walls per move.
     buckets: Dict[Tuple[int, int], list] = {}
     for w in walls:
-        x1, y1, x2, y2 = w
+        x1, y1, x2, y2 = w[0], w[1], w[2], w[3]
         for gx in range(min(x1, x2) // cell - 1, max(x1, x2) // cell + 2):
             for gy in range(min(y1, y2) // cell - 1, max(y1, y2) // cell + 2):
                 buckets.setdefault((gx, gy), []).append(w)
 
+    def _orient(px, py, qx, qy, rx, ry):
+        v = (qx - px) * (ry - py) - (qy - py) * (rx - px)
+        return 0 if v == 0 else (1 if v > 0 else -1)
+
+    PLAYER_DIAMETER = 32  # radius 16: a slit narrower than the body never drops the floor
+
     def passable(a: Tuple[int, int], b: Tuple[int, int]) -> bool:
-        """Can the agent move between the centers of adjacent cells a→b?"""
+        """Can the PLAYER move from cell a's center to cell b's center?
+
+        Hard walls block both ways. Step lines are DIRECTIONAL: dropping any height is
+        fine, climbing more than MAX_STEP is not. Doom's front sidedef is on the RIGHT
+        of v1→v2, so the side the player starts on follows from the orientation of a's
+        center relative to the line.
+
+        SLITS: the body has a 16u radius — the engine floors you at the HIGHEST sector
+        the body touches, so a sub-32u-wide pit slit between two walkable floors never
+        drops you (freedoom2 MAP01's exit walkway is separated from the exit island by
+        a decorative 8u × 384u-deep slit; a point model falls in, a player walks over).
+        We sort the crossings along the move and allow a >MAX_STEP climb when it
+        returns, within the body width, to ≤ the pre-drop floor + MAX_STEP."""
         ax, ay = a[0] * cell + cell // 2, a[1] * cell + cell // 2
         bx, by = b[0] * cell + cell // 2, b[1] * cell + cell // 2
+        seg_len = ((bx - ax) ** 2 + (by - ay) ** 2) ** 0.5 or 1.0
+
+        crossings = []  # (t, src_floor, dst_floor) along the move, or hard wall
+        seen = set()
         for w in buckets.get(a, []) + buckets.get(b, []):
-            if _segments_cross(ax, ay, bx, by, w[0], w[1], w[2], w[3]):
+            if id(w) in seen:
+                continue
+            seen.add(id(w))
+            x1, y1, x2, y2, f_floor, b_floor = w
+            if not _segments_cross(ax, ay, bx, by, x1, y1, x2, y2):
+                continue
+            if f_floor is None:
+                return False  # hard wall
+            # Parametric t of the intersection along the move segment.
+            den = (bx - ax) * (y2 - y1) - (by - ay) * (x2 - x1)
+            t = (((x1 - ax) * (y2 - y1) - (y1 - ay) * (x2 - x1)) / den) if den else 0.5
+            src, dst = ((b_floor, f_floor)
+                        if _orient(x1, y1, x2, y2, ax, ay) > 0
+                        else (f_floor, b_floor))
+            crossings.append((t, src, dst))
+
+        # Walk the crossings in order, tracking the body's effective floor.
+        crossings.sort()
+        floor_now = None          # None until the first step line tells us
+        drop_from = None          # (t, floor before the drop) of the most recent drop
+        for t, src, dst in crossings:
+            if floor_now is None:
+                floor_now = src
+            if dst - floor_now > MAX_STEP:
+                # A climb: allowed only as the far edge of a sub-body-width slit.
+                if (drop_from is not None
+                        and (t - drop_from[0]) * seg_len <= PLAYER_DIAMETER
+                        and dst <= drop_from[1] + MAX_STEP):
+                    floor_now = dst
+                    drop_from = None
+                    continue
                 return False
+            if dst < floor_now - MAX_STEP:
+                drop_from = (t, floor_now)  # falling edge: remember where we'd land from
+            floor_now = dst
         return True
 
     # Seed: the exit linedef midpoint sits ON a wall (exit switches are walls), so seed
@@ -129,7 +238,10 @@ def distance_field(wad_path: str, map_name: str,
         for nb in ((c[0] + 1, c[1]), (c[0] - 1, c[1]), (c[0], c[1] + 1), (c[0], c[1] - 1)):
             if nb in dist or not (cx0 - 1 <= nb[0] <= cx1 + 1 and cy0 - 1 <= nb[1] <= cy1 + 1):
                 continue
-            if passable(c, nb):
+            # BFS expands exit→spawn, the REVERSE of player motion: reaching nb at
+            # dist+1 means the PLAYER walks nb→c, so check passability in THAT direction
+            # (directional steps: drops allowed, climbs >MAX_STEP not).
+            if passable(nb, c):
                 dist[nb] = dist[c] + cell
                 q.append(nb)
     return dist
