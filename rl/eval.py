@@ -393,7 +393,11 @@ def main() -> None:
             "shooting_accuracy": float(s["shooting_accuracy"]),
             "success_rate": float(s["success_rate"]),
             "exit_rate": float(s.get("exit_rate", 0.0)),
-            "exit_progress": float(s.get("exit_progress", 0.0)),  # dense: how close to the exit
+            "exit_progress": float(s.get("exit_progress", 0.0)),  # dense: how close (euclidean)
+            # Geodesic route metrics (None-safe: tracker means are None when unmeasured).
+            "route_progress": float(s.get("route_progress") or 0.0),
+            "route_progress_best": float(s.get("route_progress_best") or 0.0),
+            "death_route_dist": float(s.get("death_route_dist") or 0.0),
             "timeout_rate": float(terminals.get("timeout", 0)) / n_eps,
             "death_rate": float(terminals.get("death", 0)) / n_eps,
             "explored_fraction": float(cov.get("explored_fraction", 0.0)),
