@@ -1054,6 +1054,34 @@ def write_final_report(
     return path
 
 
+def _acquire_lock(memory_dir: str) -> str:
+    """Single-instance guard. Two supervisors writing the same trail silently corrupt
+    it — observed in prod: a ghost parent (survivor of an incomplete kill chain)
+    L4-renamed autonomy.jsonl FIVE times in one morning while a healthy run was
+    writing it, making the trail vanish over and over. Refuses to start when another
+    live supervisor holds the lock; stale locks (dead pid) are taken over."""
+    lock = os.path.join(memory_dir, "autonomous.lock")
+    if os.path.exists(lock):
+        alive = False
+        try:
+            pid = int(open(lock).read().strip())
+            os.kill(pid, 0)          # signal 0 = existence probe
+            alive = True
+        except (ValueError, OSError):
+            alive = False            # unreadable or dead pid → stale lock
+        if alive:
+            raise SystemExit(
+                f"[autonomous] another supervisor is already running (pid {pid}).\n"
+                f"  Kill it first (kill {pid}) or remove the stale lock: {lock}")
+        print(f"[autonomous] taking over stale lock ({lock})")
+    os.makedirs(memory_dir, exist_ok=True)
+    with open(lock, "w") as f:
+        f.write(str(os.getpid()))
+    import atexit
+    atexit.register(lambda: os.path.exists(lock) and os.remove(lock))
+    return lock
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description="Autonomous self-improving supervisor.")
     p.add_argument("--iterations", type=int, default=5)
@@ -1100,6 +1128,7 @@ def main() -> None:
     args = p.parse_args()
 
     cfg = Config()
+    _acquire_lock(cfg.memory_dir)  # exactly ONE supervisor per vault, ever
     doom_map = args.map or cfg.maps[0]
 
     # --fast: use the machine's cores for more parallel envs (pure throughput, nothing turned

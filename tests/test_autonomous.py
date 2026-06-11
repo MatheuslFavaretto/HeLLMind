@@ -900,6 +900,29 @@ class TestRouteAwareGoals:
         assert g == (640.0, 640.0)
 
 
+class TestSingleInstanceLock:
+    """Exactly ONE supervisor per vault: a ghost parent (incomplete kill chain)
+    L4-renamed the trail five times in one morning while a healthy run wrote it."""
+
+    def test_acquire_creates_lock_with_pid(self, tmp_path):
+        from rl.autonomous import _acquire_lock
+        lock = _acquire_lock(str(tmp_path))
+        assert open(lock).read() == str(os.getpid())
+
+    def test_second_acquire_refuses_while_alive(self, tmp_path):
+        from rl.autonomous import _acquire_lock
+        _acquire_lock(str(tmp_path))  # our own (live) pid holds it
+        with pytest.raises(SystemExit, match="already running"):
+            _acquire_lock(str(tmp_path))
+
+    def test_stale_lock_taken_over(self, tmp_path):
+        from rl.autonomous import _acquire_lock
+        with open(os.path.join(str(tmp_path), "autonomous.lock"), "w") as f:
+            f.write("999999999")  # dead pid
+        lock = _acquire_lock(str(tmp_path))
+        assert open(lock).read() == str(os.getpid())
+
+
 class TestNoAssistsFlag:
     """--no-assists must zero all 4 assist env vars in every subprocess."""
 
