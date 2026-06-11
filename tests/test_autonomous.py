@@ -480,41 +480,65 @@ class TestPlateauEscape:
             e["env"] = {"MAPS": "MAP01"}
         assert _stagnation_level(h) == 1                       # fresh ladder: 6-streak → L1
 
-    def test_pinned_map_never_rotates(self):
+    def test_pinned_map_never_rotates(self, tmp_path):
         """A directed run (--map given) must NEVER be yanked off its map by L2/L4 —
-        observed in prod: L2 switched an exit hunt MAP01→MAP02 mid-objective."""
+        observed in prod: L2 switched an exit hunt MAP01→MAP02 mid-objective.
+
+        cfg.memory_dir MUST be isolated: L4 renames {memory_dir}/autonomy.jsonl, and an
+        earlier version of this test used the real Config() — every pytest run silently
+        renamed the PRODUCTION trail (diagnosed for hours as a 'ghost process')."""
         from rl.autonomous import plateau_escape
         from config import Config
+        cfg = Config()
+        cfg.memory_dir = str(tmp_path)
         h = _hist([0.9] + [0.0] * 25)
         env = {"MAPS": "MAP01", "ENT_COEF": "0.03"}
-        new2, reason2, _ = plateau_escape(Config(), env, h, 2, "MAP01", "ppo", pin_map=True)
+        new2, reason2, _ = plateau_escape(cfg, env, h, 2, "MAP01", "ppo", pin_map=True)
         assert new2.get("MAPS", "MAP01") == "MAP01", "L2 pinned must keep the map"
         assert "pinned" in reason2
-        new4, reason4, purge4 = plateau_escape(Config(), env, h, 4, "MAP01", "ppo",
+        new4, reason4, purge4 = plateau_escape(cfg, env, h, 4, "MAP01", "ppo",
                                                pin_map=True)
         assert new4["MAPS"] == "MAP01", "L4 pinned must keep the map"
         assert purge4 is True  # purge still happens — only the rotation is suppressed
 
-    def test_l1_resets_knobs_keeps_brain(self):
-        from rl.autonomous import plateau_escape
+    def test_no_plateau_test_touches_the_real_vault(self):
+        """Meta-guard: no test in this module may call plateau_escape with a real
+        Config() memory_dir (L4 renames the production trail). Locks the lesson."""
+        import inspect
+        import re
+        src = inspect.getsource(TestPlateauEscape)
+        for m in re.finditer(r"plateau_escape\(\s*([A-Za-z_]+\(\)|[A-Za-z_]+)", src):
+            assert m.group(1) != "Config()", \
+                "plateau_escape must never receive a bare Config() in tests"
+
+    @staticmethod
+    def _cfg(tmp_path):
+        """plateau_escape must NEVER see the real memory_dir in tests (L4 renames the
+        production trail — the 'ghost process' that haunted a whole morning)."""
         from config import Config
+        cfg = Config()
+        cfg.memory_dir = str(tmp_path)
+        return cfg
+
+    def test_l1_resets_knobs_keeps_brain(self, tmp_path):
+        from rl.autonomous import plateau_escape
         h = _hist([0.9] + [0.0] * 6)
         with patch.dict(os.environ, {"COVERAGE_REWARD": "1.5"}):
             new_env, reason, purge = plateau_escape(
-                Config(), {"COVERAGE_REWARD": "0.2", "MAPS": "MAP01"}, h, 1, "MAP01", "ppo")
+                self._cfg(tmp_path), {"COVERAGE_REWARD": "0.2", "MAPS": "MAP01"},
+                h, 1, "MAP01", "ppo")
         assert purge is False
         assert new_env["COVERAGE_REWARD"] == "1.5", "L1 must reset knob to .env default"
 
-    def test_l3_reverts_to_regime_local_best(self):
+    def test_l3_reverts_to_regime_local_best(self, tmp_path):
         """L3 must pick the best WITHIN the current regime, not the all-time best."""
         from rl.autonomous import plateau_escape
-        from config import Config
         scores = [0.95] + [0.05] * 10 + [0.30, 0.08, 0.07, 0.06, 0.05, 0.04]
         h = _hist(scores, plateau_at={10: 2})
         # Same map throughout — this test is about the ESCAPE-marker window, not maps.
         h[11]["env"] = {"MAPS": "MAP01", "ENT_COEF": "0.02", "MARKER": "regime-best"}
         new_env, reason, purge = plateau_escape(
-            Config(), {"MAPS": "MAP01"}, h, 3, "MAP01", "ppo")
+            self._cfg(tmp_path), {"MAPS": "MAP01"}, h, 3, "MAP01", "ppo")
         assert purge is False
         assert new_env.get("MARKER") == "regime-best", \
             "L3 must revert to the post-escape best (iter 11), not iter 0's 0.95"
