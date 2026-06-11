@@ -411,16 +411,21 @@ def _shell_prompt(tip: str) -> str:
 
 
 def _make_slash_reader(tips):
-    """A live Claude-CLI-style input: pressing / pops a dropdown of commands that filters as
-    you type, each with its description. Up-arrow recalls past commands (persisted across
-    sessions), and a ghost auto-suggestion completes from history. Returns a `read(tip)->str`
-    callable, or None if prompt_toolkit isn't available / there's no TTY (boxed fallback)."""
+    """The Claude-Code input experience:
+
+    - a rounded input box (top border + `│ ❯` gutter; the closing edge prints on submit)
+    - the FIRST `/` keypress opens the command menu instantly (no Tab needed)
+    - fuzzy filtering as you type: prefix matches first, then substring matches
+    - every entry shows `/name` aligned + its description, exactly like Claude's palette
+    - ↑ history persisted across sessions, ghost auto-suggest from history
+    Returns `read(tip)->str`, or None if prompt_toolkit/TTY is unavailable (boxed fallback)."""
     if not sys.stdin.isatty():
         return None
     try:
         from prompt_toolkit import PromptSession
         from prompt_toolkit.completion import Completer, Completion
         from prompt_toolkit.formatted_text import HTML
+        from prompt_toolkit.key_binding import KeyBindings
         from prompt_toolkit.styles import Style
         from prompt_toolkit.history import FileHistory
         from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
@@ -428,6 +433,7 @@ def _make_slash_reader(tips):
         return None
 
     cmds = [(c[1], c[2]) for c in COMMANDS if c[1] != "shell"]
+    name_w = max(len(n) for n, _ in cmds) + 1  # align descriptions like Claude's menu
 
     class SlashCompleter(Completer):
         def get_completions(self, document, complete_event):
@@ -435,18 +441,36 @@ def _make_slash_reader(tips):
             if not text.startswith("/") or " " in text:   # only complete the command token
                 return
             word = text[1:].lower()
-            for name, desc in cmds:
-                if name.startswith(word):
-                    yield Completion(name, start_position=-len(word),
-                                     display=HTML(f"<b>/{name}</b>"), display_meta=desc)
+            prefix  = [(n, d) for n, d in cmds if n.startswith(word)]
+            inside  = [(n, d) for n, d in cmds if word and word in n and not n.startswith(word)]
+            for name, desc in prefix + inside:
+                yield Completion(
+                    name, start_position=-len(word),
+                    display=HTML(f"<b>/{name.ljust(name_w)}</b>"),
+                    display_meta=desc)
+
+    # The first `/` (at the start of the line) opens the menu IMMEDIATELY — the
+    # signature Claude interaction. Elsewhere `/` types normally (paths, args).
+    kb = KeyBindings()
+
+    @kb.add("/")
+    def _slash(event):
+        buf = event.app.current_buffer
+        buf.insert_text("/")
+        if buf.document.text_before_cursor == "/":
+            buf.start_completion(select_first=False)
 
     style = Style.from_dict({
+        "frame": SHELL_BORDER,
         "prompt": f"{ACCENT} bold",
-        "completion-menu.completion": "bg:#2a211a #cdbfa8",
-        "completion-menu.completion.current": f"bg:{ACCENT} #1a140e bold",
-        "completion-menu.meta.completion": "bg:#211a14 #8f8275",
-        "completion-menu.meta.completion.current": f"bg:{ACCENT_DIM} #ffffff",
-        "bottom-toolbar": f"{SHELL_MUTED} bg:#1c1611",
+        "completion-menu": "bg:#1c1611",
+        "completion-menu.completion": "bg:#1c1611 #cdbfa8",
+        "completion-menu.completion.current": f"bg:#2a211a {ACCENT} bold",
+        "completion-menu.meta.completion": "bg:#1c1611 #6e6457",
+        "completion-menu.meta.completion.current": f"bg:#2a211a #cdbfa8",
+        "scrollbar.background": "bg:#1c1611",
+        "scrollbar.button": "bg:#3a2f24",
+        "bottom-toolbar": f"{SHELL_MUTED} bg:#16110d",
     })
     # Persist history under the memory dir so up-arrow survives across shell sessions.
     try:
@@ -457,20 +481,29 @@ def _make_slash_reader(tips):
     except Exception:
         history = None
     session = PromptSession(completer=SlashCompleter(), complete_while_typing=True,
-                            style=style, history=history,
-                            auto_suggest=AutoSuggestFromHistory())
+                            style=style, history=history, key_bindings=kb,
+                            auto_suggest=AutoSuggestFromHistory(),
+                            reserve_space_for_menu=10)
 
     def read(tip: str) -> str:
-        # Claude-style: a clean `> ` prompt with a calm status bar underneath. The live `/`
-        # dropdown (the completer above) is the signature interaction. Inline fg colours keep
-        # the toolbar robust across prompt_toolkit versions (no class-resolution surprises).
         a = ACCENT
+        w = min(console.width, 100) - 2
         toolbar = HTML(
-            f"  <style fg='{a}'>/</style> commands   ·   ↑ history   ·   "
-            f"<style fg='{a}'>/help</style> shortcuts   ·   "
+            f"  <style fg='{a}'>/</style> for commands   ·   ↑ history   ·   "
             f"<style fg='{a}'>/exit</style> quit"
             f"     <style fg='#6e6457'>·  {tip}</style>")
-        return session.prompt([("class:prompt", "> ")], bottom_toolbar=toolbar)
+        # The input box: top edge + a `│ ❯` gutter while typing; the bottom edge prints
+        # on submit so the finished command sits in a closed Claude-style frame.
+        message = [
+            ("class:frame", "╭" + "─" * w + "╮\n"),
+            ("class:frame", "│ "),
+            ("class:prompt", "❯ "),
+        ]
+        try:
+            line = session.prompt(message, bottom_toolbar=toolbar)
+        finally:
+            console.print(f"[{SHELL_BORDER}]╰{'─' * w}╯[/{SHELL_BORDER}]")
+        return line
     return read
 
 
