@@ -311,12 +311,24 @@ def propose(env: dict, m: dict, algo: str = "ppo") -> tuple[dict, str]:
     aim_off = m.get("aim_offset", 0.0)           # nearest enemy off-centre (1=edge)
     revisit = m.get("revisit_rate", 0.0)         # circling (revisited cells)
 
-    # Timeout diagnosis: if > 80% of episodes time out AND exploration is low, the
+    # Dying of CLOCK near the goal: deep route penetration + timeouts + no exit means
+    # the agent reaches the final stretch and the episode ends under it (measured:
+    # route_progress 87-90%, timeout 80%, exit 0). More clock is the direct fix —
+    # checked FIRST because the generic timeout branch below couples to low exploration,
+    # which is exactly wrong for an agent that's navigating far and just needs time.
+    route_prog = m.get("route_progress") or 0.0
+    if (timeout_rate >= 0.6 and m.get("exit_rate", 0.0) == 0.0 and route_prog > 0.5):
+        bump("EPISODE_TIMEOUT", factor=1.5)
+        return new, (f"route_progress={route_prog:.0%} but timeout={timeout_rate:.0%} — "
+                     f"dying of clock near the goal; EPISODE_TIMEOUT → "
+                     f"{int(float(new['EPISODE_TIMEOUT']))}")
+
+    # Timeout diagnosis: if ≥ 80% of episodes time out AND exploration is low, the
     # episode is too short to let the agent find anything interesting — extend it.
-    if timeout_rate > 0.80 and explored < 0.15:
+    if timeout_rate >= 0.80 and explored < 0.15:
         bump("EPISODE_TIMEOUT", factor=1.5)
         return new, (f"timeout_rate={timeout_rate:.0%}, explored={explored:.0%} → "
-                     f"episode too short — raise EPISODE_TIMEOUT to {int(new['EPISODE_TIMEOUT'])}")
+                     f"episode too short — raise EPISODE_TIMEOUT to {int(float(new['EPISODE_TIMEOUT']))}")
 
     if explored < 0.10 and explore_share < 0.6:
         # Very low exploration AND the reward isn't already explore-dominated: push on EVERY

@@ -289,6 +289,13 @@ def main() -> None:
     if s.get("exit_progress", 0.0) > 0:
         print(f"  exit progress:   {s.get('exit_progress', 0.0):.0%}   "
               f"(how close it got to the known exit — fairer than the binary rate)")
+    if s.get("route_progress"):
+        print(f"  route progress:  {s.get('route_progress', 0.0):.0%} mean / "
+              f"{s.get('route_progress_best', 0.0):.0%} best   "
+              f"(GEODESIC — along the real route, not straight-line)")
+    if s.get("death_route_dist"):
+        print(f"  deaths at:       {s.get('death_route_dist', 0.0):.0f} route-units from "
+              f"the exit (≈3650=spawn pocket, ≈2240=the gauntlet)")
     cov = s.get("map_coverage", {}) or {}
     print(f"  map explored:    {cov.get('explored_fraction', 0.0):.0%}   "
           f"({int(cov.get('cells_visited', 0))} cells)")
