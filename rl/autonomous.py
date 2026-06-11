@@ -86,7 +86,11 @@ BOUNDS = {
     "DAMAGE_TAKEN_PENALTY":  (0.0, 0.5),
     "DEATH_PENALTY":         (2.0, 25.0),   # raised floor/ceil
     "FRONTIER_REWARD":       (0.0, 0.2),
-    "EPISODE_TIMEOUT":       (1050, 8400),
+    # Cap raised 8400→12600 (2026-06-11): breakthrough episodes reach 86% of the true
+    # 5,504u route and then hit the 2,100-step ceiling mid-final-stretch — the route
+    # plus three fights needs more clock than two laps of a small map. 12600 ticks
+    # = 3,150 steps. The dying-of-clock branch walks it up only while exit_rate is 0.
+    "EPISODE_TIMEOUT":       (1050, 12600),
     "ENGAGEMENT_REWARD":     (0.0, 0.2),    # raised ceil (was 0.1)
     "ENT_COEF":              (0.005, 0.08),  # PPO un-freeze lever
     "DQN_EPS_FINAL":         (0.02, 0.3),   # QR-DQN un-freeze lever (ε-greedy floor)
